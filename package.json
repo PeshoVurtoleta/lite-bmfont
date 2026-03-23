@@ -1,0 +1,45 @@
+{
+  "name": "@zakkster/lite-bmfont",
+  "version": "1.0.0",
+  "description": "Zero-GC bitmap font canvas renderer. O(1) kerning via 64K Int16 LUT, multi-line alignment without string splitting.",
+  "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
+  "license": "MIT",
+  "type": "module",
+  "main": "BitmapFont.js",
+  "types": "BitmapFont.d.ts",
+  "exports": {
+    ".": {
+      "import": "./BitmapFont.js",
+      "types": "./BitmapFont.d.ts"
+    }
+  },
+  "files": [
+    "BitmapFont.js",
+    "BitmapFont.d.ts",
+    "llms.txt"
+  ],
+  "keywords": [
+    "bmfont",
+    "bitmap-font",
+    "canvas",
+    "text",
+    "kerning",
+    "zero-gc"
+  ],
+  "sideEffects": false,
+  "homepage": "https://github.com/PeshoVurtoleta/lite-bmfont#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PeshoVurtoleta/lite-bmfont.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PeshoVurtoleta/lite-bmfont/issues",
+    "email": "shinikchiev@yahoo.com"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}

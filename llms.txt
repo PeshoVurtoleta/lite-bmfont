@@ -1,0 +1,17 @@
+# @zakkster/lite-bmfont
+> Zero-GC bitmap font canvas renderer. O(1) kerning via 64K Int16 LUT, multi-line alignment without string splitting.
+
+## Install
+npm i @zakkster/lite-bmfont
+
+## Import
+import { BitmapFont } from '@zakkster/lite-bmfont';
+
+## Key Facts
+- Zero GC: All state in TypedArrays, no per-frame allocation
+- Size: < 1.5 KB minified
+- Dependencies: none
+- ESM only (type: module)
+
+## Export: BitmapFont (class)
+See source file BitmapFont.js for full JSDoc API documentation.
