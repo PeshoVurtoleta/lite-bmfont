@@ -67,4 +67,12 @@ describe('BitmapFont', () => {
         const call = ctx.drawImage.mock.calls[0];
         expect(call[5]).toBeLessThan(100);
     });
+
+    it('destroy nulls atlas and arrays', () => {
+        const font = new BitmapFont({}, mockFontJson);
+        font.destroy();
+        expect(font.atlas).toBeNull();
+        expect(font.glyphs).toBeNull();
+        expect(font.kerning).toBeNull();
+    });
 });

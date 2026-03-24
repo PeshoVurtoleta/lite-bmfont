@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-bmfont",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Zero-GC bitmap font canvas renderer. O(1) kerning via 64K Int16 LUT, multi-line alignment without string splitting.",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "license": "MIT",

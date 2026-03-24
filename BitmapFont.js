@@ -14,7 +14,7 @@ export class BitmapFont {
 
             if (id >= 0 && id < 256) {
                 const ptr = id * 7;
-                this.glyphs[ptr] = char.x;
+                this.glyphs[ptr]     = char.x;
                 this.glyphs[ptr + 1] = char.y;
                 this.glyphs[ptr + 2] = char.width;
                 this.glyphs[ptr + 3] = char.height;
@@ -64,9 +64,6 @@ export class BitmapFont {
      * @param {number} align  0 = Left, 1 = Center, 2 = Right
      */
     draw(ctx, text, x, y, scale = 1.0, align = 0) {
-        const glyphs = this.glyphs;
-        const kerning = this.kerning;
-
         const len = text.length;
         if (len === 0) return;
 
@@ -103,27 +100,32 @@ export class BitmapFont {
             if (id < 0 || id >= 256) continue;
 
             if (prevId !== -1) {
-                cursorX += kerning[(prevId << 8) | id] * scale;
+                cursorX += this.kerning[(prevId << 8) | id] * scale;
             }
 
             const ptr = id * 7;
-            const gw = glyphs[ptr + 2];
-            const gh = glyphs[ptr + 3];
+            const gw = this.glyphs[ptr + 2];
+            const gh = this.glyphs[ptr + 3];
 
             if (gw > 0 && gh > 0) {
                 ctx.drawImage(
                     this.atlas,
-                    glyphs[ptr], glyphs[ptr + 1], gw, gh,
-                    cursorX + glyphs[ptr + 4] * scale,
-                    cursorY + glyphs[ptr + 5] * scale - (this.base * scale),
+                    this.glyphs[ptr], this.glyphs[ptr + 1], gw, gh,
+                    cursorX + this.glyphs[ptr + 4] * scale,
+                    cursorY + this.glyphs[ptr + 5] * scale - (this.base * scale),
                     gw * scale, gh * scale
                 );
             }
 
-            cursorX += glyphs[ptr + 6] * scale;
+            cursorX += this.glyphs[ptr + 6] * scale;
             prevId = id;
         }
     }
-}
 
+    /** Release atlas reference and typed arrays. */
+    destroy() {
+        this.atlas = null;
+        this.glyphs = this.kerning = null;
+    }
+}
 export default BitmapFont;
