@@ -1,5 +1,5 @@
 # @zakkster/lite-bmfont
-> Zero-GC bitmap font canvas renderer. O(1) kerning via 64K Int16 LUT, multi-line alignment without string splitting.
+> Zero-GC bitmap font canvas renderer. O(1) kerning via 64K Int16 LUT, multi-line alignment without string splitting, and zero-alloc numeric HUD output.
 
 ## Install
 npm i @zakkster/lite-bmfont
@@ -12,6 +12,32 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - Size: < 1.5 KB minified
 - Dependencies: none
 - ESM only (type: module)
+- ASCII 0–255 only (Unicode intentionally excluded for performance)
 
 ## Export: BitmapFont (class)
+
+### Constructor
+new BitmapFont(imageAtlas, fontJson)
+  - imageAtlas: HTMLImageElement | HTMLCanvasElement
+  - fontJson:   standard BMFont JSON (common, chars, optional kernings)
+
+### Methods
+measure(text, scale = 1) -> number
+  Pixel width of `text` at `scale`.
+
+draw(ctx, text, x, y, scale = 1, align = 0) -> void
+  Multi-line text renderer. align: 0=left, 1=center, 2=right.
+  Pixel-snapped baseline. Newlines (\n) advance by lineHeight.
+
+drawFast(ctx, value, x, y, scale = 1, align = 0) -> void
+  Zero-alloc number renderer with one decimal place (e.g. 33.4).
+  - NaN / +Infinity / -Infinity -> returns silently
+  - Negative values -> clamped to 0
+  - Decimal rounded to nearest tenth (33.49 -> "33.5")
+  - Atlas must contain glyphs for '0'-'9' (48-57) and '.' (46)
+  - Built for per-frame HUDs (FPS, score, timer) — does NOT allocate a string
+
+destroy() -> void
+  Releases atlas reference and typed arrays (glyphs, kerning, internal scratch).
+
 See source file BitmapFont.js for full JSDoc API documentation.
