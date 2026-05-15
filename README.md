@@ -97,9 +97,9 @@ positions line 1's visual top edge at `boxY` when `vAlign=0`.
 
 ### Producing the layout
 
-The package does not ship a wrapper because layout strategy is application-specific
-(word-break vs. char-break, hyphenation, soft-wrap markers, etc.). Here is a tiny greedy
-word-break helper you can drop into your own code — keep one buffer alive and reuse it:
+**Ecosystem Companion:** For a zero-GC, kerning-aware word wrapper with truncation/ellipsis support that natively outputs this exact buffer format, see [`@zakkster/lite-text-layout`](https://www.npmjs.com/package/@zakkster/lite-text-layout).
+
+Here is a tiny greedy word-break helper you can drop into your own code — keep one buffer alive and reuse it:
 
 ```javascript
 // Greedy word-wrap. Returns the number of lines written into `out`.
