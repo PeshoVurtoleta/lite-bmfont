@@ -32,6 +32,23 @@ function makeNumericFont() {
     };
 }
 
+// Richer font for drawWrapped tests: A, B, C, space, '.' — all 10px wide / 12px advance,
+// no kerning, so line widths are trivial to compute by hand.
+function makeWrapFont() {
+    const chars = [
+        { id: 32, x: 0,   y: 0, width: 0,  height: 0,  xoffset: 0, yoffset: 0, xadvance: 6 },  // space
+        { id: 46, x: 60,  y: 0, width: 4,  height: 4,  xoffset: 0, yoffset: 12, xadvance: 6 }, // '.'
+        { id: 65, x: 0,   y: 0, width: 10, height: 14, xoffset: 0, yoffset: 2, xadvance: 12 }, // A
+        { id: 66, x: 10,  y: 0, width: 10, height: 14, xoffset: 0, yoffset: 2, xadvance: 12 }, // B
+        { id: 67, x: 20,  y: 0, width: 10, height: 14, xoffset: 0, yoffset: 2, xadvance: 12 }, // C
+    ];
+    return {
+        common: { lineHeight: 20, base: 16 },
+        chars,
+        kernings: [],
+    };
+}
+
 describe('BitmapFont', () => {
     it('constructs and maps glyphs', () => {
         const atlas = {};
@@ -232,5 +249,223 @@ describe('BitmapFont.drawFast', () => {
         font.drawFast(ctx, 999.9, 0, 20);
         font.drawFast(ctx, 0.1, 0, 20);
         expect(font._charScratch).toBe(bufBefore); // same reference
+    });
+});
+
+describe('BitmapFont.drawWrapped', () => {
+    // Encode a list of {start, end, width, flags} entries into a Float32Array.
+    function makeLayout(lines) {
+        const buf = new Float32Array(lines.length * 4);
+        for (let i = 0; i < lines.length; i++) {
+            const l = lines[i];
+            buf[i * 4]     = l.start;
+            buf[i * 4 + 1] = l.end;
+            buf[i * 4 + 2] = l.width;
+            buf[i * 4 + 3] = l.flags ?? 0;
+        }
+        return buf;
+    }
+
+    it('returns immediately when lineCount is 0', () => {
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 3, width: 36 }]);
+        font.drawWrapped(ctx, 'ABC', layout, 0, 100, 100, 0, 0);
+        expect(ctx.drawImage).not.toHaveBeenCalled();
+    });
+
+    it('renders one glyph per character on a single line', () => {
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 3, width: 36 }]);
+        font.drawWrapped(ctx, 'ABC', layout, 1, 100, 100, 0, 0);
+        expect(ctx.drawImage).toHaveBeenCalledTimes(3);
+    });
+
+    it('positions the first line so its visual top sits at y when vAlign=0', () => {
+        // For this font: base=16, glyph yoffset=2, glyph height=14.
+        // Visual top of a glyph = baseline + yoffset - base = baseline - 14
+        // For top alignment, we want visual top at y=0, so baseline = base = 16.
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 1, width: 12 }]);
+        font.drawWrapped(ctx, 'A', layout, 1, 100, 100, 0, 0);
+
+        // drawImage call signature: (img, sx, sy, sw, sh, dx, dy, dw, dh)
+        // dy (index 6) = baseline + yoffset - base = 16 + 2 - 16 = 2
+        const dy = ctx.drawImage.mock.calls[0][6];
+        expect(dy).toBe(2);
+    });
+
+    it('renders content (1 line) at bottom of box when vAlign=2', () => {
+        // baseline = y + base + (boxHeight - lineHeight) = 0 + 16 + (100 - 20) = 96
+        // dy of glyph = 96 + yoffset - base = 96 + 2 - 16 = 82
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 1, width: 12 }]);
+        font.drawWrapped(ctx, 'A', layout, 1, 100, 100, 0, 0, 1, 0, 2);
+
+        const dy = ctx.drawImage.mock.calls[0][6];
+        expect(dy).toBe(82);
+    });
+
+    it('centers vertically when vAlign=1', () => {
+        // baseline = y + base + (boxHeight - lineHeight)/2 = 0 + 16 + 40 = 56
+        // dy = 56 + 2 - 16 = 42
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 1, width: 12 }]);
+        font.drawWrapped(ctx, 'A', layout, 1, 100, 100, 0, 0, 1, 0, 1);
+
+        const dy = ctx.drawImage.mock.calls[0][6];
+        expect(dy).toBe(42);
+    });
+
+    it('advances cursorY by lineHeight between lines', () => {
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([
+            { start: 0, end: 1, width: 12 }, // 'A'
+            { start: 2, end: 3, width: 12 }, // 'B'
+        ]);
+        font.drawWrapped(ctx, 'A\nB', layout, 2, 100, 100, 0, 0);
+
+        const dy1 = ctx.drawImage.mock.calls[0][6];
+        const dy2 = ctx.drawImage.mock.calls[1][6];
+        expect(dy2 - dy1).toBe(20); // lineHeight=20
+    });
+
+    it('left-aligns by default (cursorX == x)', () => {
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 1, width: 12 }]);
+        font.drawWrapped(ctx, 'A', layout, 1, 100, 100, 7, 0);
+
+        // glyph dx = cursorX + xoffset = 7 + 0 = 7
+        expect(ctx.drawImage.mock.calls[0][5]).toBe(7);
+    });
+
+    it('center-aligns lines independently using lineWidth from the buffer', () => {
+        // Box width 100, line width 12, scale=1 → cursorX = x + (100 - 12)/2 = 44.
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 1, width: 12 }]);
+        font.drawWrapped(ctx, 'A', layout, 1, 100, 100, 0, 0, 1, 1, 0);
+        expect(ctx.drawImage.mock.calls[0][5]).toBe(44);
+    });
+
+    it('right-aligns lines using lineWidth from the buffer', () => {
+        // cursorX = x + (boxWidth - lineWidth) = 0 + (100 - 12) = 88.
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 1, width: 12 }]);
+        font.drawWrapped(ctx, 'A', layout, 1, 100, 100, 0, 0, 1, 2, 0);
+        expect(ctx.drawImage.mock.calls[0][5]).toBe(88);
+    });
+
+    it('scales lineWidth correctly for h-alignment', () => {
+        // scale=2, lineWidth-at-scale-1 = 12 → effective line width = 24.
+        // Center: cursorX = (100 - 24)/2 = 38.
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 1, width: 12 }]);
+        font.drawWrapped(ctx, 'A', layout, 1, 100, 100, 0, 0, 2, 1, 0);
+        expect(ctx.drawImage.mock.calls[0][5]).toBe(38);
+    });
+
+    it('pixel-snaps cursorX per line', () => {
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([
+            { start: 0, end: 1, width: 12 },
+            { start: 2, end: 3, width: 12 },
+        ]);
+        // x=7.3 — would propagate fractional dx without rounding.
+        font.drawWrapped(ctx, 'A\nB', layout, 2, 100, 100, 7.3, 0);
+
+        expect(Number.isInteger(ctx.drawImage.mock.calls[0][5])).toBe(true);
+        expect(Number.isInteger(ctx.drawImage.mock.calls[1][5])).toBe(true);
+    });
+
+    it('appends three dots when a line has flags=1 (ellipsis)', () => {
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 3, width: 36, flags: 1 }]);
+        // 3 glyphs (ABC) + 3 dots = 6 draws.
+        font.drawWrapped(ctx, 'ABC', layout, 1, 100, 100, 0, 0);
+        expect(ctx.drawImage).toHaveBeenCalledTimes(6);
+
+        // Last 3 draws should all be the '.' glyph — atlas sx=60 in makeWrapFont.
+        const calls = ctx.drawImage.mock.calls;
+        expect(calls[3][1]).toBe(60);
+        expect(calls[4][1]).toBe(60);
+        expect(calls[5][1]).toBe(60);
+    });
+
+    it('does not draw ellipsis dots when flags=0', () => {
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 3, width: 36, flags: 0 }]);
+        font.drawWrapped(ctx, 'ABC', layout, 1, 100, 100, 0, 0);
+        expect(ctx.drawImage).toHaveBeenCalledTimes(3);
+    });
+
+    it('honors the lineCount argument (ignores trailing buffer entries)', () => {
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([
+            { start: 0, end: 1, width: 12 }, // 'A'
+            { start: 2, end: 3, width: 12 }, // 'B'
+            { start: 4, end: 5, width: 12 }, // 'C' — should be ignored
+        ]);
+        font.drawWrapped(ctx, 'A\nB\nC', layout, 2, 100, 100, 0, 0);
+        expect(ctx.drawImage).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses each line\'s own range from the text buffer (no string splitting)', () => {
+        // Encode a substring per line out of one shared text. Confirms drawWrapped is
+        // indexing into `text` via startIdx/endIdx rather than relying on \n splits.
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const text = 'ABC';
+        const layout = makeLayout([
+            { start: 0, end: 1, width: 12 }, // 'A'
+            { start: 2, end: 3, width: 12 }, // 'C'
+        ]);
+        font.drawWrapped(ctx, text, layout, 2, 100, 100, 0, 0);
+
+        const calls = ctx.drawImage.mock.calls;
+        expect(calls).toHaveLength(2);
+        expect(calls[0][1]).toBe(0);  // 'A' at atlas x=0
+        expect(calls[1][1]).toBe(20); // 'C' at atlas x=20
+    });
+
+    it('applies scale to the baseline math (lineHeight * scale between lines)', () => {
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([
+            { start: 0, end: 1, width: 12 },
+            { start: 2, end: 3, width: 12 },
+        ]);
+        font.drawWrapped(ctx, 'A\nB', layout, 2, 100, 100, 0, 0, 2);
+
+        const dy1 = ctx.drawImage.mock.calls[0][6];
+        const dy2 = ctx.drawImage.mock.calls[1][6];
+        // lineHeight=20, scale=2 → 40 between lines.
+        expect(dy2 - dy1).toBe(40);
+    });
+
+    it('does not allocate per-call (no ad-hoc Float32Array or array creation)', () => {
+        // Sanity guard: a layout buffer reused across many frames should not be
+        // mutated by drawWrapped, and the renderer should not stash references that
+        // would prevent the buffer from being reused.
+        const font = new BitmapFont({}, makeWrapFont());
+        const ctx = { drawImage: vi.fn() };
+        const layout = makeLayout([{ start: 0, end: 3, width: 36 }]);
+        const snapshot = Array.from(layout);
+
+        for (let i = 0; i < 10; i++) font.drawWrapped(ctx, 'ABC', layout, 1, 100, 100, 0, 0);
+
+        expect(Array.from(layout)).toEqual(snapshot);
     });
 });

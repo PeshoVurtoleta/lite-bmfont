@@ -1,5 +1,5 @@
 # @zakkster/lite-bmfont
-> Zero-GC bitmap font canvas renderer. O(1) kerning via 64K Int16 LUT, multi-line alignment without string splitting, and zero-alloc numeric HUD output.
+> Zero-GC bitmap font canvas renderer. O(1) kerning via 64K Int16 LUT, multi-line alignment, zero-alloc numeric HUD output, and pre-laid-out wrapped text with H/V alignment + ellipsis.
 
 ## Install
 npm i @zakkster/lite-bmfont
@@ -8,8 +8,8 @@ npm i @zakkster/lite-bmfont
 import { BitmapFont } from '@zakkster/lite-bmfont';
 
 ## Key Facts
-- Zero GC: All state in TypedArrays, no per-frame allocation
-- Size: < 1.5 KB minified
+- Zero GC: all state in TypedArrays, no per-frame allocation on any draw method
+- Size: ~1.3 KB gzipped
 - Dependencies: none
 - ESM only (type: module)
 - ASCII 0–255 only (Unicode intentionally excluded for performance)
@@ -22,12 +22,13 @@ new BitmapFont(imageAtlas, fontJson)
   - fontJson:   standard BMFont JSON (common, chars, optional kernings)
 
 ### Methods
+
 measure(text, scale = 1) -> number
-  Pixel width of `text` at `scale`.
+  Kerning-aware pixel width of `text` at `scale`.
 
 draw(ctx, text, x, y, scale = 1, align = 0) -> void
-  Multi-line text renderer. align: 0=left, 1=center, 2=right.
-  Pixel-snapped baseline. Newlines (\n) advance by lineHeight.
+  Multi-line `\n`-aware renderer. `align`: 0=left, 1=center, 2=right.
+  Pixel-snapped baseline. `x`/`y` is the BASELINE anchor of the first line.
 
 drawFast(ctx, value, x, y, scale = 1, align = 0) -> void
   Zero-alloc number renderer with one decimal place (e.g. 33.4).
@@ -37,7 +38,65 @@ drawFast(ctx, value, x, y, scale = 1, align = 0) -> void
   - Atlas must contain glyphs for '0'-'9' (48-57) and '.' (46)
   - Built for per-frame HUDs (FPS, score, timer) — does NOT allocate a string
 
+drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale = 1, align = 0, vAlign = 0) -> void
+  Renders pre-laid-out wrapped text into a bounding box, with horizontal and vertical
+  alignment plus optional per-line "..." ellipsis flag. Zero-alloc — layout is consumed
+  from a caller-owned Float32Array.
+  - `x`/`y` is the BOX TOP-LEFT corner (not a baseline).
+  - `align`:  0=left,   1=center, 2=right
+  - `vAlign`: 0=top,    1=middle, 2=bottom
+  - `layoutBuffer`: Float32Array, `lineCount * 4` floats:
+        [0] startIdx   — start char index into `text` (inclusive)
+        [1] endIdx     — end char index into `text` (exclusive)
+        [2] lineWidth  — pixel width of this line AT scale=1 (used for alignment)
+        [3] flags      — 0 = normal; 1 = append "..." ellipsis after content
+  - Surplus capacity in `layoutBuffer` is ignored — reuse one buffer across renders.
+
 destroy() -> void
-  Releases atlas reference and typed arrays (glyphs, kerning, internal scratch).
+  Releases the atlas reference and typed arrays (glyphs, kerning, internal scratch).
+
+## drawWrapped layout helper (recipe)
+
+The package does not ship a layout function — strategy is application-specific. A minimal
+greedy word-wrap fits in ~30 lines and uses the same Int16 arrays the renderer reads:
+
+```js
+function layoutWrap(font, text, maxWidth, out) {
+    let line = 0, i = 0, len = text.length;
+    while (i < len) {
+        let lineStart = i, lastBreak = -1, lastBreakWidth = 0, width = 0, prevId = -1;
+        while (i < len) {
+            const id = text.charCodeAt(i);
+            if (id === 10) break;
+            if (id === 32) { lastBreak = i; lastBreakWidth = width; }
+            const advance = font.glyphs[id * 7 + 6];
+            const kern = prevId === -1 ? 0 : font.kerning[(prevId << 8) | id];
+            const nextWidth = width + kern + advance;
+            if (nextWidth > maxWidth && i > lineStart) {
+                if (lastBreak !== -1) { i = lastBreak + 1; width = lastBreakWidth; }
+                break;
+            }
+            width = nextWidth; prevId = id; i++;
+        }
+        const lineEnd = (lastBreak !== -1 && i === lastBreak + 1) ? lastBreak : i;
+        const o = line * 4;
+        out[o] = lineStart; out[o + 1] = lineEnd; out[o + 2] = width; out[o + 3] = 0;
+        line++;
+        if (i < len && text.charCodeAt(i) === 10) i++;
+    }
+    return line;
+}
+
+const layout = new Float32Array(64);                          // allocate once
+const n = layoutWrap(font, 'Hello world…', 200, layout);
+font.drawWrapped(ctx, 'Hello world…', layout, n, 200, 100, 10, 10, 1, 1, 1); // center/middle
+```
+
+## Exported types (TypeScript)
+- Align       = 0 | 1 | 2
+- VAlign      = 0 | 1 | 2
+- BMFontJson  = { common: { lineHeight, base }, chars: BMFontChar[], kernings?: BMFontKerning[] }
+- BMFontChar  = { id, x, y, width, height, xoffset, yoffset, xadvance }
+- BMFontKerning = { first, second, amount }
 
 See source file BitmapFont.js for full JSDoc API documentation.
