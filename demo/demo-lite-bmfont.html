@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>@zakkster/lite-bmfont — Zero-GC Arcade Text</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Outfit:wght@300;500;800&display=swap"
+          rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box
+        }
+
+        :root {
+            --bg: #050508;
+            --panel: #0a0a10;
+            --chrome: #111118;
+            --green: #39ff85;
+            --amber: #ffb830;
+            --pink: #ff4090;
+            --cyan: #40e8ff;
+            --dim: #4a4a66;
+            --text: #e00527;
+            --glow-g: 0 0 20px rgba(57, 255, 133, .15);
+            --glow-a: 0 0 20px rgba(255, 184, 48, .15);
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Outfit', sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column
+        }
+
+        /* ── TOP BAR ── */
+        .topbar {
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            background: var(--chrome);
+            border-bottom: 1px solid rgba(255, 255, 255, .04);
+            flex-shrink: 0;
+            z-index: 50;
+        }
+
+        .topbar h1 {
+            font-size: 14px;
+            font-weight: 800;
+            letter-spacing: .5px;
+            color: var(--green)
+        }
+
+        .topbar h1 span {
+            color: var(--dim);
+            font-weight: 300
+        }
+
+        .topbar-stats {
+            display: flex;
+            gap: 24px;
+            font-family: 'Fira Code', monospace;
+            font-size: 11px;
+            color: var(--dim)
+        }
+
+        .topbar-stats .v {
+            font-weight: 600
+        }
+
+        .topbar-stats .v.g {
+            color: var(--green)
+        }
+
+        .topbar-stats .v.a {
+            color: var(--amber)
+        }
+
+        .topbar-stats .v.p {
+            color: var(--pink)
+        }
+
+        /* ── SCENE TABS ── */
+        .tabs {
+            display: flex;
+            gap: 0;
+            background: var(--panel);
+            border-bottom: 1px solid rgba(255, 255, 255, .04);
+            flex-shrink: 0;
+            overflow-x: auto;
+        }
+
+        .tab {
+            padding: 10px 18px;
+            font-family: 'Fira Code', monospace;
+            font-size: 11px;
+            color: var(--dim);
+            cursor: pointer;
+            border: none;
+            background: none;
+            border-bottom: 2px solid transparent;
+            transition: all .2s;
+            white-space: nowrap;
+        }
+
+        .tab:hover {
+            color: var(--text)
+        }
+
+        .tab.active {
+            color: var(--green);
+            border-bottom-color: var(--green)
+        }
+
+        /* ── MAIN CANVAS AREA ── */
+        .stage {
+            flex: 1;
+            position: relative;
+            overflow: hidden
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            cursor: crosshair
+        }
+
+        /* CRT overlay effects */
+        .crt {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 5;
+            background: repeating-linear-gradient(0deg, rgba(0, 0, 0, .06) 0px, rgba(0, 0, 0, .06) 1px, transparent 1px, transparent 3px);
+        }
+
+        .vignette {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 6;
+            background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, .6) 100%);
+        }
+
+        /* ── BOTTOM GUIDE ── */
+        .guide {
+            height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            background: var(--chrome);
+            border-top: 1px solid rgba(255, 255, 255, .04);
+            flex-shrink: 0;
+        }
+
+        .guide-left {
+            font-family: 'Fira Code', monospace;
+            font-size: 10px;
+            color: var(--dim);
+            line-height: 1.5
+        }
+
+        .guide-left kbd {
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, .06);
+            border: 1px solid rgba(255, 255, 255, .08);
+            color: var(--text);
+            font-size: 10px;
+            margin: 0 2px;
+        }
+
+        .guide-right {
+            font-size: 11px;
+            color: var(--dim)
+        }
+
+        .guide-right a {
+            color: var(--green);
+            text-decoration: none
+        }
+
+        .guide-right code {
+            font-family: 'Fira Code', monospace;
+            font-size: 10px;
+            background: rgba(57, 255, 133, .08);
+            padding: 2px 8px;
+            border-radius: 4px;
+            color: var(--green)
+        }
+
+        @media (max-width: 700px) {
+            .guide {
+                flex-direction: column;
+                height: auto;
+                padding: 8px 12px;
+                gap: 4px
+            }
+
+            .tabs {
+                flex-wrap: wrap
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="topbar">
+    <h1>lite-bmfont <span>zero-gc bitmap text</span></h1>
+    <div class="topbar-stats">
+        <span>FPS <span class="v g" id="fps">60</span></span>
+        <span>DRAWS <span class="v a" id="draws">0</span></span>
+        <span>STRINGS <span class="v p" id="strings">0</span></span>
+        <span>GC <span class="v g" id="gc">0 allocs</span></span>
+    </div>
+</div>
+
+<div class="tabs" id="tabs">
+    <button class="tab active" data-scene="damage">Damage Numbers</button>
+    <button class="tab" data-scene="wave">Wave Text</button>
+    <button class="tab" data-scene="score">Score Counter</button>
+    <button class="tab" data-scene="typewriter">Typewriter</button>
+    <button class="tab" data-scene="trail">Mouse Trail</button>
+    <button class="tab" data-scene="stress">Stress Test</button>
+</div>
+
+<div class="stage">
+    <canvas id="c"></canvas>
+    <div class="crt"></div>
+    <div class="vignette"></div>
+</div>
+
+<div class="guide">
+    <div class="guide-left">
+        <kbd>Click</kbd> canvas to interact &nbsp;·&nbsp; <kbd>1-6</kbd> switch scenes &nbsp;·&nbsp; All text rendered
+        via <kbd>font.draw()</kbd> — zero GC
+    </div>
+    <div class="guide-right">
+        <code>npm i @zakkster/lite-bmfont</code>
+    </div>
+</div>
+
+<script type="module">
+    // ═══════════════════════════════════════════════════════════
+    //  NPM IMPORTS
+    // ═══════════════════════════════════════════════════════════
+    import {BitmapFont} from 'https://cdn.jsdelivr.net/npm/@zakkster/lite-bmfont/+esm';
+    import {Viewport} from 'https://cdn.jsdelivr.net/npm/lite-viewport/+esm';
+
+    // ═══════════════════════════════════════════════════════════
+    //  ATLAS GENERATOR — creates a full ASCII mock BMFont at runtime
+    // ═══════════════════════════════════════════════════════════
+    function generateAtlas(size, fontCSS, fillColor, shadowColor) {
+        const chars = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
+        const c = document.createElement('canvas');
+        const cols = 16, cellW = size * 1.2 | 0, cellH = size * 1.4 | 0;
+        const rows = Math.ceil(chars.length / cols);
+        c.width = cols * cellW;
+        c.height = rows * cellH;
+        const x = c.getContext('2d');
+        x.textBaseline = 'top';
+        x.font = fontCSS;
+
+        const json = {common: {lineHeight: cellH, base: size}, chars: [], kernings: []};
+
+        for (let i = 0; i < chars.length; i++) {
+            const ch = chars[i];
+            const col = i % cols, row = (i / cols) | 0;
+            const px = col * cellW + 2, py = row * cellH + 2;
+            const m = x.measureText(ch);
+            const w = Math.ceil(m.width) + 4;
+
+            if (shadowColor) {
+                x.shadowColor = shadowColor;
+                x.shadowBlur = 3;
+                x.shadowOffsetX = 1;
+                x.shadowOffsetY = 2;
+            }
+            x.fillStyle = fillColor;
+            x.fillText(ch, px, py);
+            x.shadowBlur = 0;
+
+            json.chars.push({
+                id: ch.charCodeAt(0),
+                x: px,
+                y: py,
+                width: w,
+                height: cellH - 4,
+                xoffset: 0,
+                yoffset: 0,
+                xadvance: w - 2
+            });
+        }
+        return {atlas: c, json};
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  FONT BANK — multiple styled fonts from one generator
+    // ═══════════════════════════════════════════════════════════
+    const fontMain = (() => {
+        const {atlas, json} = generateAtlas(36, "bold 36px 'Fira Code', monospace", '#39ff85', '#001a0a');
+        return new BitmapFont(atlas, json);
+    })();
+    const fontAccent = (() => {
+        const {atlas, json} = generateAtlas(28, "800 28px 'Outfit', sans-serif", '#ffb830', '#1a0c00');
+        return new BitmapFont(atlas, json);
+    })();
+    const fontSmall = (() => {
+        const {atlas, json} = generateAtlas(18, "500 18px 'Outfit', sans-serif", '#c8c8e0', '#000');
+        return new BitmapFont(atlas, json);
+    })();
+    const fontPink = (() => {
+        const {atlas, json} = generateAtlas(48, "bold 48px 'Fira Code', monospace", '#ff4090', '#200010');
+        return new BitmapFont(atlas, json);
+    })();
+
+    // ═══════════════════════════════════════════════════════════
+    //  VIEWPORT + CANVAS
+    // ═══════════════════════════════════════════════════════════
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    let W = 0, H = 0;
+    const viewport = new Viewport({
+        canvas, onResize(w, h, dpr) {
+            W = w;
+            H = h;
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    //  SHARED SoA PARTICLE POOL (damage numbers, trails, etc.)
+    // ═══════════════════════════════════════════════════════════
+    const MAX = 2000;
+    const px = new Float32Array(MAX), py = new Float32Array(MAX);
+    const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+    const life = new Float32Array(MAX), maxLife = new Float32Array(MAX);
+    const scale = new Float32Array(MAX);
+    const textSlot = new Array(MAX).fill('');
+    const fontSlot = new Uint8Array(MAX); // 0=main 1=accent 2=small 3=pink
+    let count = 0;
+
+    function spawn(x, y, _vx, _vy, txt, sc, ml, fnt) {
+        if (count >= MAX) return;
+        const i = count++;
+        px[i] = x;
+        py[i] = y;
+        vx[i] = _vx;
+        vy[i] = _vy;
+        life[i] = 1;
+        maxLife[i] = ml;
+        scale[i] = sc;
+        textSlot[i] = txt;
+        fontSlot[i] = fnt;
+    }
+
+    function kill(i) {
+        count--;
+        px[i] = px[count];
+        py[i] = py[count];
+        vx[i] = vx[count];
+        vy[i] = vy[count];
+        life[i] = life[count];
+        maxLife[i] = maxLife[count];
+        scale[i] = scale[count];
+        textSlot[i] = textSlot[count];
+        fontSlot[i] = fontSlot[count];
+    }
+
+    const fonts = [fontMain, fontAccent, fontSmall, fontPink];
+
+    // ═══════════════════════════════════════════════════════════
+    //  MOUSE STATE
+    // ═══════════════════════════════════════════════════════════
+    let mx = -999, my = -999;
+    canvas.addEventListener('pointermove', e => {
+        const r = canvas.getBoundingClientRect();
+        mx = e.clientX - r.left;
+        my = e.clientY - r.top;
+    });
+    canvas.addEventListener('pointerdown', e => {
+        const r = canvas.getBoundingClientRect();
+        mx = e.clientX - r.left;
+        my = e.clientY - r.top;
+        sceneClick(mx, my);
+    });
+    window.addEventListener('keydown', e => {
+        const n = parseInt(e.key);
+        if (n >= 1 && n <= 6) setScene(['damage', 'wave', 'score', 'typewriter', 'trail', 'stress'][n - 1]);
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    //  SCENES
+    // ═══════════════════════════════════════════════════════════
+    let activeScene = 'damage';
+    let drawCount = 0;
+
+    function setScene(name) {
+        activeScene = name;
+        count = 0;
+        scoreVal = 0;
+        twText = '';
+        twIdx = 0;
+        twTimer = 0;
+        document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.scene === name));
+    }
+
+    document.getElementById('tabs').addEventListener('click', e => {
+        if (e.target.dataset.scene) setScene(e.target.dataset.scene);
+    });
+
+    function sceneClick(x, y) {
+        if (activeScene === 'damage') {
+            spawn(x, y, 0, -200, 'CRITICAL!', 1.6, 1.0, 3);
+            for (let i = 0; i < 12; i++) {
+                const dmg = (Math.random() * 999 | 0).toString();
+                const a = Math.random() * Math.PI * 2;
+                const spd = 80 + Math.random() * 160;
+                spawn(x + (Math.random() - .5) * 30, y + (Math.random() - .5) * 30,
+                    Math.cos(a) * spd, Math.sin(a) * spd - 100, dmg, .5 + Math.random() * .4, .6 + Math.random() * .4, Math.random() > .5 ? 0 : 1);
+            }
+        } else if (activeScene === 'score') {
+            scoreVal += 1000 + (Math.random() * 9000 | 0);
+            spawn(x, y, 0, -60, '+' + (scoreVal > 10000 ? 'COMBO' : (Math.random() * 999 | 0).toString()), 1, .8, 1);
+        } else if (activeScene === 'stress') {
+            for (let i = 0; i < 50; i++) {
+                spawn(x + (Math.random() - .5) * 200, y + (Math.random() - .5) * 200,
+                    (Math.random() - .5) * 300, (Math.random() - .5) * 300 - 100,
+                    (Math.random() * 99 | 0).toString(), .3 + Math.random() * .4, .4 + Math.random() * .3, Math.random() * 4 | 0);
+            }
+        } else if (activeScene === 'trail') {
+            spawn(x, y, (Math.random() - .5) * 40, -30 - Math.random() * 40, '*', .6 + Math.random() * .4, .5, 0);
+        }
+    }
+
+    // Scene-specific state
+    let scoreVal = 0, scoreDisplay = 0;
+    let twText = '', twIdx = 0, twTimer = 0;
+    const twPhrases = [
+        'ZERO GARBAGE COLLECTION.',
+        'EVERY GLYPH FROM A TYPED ARRAY.',
+        'NO STRING.SPLIT() — EVER.',
+        'O(1) KERNING VIA INT16 LUT.',
+        'BITMAP FONT RENDERING AT 60FPS.',
+        'CHARCODEAT() + DRAWIMAGE() = SPEED.',
+    ];
+    let twPhraseIdx = 0;
+
+    // ═══════════════════════════════════════════════════════════
+    //  RENDER LOOP
+    // ═══════════════════════════════════════════════════════════
+    let last = performance.now(), frameCount = 0, fpsTimer = 0, fpsVal = 60;
+
+    function loop(now) {
+        requestAnimationFrame(loop);
+        const dt = Math.min((now - last) / 1000, .1);
+        last = now;
+        drawCount = 0;
+
+        // FPS counter
+        frameCount++;
+        fpsTimer += dt;
+        if (fpsTimer >= .5) {
+            fpsVal = (frameCount / fpsTimer) | 0;
+            frameCount = 0;
+            fpsTimer = 0;
+        }
+
+        // Clear
+        ctx.fillStyle = '#050508';
+        ctx.fillRect(0, 0, W, H);
+
+        // Subtle grid
+        ctx.strokeStyle = 'rgba(57,255,133,0.015)';
+        ctx.lineWidth = 1;
+        const gs = 60;
+        for (let x = gs; x < W; x += gs) {
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, H);
+            ctx.stroke();
+        }
+        for (let y = gs; y < H; y += gs) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(W, y);
+            ctx.stroke();
+        }
+
+        // ── Scene-specific rendering ──
+        if (activeScene === 'damage') renderDamage(dt, now);
+        else if (activeScene === 'wave') renderWave(dt, now);
+        else if (activeScene === 'score') renderScore(dt, now);
+        else if (activeScene === 'typewriter') renderTypewriter(dt, now);
+        else if (activeScene === 'trail') renderTrail(dt, now);
+        else if (activeScene === 'stress') renderStress(dt, now);
+
+        // ── Particles (shared across scenes) ──
+        for (let i = count - 1; i >= 0; i--) {
+            vy[i] += 600 * dt;
+            px[i] += vx[i] * dt;
+            py[i] += vy[i] * dt;
+            life[i] -= dt / maxLife[i];
+            const t = Math.max(0, life[i]);
+
+            let s = scale[i];
+            if (t > .85) s *= 1 + (t - .85) * 5; // pop-in overshoot
+
+            ctx.globalAlpha = t * t; // quadratic fade
+            fonts[fontSlot[i]].draw(ctx, textSlot[i], px[i], py[i], s, 1);
+            drawCount++;
+
+            if (life[i] <= 0) kill(i);
+        }
+        ctx.globalAlpha = 1;
+
+        // HUD
+        document.getElementById('fps').textContent = fpsVal;
+        document.getElementById('draws').textContent = drawCount;
+        document.getElementById('strings').textContent = count;
+        document.getElementById('gc').textContent = '0 allocs';
+    }
+
+    // ── SCENE: Damage Numbers ──
+    function renderDamage(dt, now) {
+        ctx.globalAlpha = .12;
+        fontPink.draw(ctx, 'CLICK TO DEAL DAMAGE', W / 2, H / 2 - 30, .8, 1);
+        fontSmall.draw(ctx, 'every number is zero-gc bitmap text', W / 2, H / 2 + 25, .9, 1);
+        ctx.globalAlpha = 1;
+        drawCount += 2;
+
+        // Auto-spawn ambient misses
+        if (Math.random() < dt * 2) {
+            spawn(W * .2 + Math.random() * W * .6, H * .3 + Math.random() * H * .4,
+                (Math.random() - .5) * 60, -80 - Math.random() * 60, 'MISS', .6, .7, 2);
+        }
+    }
+
+    // ── SCENE: Wave Text ──
+    function renderWave(dt, now) {
+        const msg = 'ZERO-GC BITMAP TEXT';
+        const baseX = W / 2 - fontMain.measure(msg, 1) / 2;
+        for (let i = 0; i < msg.length; i++) {
+            const ch = msg[i];
+            const wave = Math.sin(now * .004 + i * .4) * 18;
+            const hue = (now * .1 + i * 20) % 360;
+            ctx.globalAlpha = .7 + Math.sin(now * .003 + i * .5) * .3;
+            fontMain.draw(ctx, ch, baseX + fontMain.measure(msg.substring(0, i), 1), H / 2 + wave - 20, 1, 0);
+            drawCount++;
+        }
+        ctx.globalAlpha = .25;
+        fontSmall.draw(ctx, 'per-character wave + fade — still zero allocation in draw()', W / 2, H / 2 + 50, .9, 1);
+        ctx.globalAlpha = 1;
+        drawCount++;
+
+        const msg2 = 'OKLCH COLOR CYCLING';
+        const baseX2 = W / 2 - fontAccent.measure(msg2, .8) / 2;
+        for (let i = 0; i < msg2.length; i++) {
+            const ch = msg2[i];
+            const wave2 = Math.cos(now * .003 + i * .35) * 12;
+            ctx.globalAlpha = .5 + Math.sin(now * .005 + i * .7) * .3;
+            fontAccent.draw(ctx, ch, baseX2 + fontAccent.measure(msg2.substring(0, i), .8), H / 2 + 80 + wave2, .8, 0);
+            drawCount++;
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    // ── SCENE: Score Counter ──
+    function renderScore(dt, now) {
+        scoreDisplay += (scoreVal - scoreDisplay) * dt * 8;
+        const display = Math.round(scoreDisplay).toString().padStart(8, '0');
+
+        fontPink.draw(ctx, display, W / 2, H / 2 - 40, 1.4, 1);
+        drawCount++;
+
+        ctx.globalAlpha = .3;
+        fontSmall.draw(ctx, 'SCORE', W / 2, H / 2 - 80, 1, 1);
+        fontSmall.draw(ctx, 'click to add points — font.draw() with padStart, zero alloc', W / 2, H / 2 + 30, .8, 1);
+        ctx.globalAlpha = 1;
+        drawCount += 2;
+
+        // Decorative orbiting text
+        for (let i = 0; i < 6; i++) {
+            const a = now * .001 + i * Math.PI / 3;
+            const r = 140 + Math.sin(now * .002 + i) * 20;
+            ctx.globalAlpha = .15;
+            fontSmall.draw(ctx, ['COMBO', 'x2', 'BONUS', 'HIT', 'STREAK', 'MAX'][i], W / 2 + Math.cos(a) * r, H / 2 + Math.sin(a) * r * .5, .7, 1);
+            drawCount++;
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    // ── SCENE: Typewriter ──
+    function renderTypewriter(dt, now) {
+        if (twText === '' || twIdx >= twText.length + 30) {
+            twText = twPhrases[twPhraseIdx % twPhrases.length];
+            twPhraseIdx++;
+            twIdx = 0;
+            twTimer = 0;
+        }
+        twTimer += dt;
+        const charsPerSec = 24;
+        twIdx = Math.min(twText.length + 30, (twTimer * charsPerSec) | 0);
+        const visible = twText.substring(0, Math.min(twIdx, twText.length));
+
+        fontMain.draw(ctx, visible, 40, H / 2 - 10, .7, 0);
+        drawCount++;
+
+        // Blinking cursor
+        if (twIdx <= twText.length && (now * .006 | 0) % 2 === 0) {
+            const cursorX = 40 + fontMain.measure(visible, .7);
+            ctx.fillStyle = '#39ff85';
+            ctx.fillRect(cursorX, H / 2 - 10, 3, 28);
+        }
+
+        ctx.globalAlpha = .15;
+        fontSmall.draw(ctx, '> rendering char-by-char — zero string allocation', 40, H / 2 + 40, .8, 0);
+        ctx.globalAlpha = 1;
+        drawCount++;
+    }
+
+    // ── SCENE: Mouse Trail ──
+    function renderTrail(dt, now) {
+        ctx.globalAlpha = .1;
+        fontMain.draw(ctx, 'MOVE YOUR MOUSE', W / 2, H / 2 - 20, 1, 1);
+        fontSmall.draw(ctx, 'each character spawned as a zero-gc particle', W / 2, H / 2 + 30, .8, 1);
+        ctx.globalAlpha = 1;
+        drawCount += 2;
+
+        // Spawn text particles along mouse path
+        if (mx > 0 && my > 0 && Math.random() < dt * 40) {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            const ch = chars[Math.random() * chars.length | 0];
+            spawn(mx + (Math.random() - .5) * 20, my + (Math.random() - .5) * 20,
+                (Math.random() - .5) * 80, -40 - Math.random() * 60, ch, .4 + Math.random() * .5, .6 + Math.random() * .4, Math.random() > .6 ? 1 : 0);
+        }
+    }
+
+    // ── SCENE: Stress Test ──
+    function renderStress(dt, now) {
+        ctx.globalAlpha = .2;
+        fontMain.draw(ctx, count + ' LIVE STRINGS', W / 2, 40, .7, 1);
+        fontSmall.draw(ctx, 'click to spawn 50 — push it to 2000', W / 2, 75, .7, 1);
+        ctx.globalAlpha = 1;
+        drawCount += 2;
+
+        // Auto-spawn
+        if (count < 300 && Math.random() < dt * 30) {
+            spawn(Math.random() * W, Math.random() * H * .3 + H * .2,
+                (Math.random() - .5) * 200, Math.random() * 100 - 150,
+                (Math.random() * 999 | 0).toString(), .2 + Math.random() * .4, .5 + Math.random() * .5, Math.random() * 4 | 0);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BOOT
+    // ═══════════════════════════════════════════════════════════
+    requestAnimationFrame(loop);
+</script>
+</body>
+</html>

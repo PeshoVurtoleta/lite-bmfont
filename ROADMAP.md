@@ -1,0 +1,1958 @@
+# lite-bmfont -- enriched roadmap
+
+Ten BRIEF sessions for one package, plus a torture-suite spec built around a
+recording Canvas2D context. Supersedes `ROADMAP.md` (four additive feature
+sessions, no harness, no findings).
+
+**Why it grew.** The old roadmap assumed lite-bmfont was small, correct and
+finished, and that the remaining work was four additive features with a named
+consumer. The features are real and they survive below. The premise did not.
+I pulled the package and ran it. Eighteen findings are listed in section 2 and
+**every one of them was reproduced** -- three of them are silent corruption and
+one of them is an unkillable infinite loop inside a per-frame render call.
+
+| Axis | State today |
+| --- | --- |
+| Version | `1.2.0`, published, installable right now |
+| Source | 365 lines, one class, four public methods, no `VERSION` |
+| Tests | 40 `it()` blocks under **vitest, which is not installed** -- `npm test` cannot run |
+| Gate | none: no torture, no `lite-gc-profiler`, no `lite-leak`, no coverage floor |
+| Docs | README carries an inline changelog; no `CHANGELOG.md`, no `LICENSE` |
+| Claim | "zero allocation" asserted in seven places, proven in zero |
+
+The package is in the state lite-aabb and lite-bvh were in before their A0/B0:
+plausible source, no executable proof, and a set of bugs that only running the
+code can see. None of the sessions below are padding. Each one is anchored to a
+finding ID, and the four inherited feature sessions keep their original
+triggering signals verbatim -- they are re-ordered behind the harness and the
+correctness work, not replaced by it.
+
+---
+
+## 0. Scope and metadata check (do this first, it is five minutes)
+
+The published scope is **`@zakkster`** (one `s`). Verified in `package.json`:
+`@zakkster/lite-bmfont@1.2.0`. No `@zakksters` anywhere in the tree.
+
+**The repo metadata is NOT cross-wired.** Unlike lite-arena -- whose published
+`homepage`/`repository`/`bugs` all pointed at `lite-scheduler` -- this package's
+three URLs all resolve to `PeshoVurtoleta/lite-bmfont`. Verified, not assumed.
+There is no "Karadjov" in the tree. This section exists because the check was
+run and came back clean; that is worth recording, because the next package might
+not.
+
+What IS wrong is packaging, and all of it is F-16:
+
+| Law requirement | State |
+| --- | --- |
+| `CHANGELOG.md` per package | missing -- README carries an inline changelog instead |
+| `LICENSE` file, MIT (c) Zahary Shinikchiev | missing (`license` field only) |
+| README ships in `files[]` | `files[]` is `[BitmapFont.js, BitmapFont.d.ts, llms.txt]` |
+| `node:test` only | `devDependencies: { vitest }`, `"test": "vitest run"` |
+| `engines` | absent |
+| Torture gate | absent |
+| `prepublishOnly` that can pass | `npm run test && npm run bundle-check` -- the first half exits 127 |
+| Three-place version sync | two places (`package.json`, README changelog heading) |
+
+One extra hygiene item that is not a finding, so it is a task and not a table
+row: `bundle-check` shells out to `npx esbuild` (a network fetch inside
+`prepublishOnly`) and writes `test-bundle.js` into the package root without
+cleaning it up. Pin it or drop it in M0, and make sure the artifact cannot leak
+into a tarball.
+
+---
+
+## 1. The law (holds across every session)
+
+1. **The FORMAT is a two-package contract.** The layout buffer is
+   `Float32Array`, stride 4, `[startIdx, endIdx, lineWidth@scale1, flags]`, and
+   `@zakkster/lite-text-layout` emits exactly that shape. The glyph table is
+   `Int16Array`, stride 7, `[x, y, w, h, xoff, yoff, xadvance]`, and the README
+   publishes `font.glyphs[id * 7 + 6]` as a supported read. Both strides are
+   load-bearing outside this repo. Changing either is a major.
+2. **The advance conservation law is the centrepiece.** For any string, any
+   range and any scale, the cursor walk `draw()` performs, the value
+   `_measureRange()` returns, and an oracle computed from the original BMFont
+   descriptor must agree **exactly**, in double arithmetic, with no tolerance.
+   Section 2 states it formally. It catches F-03, F-04, F-06 and F-12 at once
+   and it is the invariant every tier leans on.
+3. **Fail closed means draw NOTHING, not draw NaN.** For a renderer, a
+   fail-closed door emits zero `drawImage` calls. Today four separate paths
+   emit `drawImage` at `NaN` destination coordinates and call it success. A
+   `NaN` coordinate is not a visual glitch -- it is a silent per-frame lie that
+   costs a full draw call and produces nothing on screen.
+4. **The NaN-safe guard idiom is `!(x <= max)` / `!(x >= min)`.** One comparison
+   rejects NaN, and the polarity cannot be written backwards by accident. F-03
+   is the same predicate written two ways with opposite NaN behaviour; the
+   idiom exists so that cannot happen again. Every door added below uses it, and
+   the reviewer's job is to reject any `x < a || x >= b` that a NaN can slip
+   through.
+5. **The 8-bit ceiling is structural, not a limitation to fix.** The 64K kerning
+   LUT is keyed `(first << 8) | second`. That is why lookup is O(1) and why the
+   package is 1.3 KB. Unicode is a different data structure, not an addition.
+   It stays in the rejection ledger.
+6. **Bytes in a hot body, not instructions.** The hot bodies are exactly four:
+   `draw`, `drawFast`, `drawWrapped` and `_measureRange`. Every guard added
+   below must be shown absent from all four by diff, or measured with
+   `measureOps`/`assertOps` and the number recorded. A per-glyph branch to
+   defend against a per-call mistake is a rejected design. Per-CALL and
+   per-LINE guards are cheap -- a 40-glyph line pays a per-line compare 1/40 as
+   often as a per-glyph one -- and the briefs say which tier a guard lives in.
+7. **The constructor is cold and there is no tradeoff to argue about there.**
+   It runs once per font per process. Anything that can be validated at
+   construction should be, and moving a check from the render loop into the
+   constructor is always the right answer when it is possible (F-12 is fixable
+   entirely this way).
+8. **Every gate must be provably able to fail.** Every torture tier ships a
+   deliberately-broken control, and `BMFONT_TORTURE_BREAK=1` must exit non-zero.
+9. **A measuring harness that allocates is not a measurement.** See section 3;
+   this package's harness has a real design problem and it is solved before any
+   session leans on it.
+
+---
+
+## 2. Verified findings
+
+Reproduced by running `BitmapFont.js` on 2026-08-17. Probe scripts `probe.mjs`,
+`bound.mjs`, `hang.mjs`. Severity: **S1** = silent corruption or hang, **S2** =
+broken documented guarantee, **S3** = hygiene / contract gap.
+
+| ID | Sev | Finding | Reproduction |
+| --- | --- | --- | --- |
+| **F-01** | **S1** | **`drawFast` HANGS FOREVER on any finite value above ~1.797e307.** The top guard rejects `Infinity`, but the very next line computes `value * 10`, which overflows to `Infinity` for `value > MAX_VALUE/10`. Then `intPart = Math.floor(Infinity/10) = Infinity`, and the digit loop is `do { ... temp = Math.floor(temp/10) } while (temp > 0)` -- `Infinity/10` is `Infinity`, so the condition is never false. This is an unkillable infinite loop inside a per-frame render call. In a browser it freezes the tab; there is no stack overflow to catch. The package's headline use case is a per-frame HUD counter fed by caller arithmetic. | `drawFast(ctx, Number.MAX_VALUE, 0, 0)` -> never returns; child process killed by SIGTERM after 6s |
+| **F-02** | **S1** | **`_charScratch` is 24 bytes and `drawFast` overruns it silently from 1e22 up.** Layout is 1 decimal digit + `'.'` + N integer digits, so 22 integer digits exactly fills it. At 1e21 the output is still correct (24 glyphs). At 1e22 `len` keeps incrementing past 24 while the `Uint8Array` writes are discarded; the render loop then reads `buf[i] === undefined`, `glyphs[undefined*7+6]` is `undefined`, and `cursorX` becomes `NaN` for every glyph. It still issues 24 `drawImage` calls per frame, all at `NaN` coordinates. No throw, no warning. | `drawFast(ctx, 1e22, 0, 0)` -> 24 drawImage calls, every dst x is `NaN`; `1e21` -> correct `"1000000000000000000000.0"` |
+| **F-03** | **S1** | **The NaN guard polarity is inverted between the measure path and both draw paths.** `_measureRange` uses `if (id >= 0 && id < 256)` -- `NaN` fails it, fail-closed, correct. `draw()` and `drawWrapped()` use `if (id < 0 \|\| id >= 256) continue;` -- `NaN` fails *that* too, so the glyph is **accepted**. The same predicate, written two ways, with opposite behaviour on the one value that matters. Downstream, `glyphs[NaN*7+6]` is `undefined` and `cursorX += undefined * scale` poisons the cursor for the rest of the line. | `(NaN >= 0 && NaN < 256)` -> `false` (rejects); `(NaN < 0 \|\| NaN >= 256)` -> `false` (accepts) |
+| **F-04** | **S1** | **A `startIdx < 0` in the layout buffer renders an entire line at `NaN`.** `charCodeAt(-1)` is `NaN`, which passes the F-03 guard, so every glyph on that line is drawn at `NaN` x. This is the exact hand-off shape from lite-text-layout (roadmap Session 2 makes it the public contract), and it is the same failure class as lite-bvh B-03: one bad value enters once and the output is silently wrong with no signal. Note a *fractional* start is harmless -- `charCodeAt(0.5)` truncates -- so the bug is not uniform across bad indices, which makes it harder to spot. | `drawWrapped(ctx, 'HELLO', new Float32Array([-1,5,40,0]), 1, ...)` -> 5 drawImage calls, all dst x `NaN`. Same buffer with start `0` -> `0,8,16,24,32` |
+| **F-05** | S2 | **`drawWrapped` never bounds-checks `layoutBuffer` against `lineCount * 4`.** A `lineCount` larger than the buffer holds reads `undefined` for every field; the inner loop `for (i = undefined; i < undefined; ...)` never runs and the line silently vanishes. The doc comment says "Buffer must contain at least `lineCount * 4` floats" and nothing enforces it. Fail-open on unverified state. | `drawWrapped(ctx,'HELLO', new Float32Array(4), 3, ...)` -> no throw, draws only line 0 |
+| **F-06** | S2 | **`measure()` sums across newlines; `draw()` aligns per line.** The two disagree on what "the width of this text" means, and centring a multi-line string using `measure()` -- the obvious thing to do -- is wrong by the width of every other line. | `measure('AA\nAA')` -> `32`; the longest line is `16`. `measure('A\nAAAAAA')` -> `56`; longest line is `48` |
+| **F-07** | S2 | **Only the first line is pixel-snapped in Y.** `draw()` documents "Pixel-snapped baseline for crisp pixel fonts" and does `cursorY = Math.round(y)` once, then accumulates `cursorY += this.lineHeight * scale` unrounded. At any fractional `lineHeight * scale` every line after the first lands off-grid, which is precisely the blur the promise exists to prevent. `drawWrapped` has the identical shape. | `draw(ctx,'A\nB\nC',0,0,1.1)` -> dst Y `-13.200000000000001`, `4.4`, `22` |
+| **F-08** | S2 | **`Int16Array` truncation and wrap in the constructor are silent.** Glyph fields are stored into `Int16Array` with no range check: an atlas coordinate of `40000` wraps to `-25536`, and a fractional `xadvance` of `8.6` truncates to `8` -- a 0.6px-per-glyph drift that accumulates across a string. BMFont exporters do emit fractional advances. | `char.x = 40000` -> `glyphs[65*7] === -25536`; `xadvance 8.6` -> `8`, so `measure('AA')` is `16` where exact is `17.2` |
+| **F-09** | S3 | **Kerning keys are checked only on the upper bound.** `if (k.first < 256 && k.second < 256)` admits negatives: `first = -1` computes index `-191` and the write is silently discarded by the typed array; `second = -1` computes index `-1`, same. `k.amount` is also silently truncated (`-1.7` -> `-1`). | `kernings:[{first:-1,second:65,amount:-2}]` -> no write, no error; `amount -1.7` -> stored `-1` |
+| **F-10** | S2 | **The constructor accepts three malformed descriptors and rejects three others with raw `TypeError`s.** `{chars: 7}` constructs a font with zero glyphs (`7.length` is `undefined`, loop never runs) so every `measure` returns 0 forever. `{common:{lineHeight:NaN}}` constructs and every line lands at `NaN` Y. `atlas = null` constructs and `draw()` happily calls `drawImage(null, ...)`. Meanwhile `null`, `{}` and a missing `chars` each throw a raw `TypeError` naming an internal property. Neither half is a policy. | see `probe.mjs` F-10 block |
+| **F-11** | S3 | **`align` / `vAlign` / `scale` are unvalidated.** `align: 3` and `align: -1` both silently render left-aligned. `scale: NaN` issues drawImage calls at `NaN`. `scale: -1` issues them with a negative destination width. | `draw(ctx,'AAAA',100,0,1,3)` -> same x as `align:0`; `scale:NaN` -> 4 calls, dst x `NaN` |
+| **F-12** | S3 | **A glyph absent from the atlas advances by zero, so the next glyph overprints it.** Undocumented; the visible symptom is overlapping text, not a missing character. | `draw(ctx,'A\u00C8A',0,0)` on a font whose glyphs advance 12 (the T1 fixture `JSON_ASCII`) -> dst xs `0,12`; the second `A` should sit at `24` |
+| **F-13** | S3 | **`flags` is strict-compared to `1` through a `Float32Array`.** `flags === 1` misses `1.0000001` (stored as `1.0000001192092896`), and any unknown flag value is silently ignored rather than rejected -- so a layout engine emitting a bitfield gets no ellipsis and no error. | `flags = 1` -> 8 calls; `flags = 1.0000001` -> 5; `flags = 2` -> 5 |
+| **F-14** | S3 | **No `VERSION` export; `BitmapFont.prototype` is not frozen; instance methods are monkey-patchable.** Two-place version sync, not three. | `Object.isFrozen(BitmapFont.prototype)` -> `false`; `'VERSION' in module` -> `false` |
+| **F-15** | S3 | **`npm test` does not run at all.** The script is `vitest run`, `node_modules` is empty, and `vitest` is not installed: `sh: vitest: command not found`. The suite is 40 `it()` blocks in 3 `describe`s that nobody can execute. This also violates the suite Law directly ("`node:test` only"). | `npm test` -> `sh: vitest: command not found` |
+| **F-16** | S3 | **Packaging gaps against the suite Law.** No `CHANGELOG.md`, no `LICENSE` file, no `engines` field, no torture gate, no `prepublishOnly` gate that can pass. `files[]` is `[BitmapFont.js, BitmapFont.d.ts, llms.txt]` -- the Law requires README to ship. The README carries an inline changelog instead of a `CHANGELOG.md`. | `package.json`, `ls` |
+| **F-17** | S2 | **Every "zero allocation" claim in README and llms.txt is unproven.** README asserts it in seven places; there is no `measureAllocs`, no `measureOps`, no gate, and no devDep on `lite-gc-profiler` or `lite-leak`. The claim may well be true -- nothing in the repo can tell. | `grep -n "allocat" README.md llms.txt`; `devDependencies` is `{vitest}` |
+| **F-18** | S3 | **`generateAtlas` is duplicated, as the roadmap's Session 3 predicts.** `demo/demo-lite-bmfont.html:261` defines a 40-line `generateAtlas` and calls it four times; `tripple` needs the same function. | `demo/demo-lite-bmfont.html:261,309,313,317,321` |
+| **F-19** | S3 | **Non-ASCII bytes in shipped `files[]`, violating the Law's ASCII-only rule** (U+00D7 and U+00B5 excepted). `BitmapFont.js` (10 lines, U+2014 em dashes), `BitmapFont.d.ts` (3), `README.md` (46: emoji, U+2192, U+2014, U+2026, en dash), `llms.txt` (11). Docs (`README.md`, `llms.txt`) are de-Unicodeable in any session. No single behaviour fix touches all the affected source lines (the file header at line 1, and the `drawWrapped` doc block at 242-275), so the source de-Unicoding rides M9's hardening pass alongside the F-14 prototype freeze rather than being smeared across the behaviour sessions. | `grep -c -P '[^\x00-\x7F]' BitmapFont.js BitmapFont.d.ts README.md llms.txt` -> `10 / 3 / 46 / 11` |
+| **F-20** | S3 | **`draw()`/`drawFast()` center/right-align math is asserted only by directional inequality**, so an off-by-constant regression in the divisor is invisible to `npm test` and every wired torture tier. `drawWrapped()`'s align tests assert exact pixels (44, 88, 38) and are load-bearing; `draw`'s (`rec.dx[0] < 100`) are not. Closed prospectively by qa's `test/boundary.test.js`; the ported `BitmapFont.test.js` still carries the weak assertions. | scratch-edit `draw()`'s `... / 2` to `... / 3` -> `npm test` passes and `npm run torture` prints `ok`, exit 0 |
+| **F-21** | S3 | **T0 law 4 is vacuous -- the only kerning check in the torture gate never tests kerning (AR-02).** `FONT_KERN` kerns 3 pairs (A-B, B-A, A-A); the corpus is ASCII 33..126, so a random seam is 3/8836 = 0.034%. Under both shipped seeds ZERO eligible seams carry non-zero kerning, so law 4 degenerates to `left + right === full`. Route to the session revising `t0-laws.mjs`/its corpus (M2 owns F-06's T0 update); fix by a seeded corpus planting A/B seams or a dense `FONT_KERN`. | default seed -> eligible 246, seams 0; seed 12345 -> eligible 247, seams 0. Deleting the kern term from `_measureRange` passes `npm run torture` clean |
+
+(The F-12 reproduction string contains one non-ASCII character; it is written
+here as the JS escape `'A\u00C8A'` so this file stays ASCII. The string under
+test is unchanged.)
+
+### F-01 and F-02 are the same bug at two scales
+
+`drawFast` trusts the magnitude of a caller-supplied double, exactly as
+lite-aabb's A-01/A-07 both came down to trusting a float32 ulp. One door at the
+top fixes both, and the digit loop needs a `len < buf.length` bound regardless
+as a structural backstop. The current top guard is three comparisons
+(`value !== value`, `=== Infinity`, `=== -Infinity`); a single range test in the
+NaN-safe idiom does strictly more work in **fewer** bytes. This is the rare fix
+that makes a hot body smaller, which is why M1 is early and cheap.
+
+### F-03 is the single highest-leverage line in the package
+
+One predicate, written twice, with opposite polarity on the one value that
+matters. It is what makes F-04 silent instead of loud. Fixing F-03 does not by
+itself fix F-04's bad index, but it converts the symptom from `NaN` coordinates
+into a skipped glyph -- from silent corruption into visible absence.
+
+### F-04 blocks the range-addressable session
+
+Session M6 promotes `start`/`end` to the public surface. Shipping it over
+F-03/F-04 bakes the poisoning into the lite-text-layout contract, where a
+negative index from a wrap engine becomes a whole line of `NaN` draws in every
+downstream app. Same ordering argument as the blueprint's "A1 before X1,
+always".
+
+### The one law that catches four of these at once
+
+**The advance conservation law.** For any string `S`, any range `[a, b)`, any
+scale `s`, and any font `F`:
+
+```
+walk(draw, S, a, b, s)  ===  F._measureRange(S, a, b, s)  ===  oracle(F.json, S, a, b, s)
+```
+
+where:
+
+- `walk` is recovered from the recording ctx: with `x = 0`, `align = 0` and a
+  test font whose `xoffset` is 0, the recorded destination x of glyph `k` IS
+  `cursor_k`, so
+  `walk = dx[last] + advance(g_last) * s - dx[0]`.
+- `oracle` sums `(xadvance + kerning)` straight out of the **original BMFont
+  JSON**, in doubles, never touching the `Int16Array` store, with an explicit
+  documented value for a character that has no descriptor entry.
+
+Stated as three-way equality rather than two-way, because a two-way check
+(`draw` vs `_measureRange`) is exactly the check that would pass today on F-12:
+both sides agree that a missing glyph advances 0, and both are wrong together.
+The oracle is the independent witness. Consequences:
+
+- **F-03**: a NaN id accepted into the walk makes `dx` NaN; NaN equals nothing,
+  so the law fails immediately.
+- **F-04**: `startIdx = -1` makes every `dx` NaN; same failure.
+- **F-06**: apply the law per line and to the whole string, and the newline
+  disagreement is the residual -- `measure('AA\nAA')` is 32 while the two line
+  walks are 16 and 16.
+- **F-12**: the oracle carries the decided missing-glyph policy; the
+  implementation must match it, so "advance 0" becomes a pinned contract or a
+  failing test, never an accident.
+- **F-08** falls out as a bonus: `oracle` reads the float JSON, `_measureRange`
+  reads the truncated Int16 store, so the residual between them IS the
+  truncation drift -- 1.2 px on `measure('AA')` with `xadvance: 8.6`. The law
+  measures the bug instead of tolerating it.
+
+The law is O(glyphs) and belongs in T0 and T5, never in a hot path. Make it the
+centrepiece of M2 the way the free-list invariant was the centrepiece of B1.
+
+---
+
+## 3. The torture suite (`test/torture.mjs`) -- spec
+
+One harness, ten tiers, built once in M0 and extended by every later session.
+The DONE-WHEN of every session below is a single command:
+
+```
+node --expose-gc test/torture.mjs     -> prints exactly "ok", exit 0
+npm run torture
+```
+
+### Layout
+
+```
+test/
+  BitmapFont.test.js       # the 40 ported node:test blocks
+  torture.mjs              # entry: tiers in order, prints exactly "ok", exit 0/1
+  torture/
+    harness.mjs            # recording ctx, scratch pool, zero-alloc asserts, PRNG, gate wrappers
+    t0-laws.mjs            # the advance conservation law + metric metamorphics
+    t1-degenerate.mjs      # the simple nasty values, crossed with every entry point
+    t2-layout.mjs          # the layout-buffer abuse matrix (drawWrapped contract)
+    t3-descriptor.mjs      # the malformed-BMFont-JSON matrix (constructor door)
+    t4-numeric.mjs         # drawFast digit oracle across a magnitude sweep
+    t5-fuzz.mjs            # differential fuzz vs an allocating reference renderer
+    t6-alloc.mjs           # the zero-alloc gate (measureOps + measureAllocs)
+    t7-soak.mjs            # 4096 build/destroy cycles + lite-leak retention
+    t8-packaging.mjs       # DOM-free core import, files[], docs-drift guard
+    t9-controls.mjs        # every gate above, deliberately broken, must fail
+```
+
+`test/` **never** enters `package.json` `files[]`. `npm pack --dry-run` proves
+it, and T8 asserts it.
+
+### The harness problem this package has and lite-bvh did not
+
+lite-bvh's hot body calls methods on a tree it owns. lite-bmfont's hot body
+calls `ctx.drawImage` -- a foreign object, nine arguments, up to hundreds of
+times per call. The harness must supply that object, and a naive recording ctx
+allocates **more than the code under test** and will fail your own gate before
+the library gets a chance to.
+
+Three rules, all load-bearing:
+
+1. **One ctx shape in the entire suite, constructed once.** Not "a counting ctx
+   for T6 and a recording ctx for T0". Two hidden classes flowing through
+   `draw()`'s single `ctx.drawImage(...)` call site makes it polymorphic, and
+   the numbers stop describing a real app that only ever passes a
+   `CanvasRenderingContext2D`. Build one object, freeze its shape, use it
+   everywhere.
+2. **`drawImage` takes nine named parameters. Never a rest parameter.**
+   `drawImage(...args)` allocates an array per glyph. That single character is
+   the difference between a zero-alloc harness and a harness that reports
+   megabytes per frame and blames the library. This library only ever uses the
+   9-argument overload, so the recording signature is exact.
+3. **Parallel typed-array columns, reset by index.** Eight `Float64Array(CAP)`
+   columns (`sx, sy, sw, sh, dx, dy, dw, dh`), an `img` identity mismatch
+   counter, and three integers:
+
+   - `calls` -- write index into the columns, reset by `rec.calls = 0` (one
+     integer store). Never `arr.length = 0` on an array-of-arrays; never
+     `push`.
+   - `total` -- monotonic call count for conservation assertions.
+   - `dropped` -- incremented when `calls >= CAP`; every tier asserts
+     `dropped === 0`, so a silently truncated recording can never be read as a
+     clean run.
+
+   `CAP = 4096`. NaN detection is a post-window scan over `[0, calls)`, not a
+   per-call `Number.isNaN` branch: the branch would cost the hot loop bytes to
+   serve the harness, which is exactly the thing this document forbids.
+
+**The atlas is opaque.** `draw` reads nothing out of `this.atlas`; it passes the
+reference to `drawImage`. So `{}` is a valid atlas for every non-visual test,
+and the harness asserts identity (`img === expectedAtlas`) rather than pixels.
+No canvas, no DOM, no jsdom, in any tier.
+
+### Harness rules (inherited from lite-bvh, verbatim in spirit)
+
+- All scratch -- fonts, layout buffers, strings, the ctx -- allocated **once**,
+  outside every loop.
+- `check(cond, msgThunk)` builds its message only on failure. A template literal
+  per iteration is an allocation and would fail T6.
+- Seeded xorshift32 PRNG, `SEED = 0x9e3779b9`, overridable with `TORTURE_SEED`.
+  On failure print the seed and the op index; replay is
+  `TORTURE_SEED=... npm run torture`.
+- lite-gc-profiler is **one measurement at a time**. `measureOps`,
+  `measureAllocs`, `measureFrames` and `measureOpsAsync` share the heap and
+  throw "already in flight" if nested. Tiers run **strictly sequentially**.
+- **Unknown rule keys throw** as of profiler v1.10.0, on every lane including
+  `checkNoGc`. Do not pass a lane a key it does not implement. There is no
+  `maxExternalGrowth`.
+- `maxArrayBuffersGrowth` requires `stabilize: 'deep'` on `measureOps`,
+  otherwise `summary.arrayBuffers.settled` is false and the rule is
+  inconclusive -- never a silent pass.
+- Never resolve an unexpected `inconclusive` with `allowInconclusive`. Triage
+  via the profiler's shipped `INCONCLUSIVE.md`.
+- Read `node_modules/@zakkster/lite-gc-profiler/llms.txt` and
+  `node_modules/@zakkster/lite-leak/llms.txt` for the exact current surface.
+  Do not write `measureOps`/`checkNoGc`/`createLeakTracker` calls from memory.
+
+### Why `maxArrayBuffersGrowth` stays in the gate here
+
+lite-bvh needed it because its query stack reallocated inside the loop.
+lite-bmfont allocates all four of its buffers in the constructor and never
+grows them, so the rule looks decorative. It is not, and the reason is F-02:
+**the obvious fix to the 1e22 overrun is to grow `_charScratch`**, and a fix
+that grows it lazily inside `drawFast` would be invisible to a `heapUsed` gate
+(the profiler documents a measured 152x blind spot on ArrayBuffer backing
+stores) and caught instantly by this rule. The gate is aimed at the wrong fix,
+which is what a gate is for. T6 also pins `_charScratch.byteLength === 24`,
+`glyphs.byteLength === 3584` and `kerning.byteLength === 131072` directly, since
+no heap gate can substitute for an equality.
+
+### Tier T0 -- the advance conservation law and the metric metamorphics
+
+The law from section 2, checked over the whole fuzz corpus, plus:
+
+- `measure(t, s) === measure(t, 1) * s` exactly, for `s` a power of two.
+- `measure('') === 0`; `measure(t) >= 0` for every corpus string with
+  non-negative advances.
+- `_measureRange(t, a, b) + _measureRange(t, b, c)` differs from
+  `_measureRange(t, a, c)` by exactly the kerning pair across the seam --
+  pinned as an equation, not as an inequality. This is the property M6's public
+  range API sells, and it must be true before the API exists.
+- Per-line walks sum to the multi-line `draw` layout; the residual against
+  `measure` is the F-06 number and is asserted to be exactly the sum of the
+  non-longest lines.
+- `drawWrapped` with a one-line layout covering `[0, len)` produces the
+  byte-identical `dx` column that `draw` produces for the same string at the
+  same origin. Two renderers, one law.
+
+### Tier T1 -- degenerate values
+
+Cross every entry point with: `0`, `-0`, `+Infinity`, `-Infinity`, `NaN`,
+`1e21`, `1e22`, `Number.MAX_VALUE`, `Number.MIN_VALUE`, `2**53`, `-1`, `0.5`,
+`-0.5`, `1e10`, and the empty string. For `scale`: `0`, `-1`, `NaN`,
+`Infinity`, `1e-45`. For `align`/`vAlign`: `-1`, `3`, `1.5`, `NaN`. For each,
+pin **the actual answer**, including the ugly ones. "This draws nothing" is a
+valid contract. "This draws 24 quads at NaN" is not, and T1 is where that gets
+decided rather than discovered.
+
+Every case in this tier asserts `dropped === 0` and `nanCount === 0` over the
+recorded columns. `nanCount > 0` is a failure in every tier, always: there is no
+input for which drawing at a NaN coordinate is the right answer.
+
+### Tier T2 -- the layout-buffer abuse matrix (the F-04/F-05 tier)
+
+| Case | Status today |
+| --- | --- |
+| exact `lineCount * 4` buffer | correct |
+| oversized buffer, surplus ignored | correct (documented) |
+| `lineCount === 0` | correct (early return) |
+| `lineCount * 4 > layoutBuffer.length` | **BROKEN (F-05)** -- silent vanish |
+| `startIdx < 0` | **BROKEN (F-04)** -- whole line at NaN |
+| `startIdx` fractional (`0.5`) | survives by truncation -- pin it |
+| `endIdx > text.length` | reads NaN char codes past the end |
+| `endIdx < startIdx` | empty line, no draws -- pin it |
+| `startIdx`/`endIdx` NaN | passes the F-03 guard |
+| `flags` = `0`, `1`, `1.0000001`, `2`, `-1`, `NaN` | **F-13** -- only exact `1` fires |
+| `layoutBuffer` a `Float64Array` or plain `Array` | undecided |
+| `lineCount` fractional / negative / NaN | undecided |
+
+Every row gets a named test and a decided policy: **throw**, **documented
+clamp**, or **documented no-op**. "Silently draws a line at NaN" is not one of
+the three.
+
+### Tier T3 -- the descriptor matrix (the constructor door)
+
+`{chars: 7}`, `{chars: []}`, `chars` missing, `chars` a Set, `common` missing,
+`lineHeight: NaN`, `base: NaN`, `lineHeight: -1`, `atlas: null`,
+`atlas: undefined`, `fontJson: null`, `fontJson: {}`, char with `id: -1`,
+`id: 256`, `id: NaN`, `id: 65.5`, `x: 40000` (the F-08 wrap), `xadvance: 8.6`
+(the F-08 truncation), kerning with `first: -1`, `second: -1`, `amount: -1.7`,
+`amount: 40000`. Each gets a decided policy and a named test. Today three of
+these construct a font that is broken forever and three throw a raw `TypeError`
+naming an internal property; neither half is a policy.
+
+### Tier T4 -- the numeric oracle (the F-01/F-02 tier)
+
+Sweep `value` across `0`, `0.04`, `0.05`, `0.5`, `1.4`, `33.49`, `9.99`,
+`999999.95`, `1e6`, `1e15`, `1e20`, `1e21`, `1e21 + 1`, `1e22`, `1e100`,
+`Number.MAX_VALUE`, `-0`, `-1e21`, `NaN`, `+/-Infinity`, plus 10k seeded random
+magnitudes. For every accepted value, the recorded glyph sequence must equal
+`String(value.toFixed(1))` character for character -- `toFixed` allocates, which
+is fine, because the oracle is allowed to allocate and the library is not. For
+every rejected value, `total` must be exactly 0.
+
+**This tier has a wall-clock assertion**: the whole tier must complete in under
+5 seconds. F-01 is an infinite loop, and the only gate that catches an infinite
+loop is a clock.
+
+### Tier T5 -- differential fuzz against a reference renderer
+
+A deliberately naive, allocating reference: split on `\n`, `slice` each line,
+build an array of `{code, x, y}` per glyph from the descriptor JSON. Run 50k
+seeded random (font, string, scale, align, x, y) tuples through both and compare
+the recorded columns element-wise, exactly. Strings drawn from: ASCII 32-126,
+codes 0-255 including unmapped ones, embedded `\n` runs, leading/trailing
+newlines, `\n\n\n`, lone `\n`, 1-char, 4096-char. Any divergence prints the
+seed, the tuple index and a minimal replay. This is the tier that finds the bug
+nobody thought to name; F-07's per-line Y drift is one it will find on its own.
+
+### Tier T6 -- the zero-alloc gate (the F-17 tier)
+
+```js
+// shape only -- read node_modules/@zakkster/lite-gc-profiler/llms.txt for the
+// exact current surface before writing this.
+const res = measureOps(hot, { ops: OPS, warmup: WARMUP, stabilize: 'deep' });
+const report = checkNoGc(res.summary, {
+  maxMajor: 0,
+  maxPauseMs: 4,
+  maxArrayBuffersGrowth: 0,
+});
+```
+
+Four hot bodies, four windows, run sequentially:
+
+| Window | Body | Ops |
+| --- | --- | --- |
+| A | `draw(ctx, S64, x, y, 1, align)` on a 64-char 3-line string | 200,000 |
+| B | `drawFast(ctx, v, x, y)` with `v` cycling a 256-entry Float64Array | 200,000 |
+| C | `drawWrapped(ctx, S, layout, 8, ...)` over a fixed 8-line layout | 100,000 |
+| D | `measure(S64)` alone | 500,000 |
+
+Plus `measureAllocs(fn, { maxBytesPerCall: 0 })` on each of the four -- the
+retained-bytes lane, which is the literal form of the README's claim and is
+what the seven "zero allocation" sentences actually promise. It requires
+`--expose-gc`, which the torture entry already enforces.
+
+Plus the structural equalities no heap gate can make:
+
+```js
+assert(font._charScratch.byteLength === 24);
+assert(font.glyphs.byteLength === 3584);      // 256 * 7 * 2
+assert(font.kerning.byteLength === 131072);   // 65536 * 2
+assert(ctx.total === (OPS + WARMUP) * GLYPHS_PER_CALL);
+assert(ctx.dropped === 0 && ctx.imgMismatch === 0);
+```
+
+The `ctx.total` equality is exact and it is the cheapest regression detector in
+the suite: a guard that starts skipping a glyph changes an integer.
+
+### Tier T7 -- soak and retention
+
+`leak_cycles: 4096`. Each cycle: construct a `BitmapFont` from a 200-glyph
+descriptor with 500 kerning pairs, draw a 64-char string, `drawFast` a value,
+`drawWrapped` an 8-line layout, then `destroy()`. Each font is 134,680 bytes of
+typed array, so the soak churns roughly 552 MB -- if any of it is retained, this
+tier is where it shows.
+
+After each cycle assert `font.atlas === null`, `font.glyphs === null`,
+`font.kerning === null`, `font._charScratch === null`. A second, independent
+witness runs alongside: a `createLeakTracker({ name: 'bmfont-soak' })` tracks one
+resource per cycle and untracks it at teardown, and **`tracker.size()` must be
+exactly 0 after 4096 cycles**. Two witnesses, because a typed-array leak and a
+JS-object leak must not be able to hide behind each other. Sample
+`process.memoryUsage().heapUsed` at cycle boundaries only, after
+`globalThis.gc()`, and assert growth under 512 KB across the whole run.
+
+### Tier T8 -- packaging and DOM-free conformance
+
+- `npm pack --dry-run` output contains `README.md`, `CHANGELOG.md`, `LICENSE`,
+  `llms.txt`, `BitmapFont.js`, `BitmapFont.d.ts` -- and **no** `test/`, no
+  `demo/`, no `test-bundle.js`.
+- The core imports cleanly with no `document`, no `window`, no `HTMLCanvasElement`
+  in scope. From M7 forward, the same assertion runs against the core while the
+  `/atlas` subpath is present in the package.
+- Version sync: `VERSION` exported from `BitmapFont.js` equals
+  `package.json.version` equals the top heading of `CHANGELOG.md`. Three places,
+  one assertion.
+- Docs-drift guard: every method on `BitmapFont.prototype` appears in
+  `llms.txt` and in `README.md`'s API section, and every method named in
+  `llms.txt` exists on the prototype. Both directions. Cheap, and it makes the
+  next drift fail CI instead of aging quietly.
+
+### Tier T9 -- controls (the gate must be able to fail)
+
+Whole-suite control: `BMFONT_TORTURE_BREAK=1 npm run torture` injects a retained
+allocation into the T6 hot body and **must exit non-zero**. Reaching the end of
+the run with `BREAK` set is itself a failure.
+
+In-process controls, each of which must be detected:
+
+1. An allocating hot loop passes through `runOpsGate` -> must be rejected.
+2. A recording ctx built with a rest parameter -> must fail its own gate
+   (proving rule 2 of the harness design is load-bearing, not folklore).
+3. A hand-corrupted `dx` column containing one NaN -> the NaN scan must find it.
+4. A deliberately wrong oracle (advance off by one on a single glyph) -> the
+   conservation law must diverge. If a wrong oracle passes, the law is
+   decorative.
+5. A font whose `_measureRange` is monkey-patched to sum across a newline ->
+   the F-06 residual assertion must fire.
+6. A `drawFast` variant with the magnitude door removed, driven with `1e22`
+   under a 2-second watchdog -> the T4 clock must trip.
+7. A layout buffer shorter than `lineCount * 4` -> the T2 bounds assertion must
+   fire, and the same-shaped correct buffer must NOT fire, so the check is not
+   vacuous.
+8. A tracker handle deliberately never untracked -> `tracker.size()` must be
+   non-zero, proving the retention witness can see a leak at all.
+
+### Which tier catches which finding
+
+| Finding | Caught by |
+| --- | --- |
+| F-01 | T4 (wall-clock), T1, T9 control 6 |
+| F-02 | T4 (digit oracle), T6 (`_charScratch.byteLength`), T1 |
+| F-03 | T0 (conservation law), T5, T1 |
+| F-04 | T2 (layout matrix), T0, T1 |
+| F-05 | T2, T9 control 7 |
+| F-06 | T0 (three-way law residual), T5 |
+| F-07 | T5 (differential), T0 |
+| F-08 | T3 (descriptor matrix), T0 (oracle vs store residual) |
+| F-09 | T3 |
+| F-10 | T3 |
+| F-11 | T1 (scale/align sweep) |
+| F-12 | T0 (oracle carries the policy), T5 |
+| F-13 | T2 (flags row) |
+| F-14 | T8 (version sync, docs drift) |
+| F-15 | `npm test` exits 0 at all -- M0's first assertion |
+| F-16 | T8 (`npm pack --dry-run`) |
+| F-17 | T6 (`measureOps` + `measureAllocs`), T7 |
+| F-18 | T8 (DOM-free core with the subpath present) |
+
+---
+
+## 4. Session order
+
+```
+M0 --> M1 --> M2 --> M3 --> M4 ------------------------+
+       |      |                                        |
+       |      +--> M5 --> M6 ------------------------+ |
+       |                                             | |
+       +--> M8 --------------------------------------+ |
+                                                     | |
+M0 --> M7 -------------------------------------------+-+--> M9  (2.0.0)
+```
+
+Why each edge exists:
+
+- **M0 blocks everything.** No session below can state a DONE WHEN until
+  `npm test` runs and `npm run torture` exists. Today neither does.
+- **M1 before M2** only because M1 is smaller, higher severity and independent.
+  A hang beats a wrong pixel.
+- **M2 blocks M5.** The glyph quad buffer's `dx`/`dy` **is** the cursor walk.
+  Shipping a public buffer contract over a cursor that a NaN can poison bakes
+  F-03 into a format, which is the most expensive kind of mistake available
+  here.
+- **M2 blocks M6** for the reason stated in section 2: M6 makes `start`/`end`
+  public, and F-04 is the negative-start failure in its exact hand-off shape.
+- **M5 blocks M6** because M6 adds range parameters to `layoutGlyphs`, which M5
+  creates.
+- **M1 blocks M8.** `drawFastInt` is the same digit loop and the same scratch
+  buffer; shipping it before the magnitude door means writing the door twice, or
+  worse, once.
+- **M7 depends only on M0.** The atlas subpath touches no hot body and no core
+  file. It can be done any time after the gate exists, and it is the best
+  session to hand to someone who wants a self-contained win.
+- **M3 and M4 are serial** because M4's `measureWidest` needs to know what a
+  font with a rejected descriptor even is, and both edit the constructor and the
+  doc set.
+- **M9 depends on all of it.** A major bump should collect every breaking change
+  in one release, not dribble them across four.
+
+---
+
+## 5. The briefs
+
+===============================================================================
+# M0 -- lite-bmfont v1.2.1 -- node:test, the recording ctx, the torture skeleton
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.2.1
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak"]
+findings: [F-14, F-15, F-16, F-17]
+blocks: [M1, M2, M3, M4, M5, M6, M7, M8, M9]
+---
+
+# lite-bmfont -- make the suite runnable and the zero-GC claim falsifiable
+
+PURPOSE
+  `npm test` exits 127. Forty test blocks exist and nobody can execute them,
+  under a runner the suite Law forbids. Seven sentences in the README promise
+  zero allocation and nothing in the repo can check one of them. Every session
+  below leans on one command that does not exist yet.
+
+  This session adds no behaviour. It adds the ability to tell whether behaviour
+  is correct.
+
+TASKS
+  - Port test/BitmapFont.test.js from vitest to node:test. All 40 `it()` blocks
+    in all 3 `describe`s survive, with the same assertions.
+    `import { test, describe } from 'node:test'`,
+    `import assert from 'node:assert/strict'`. Replace `vi.fn()` with the
+    harness recording ctx (see below) -- do NOT hand-roll a second mock shape.
+    Set `"test": "node --expose-gc --test test/*.test.js"`.
+    Remove `vitest` from devDependencies entirely.
+  - Add `engines: { node: ">=18" }`. `node --test` does not exist below it and
+    the absent field is a lie by omission.
+  - Add `CHANGELOG.md`, move the README's inline changelog into it, and leave a
+    link behind. Add `LICENSE` -- MIT (c) Zahary Shinikchiev
+    <shinikchiev@yahoo.com>. Never "Karadjov".
+  - Export `VERSION` from BitmapFont.js (F-14). Three-place version sync from
+    this release forward: package.json, VERSION, CHANGELOG heading.
+  - `files[]` becomes
+    [BitmapFont.js, BitmapFont.d.ts, README.md, CHANGELOG.md, llms.txt, LICENSE].
+    `test/` and `demo/` never enter it.
+  - Fix the prepublish gate. `"torture": "node --expose-gc test/torture.mjs"`,
+    `"verify": "npm test && npm run torture"`,
+    `"prepublishOnly": "npm run verify && npm run bundle-check"`. Pin esbuild as
+    a devDep or delete bundle-check -- `npx` inside prepublishOnly is a network
+    fetch in the release path. Make sure `test-bundle.js` cannot reach a tarball.
+  - devDeps `@zakkster/lite-gc-profiler` and `@zakkster/lite-leak`. Read both
+    llms.txt files before writing a single profiler call.
+  - **Build test/torture/harness.mjs.** The recording ctx per section 3: nine
+    named params on `drawImage`, parallel Float64Array columns, `calls`/`total`/
+    `dropped` integers, `imgMismatch` counter, reset by index. One shape, built
+    once, exported once, used by every tier AND by the node:test file. Plus
+    `check()` with a message thunk, seeded xorshift32, `runOpsGate`, and the
+    shared test fonts.
+  - Build test/torture.mjs with T0, T1, T6, T7, T9 wired now. Register T2, T3,
+    T4, T5, T8 as empty tiers that later sessions fill -- an empty registered
+    tier is a visible TODO; an unregistered one is a forgotten one.
+  - Record the 21 findings in CHANGELOG under "Known issues", each with its
+    reproduction, each pointing at the session that fixes it.
+
+HOT PATH
+  Zero diff in BitmapFont.js except the added `VERSION` export. Prove it:
+  `git diff --stat BitmapFont.js` shows only the export line. This session
+  establishes the baseline that every later `assertOps` compares against, so it
+  must not move the thing it is measuring.
+
+ASSERTIONS
+  - `npm test` exits 0 with 40 passing, 0 failing. `grep -r vitest .` returns
+    nothing outside node_modules.
+  - `node --expose-gc test/torture.mjs` prints exactly "ok" and exits 0.
+  - `BMFONT_TORTURE_BREAK=1 npm run torture` exits non-zero.
+  - T6 window A reports `maxMajor: 0`, `maxPauseMs <= 4`,
+    `maxArrayBuffersGrowth: 0` over 200,000 `draw` calls with
+    `stabilize: 'deep'`; `measureAllocs(draw, { maxBytesPerCall: 0 })` passes.
+    If either does NOT pass, that is a finding, not a reason to relax the rule --
+    record it and route it to a session.
+  - T7: 4096 cycles, `tracker.size() === 0`, heap growth < 512 KB.
+  - T9 control 2: a recording ctx written with `drawImage(...args)` fails the
+    alloc gate. If it passes, the harness rules are folklore and the gate is
+    blind.
+  - `npm pack --dry-run` includes README.md, CHANGELOG.md, LICENSE; excludes
+    test/, demo/, test-bundle.js.
+  - `VERSION === '1.2.1'` and equals package.json and the CHANGELOG heading.
+
+NON-GOALS
+  No bug fixes. No API change. No behaviour change of any kind. Every finding
+  gets a reproduction in the CHANGELOG's Known Issues and is fixed later. The
+  point of this session is that the bugs become reproducible on demand by
+  anyone, in one command.
+
+DONE WHEN
+  `npm test` green under node:test; `npm run torture` prints "ok";
+  `BMFONT_TORTURE_BREAK=1 npm run torture` exits non-zero;
+  `npm pack --dry-run` excludes test/
+```
+
+===============================================================================
+# M1 -- lite-bmfont v1.2.2 -- the drawFast magnitude door (the hang)
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.2.2
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler"]
+findings: [F-01, F-02]
+depends_on: [M0]
+blocks: [M8]
+---
+
+# lite-bmfont -- a HUD counter must not be able to freeze the tab
+
+PURPOSE
+  `drawFast(ctx, Number.MAX_VALUE, 0, 0)` never returns. The top guard rejects
+  Infinity, and the very next line computes `value * 10`, which overflows to
+  Infinity for anything above MAX_VALUE/10. `Math.floor(Infinity / 10)` is
+  Infinity, and `while (temp > 0)` never ends. There is no stack to overflow and
+  nothing to catch. In a browser the tab is gone.
+
+  Below that ceiling and above 1e22 the same trust in caller magnitude overruns
+  the 24-byte scratch: `len` keeps incrementing while the Uint8Array discards
+  the writes, the render loop reads `undefined`, and 24 drawImage calls go out
+  per frame at NaN coordinates. Correct at 1e21, silently garbage at 1e22.
+
+  This is the one bug in this document that a user can hit by feeding a HUD an
+  accumulator that ran away -- which is the package's advertised use case.
+
+THE DECISION (record it before coding)
+  What does drawFast do with a magnitude it cannot render?
+  A. **SILENT NO-DRAW above a documented ceiling.** Extend the existing door:
+     the method already documents "NaN / +Infinity / -Infinity -> returns
+     silently". An unrenderable magnitude joins that set. Cost: the door gets
+     CHEAPER, see HOT PATH. Consistent with three behaviours already shipped.
+  B. **CLAMP to the ceiling and draw it.** A HUD shows the ceiling instead of
+     nothing. Cost: same, but it renders a number the caller never had, which
+     is a lie in a package whose job is displaying numbers.
+  C. **THROW.** Loudest, and correct in a library that is not called 60 times a
+     second. In a render loop a throw is a dropped frame and, uncaught, a dead
+     rAF chain -- turning a wrong pixel into a stopped game.
+  D. **WIDEN the scratch to hold every double.** 310+ bytes. Doubles above 1e21
+     have no meaningful decimal tail anyway, so this buys digits that are
+     already noise, and it puts a growth path near a hot buffer that the T6
+     gate exists to forbid.
+  Recommendation: **A**, with the loop bound from D's instinct kept as a
+  structural backstop. Ceiling `DRAWFAST_MAX = 1e21` -- exactly the largest
+  value whose "d.d" form fits 24 bytes (22 integer digits + '.' + 1 decimal),
+  verified: 1e21 renders correctly today, 1e22 does not.
+
+TASKS
+  - Write decisions/0001-drawfast-magnitude.md BEFORE coding, with the measured
+    boundary table (1e20 / 1e21 / 1e21+1 / 1e22 / MAX_VALUE -> glyphs, NaN?,
+    returns?).
+  - Replace the three-comparison top guard with the NaN-safe range idiom:
+    one compound test that rejects NaN, +Infinity, -Infinity and every
+    out-of-range finite magnitude while leaving the documented negative clamp
+    intact. -Infinity must still return, NOT clamp to 0 and draw "0.0" -- that
+    is a documented behaviour and the new door must preserve it exactly.
+  - Export `DRAWFAST_MAX` as a named constant so callers can pre-clamp instead
+    of guessing, and so the test can assert the boundary by name.
+  - Bound the digit loop unconditionally: `while (temp > 0 && len < buf.length)`.
+    The door makes it unreachable; it stays because "unreachable" is a claim
+    about today's code, and a silent 24-call NaN storm is what happens when the
+    claim expires.
+  - Fill torture T4 completely per section 3, including the 5-second wall-clock
+    assertion on the tier.
+  - Update README, llms.txt and BitmapFont.d.ts with the ceiling. The d.ts gets
+    the constant.
+
+HOT PATH
+  `drawFast` is a hot body -- 60 HUD values per frame is the advertised
+  workload. This fix makes it SMALLER: today's door is three comparisons
+  (`value !== value`, `=== Infinity`, `=== -Infinity`); the replacement is a
+  two-comparison range test that subsumes all three and adds the ceiling. That
+  is a rare shape -- a correctness fix that removes bytes from a hot body --
+  and it must be verified rather than assumed. `assertOps` on `drawFast` with a
+  256-value cycle must be within noise of the v1.2.1 baseline or better; record
+  the number in the decision file either way. The loop bound adds one compare
+  per DIGIT (at most 24 per call, typically 3-5) and is measured in the same
+  window.
+
+ASSERTIONS
+  - `drawFast(ctx, Number.MAX_VALUE, 0, 0)` returns in under 1 ms with
+    `ctx.total === 0`. The whole T4 tier completes in under 5 seconds.
+  - `drawFast(ctx, 1e21, 0, 0)` -> exactly 24 drawImage calls spelling
+    "1000000000000000000000.0", every dx finite. `1e21 + 1` and `1e22` -> 0
+    calls.
+  - Sweep 10k seeded magnitudes: every accepted value's glyph sequence equals
+    `value.toFixed(1)` character for character; every rejected value produces
+    `ctx.total === 0`; `nanCount === 0` across the entire tier.
+  - `NaN`, `+Infinity`, `-Infinity`, `-1e21`, `-Number.MAX_VALUE` each -> 0
+    calls (documented behaviour preserved, asserted individually by name).
+  - `-5` still renders "0.0" -- the negative clamp is untouched.
+  - `font._charScratch.byteLength === 24` after the whole T6 window. A "fix"
+    that grows the scratch fails both this and `maxArrayBuffersGrowth: 0`.
+  - `assertOps` on drawFast within noise of v1.2.1 or faster, recorded.
+  - `npm run torture` prints "ok"; T9 control 6 (door removed, 1e22 in, 2s
+    watchdog) exits non-zero.
+
+NON-GOALS
+  No `drawFastInt` (M8). No integer-only path. No thousands separators. No
+  configurable decimal places -- that is a feature request with no consumer,
+  and this session is a door.
+
+DONE WHEN
+  decision recorded with the boundary table; the hang is a named
+  failing-before/passing-after test with a wall-clock bound;
+  drawFast measured no slower than v1.2.1; `npm run torture` prints "ok"
+```
+
+===============================================================================
+# M2 -- lite-bmfont v1.2.3 -- the advance conservation law (the NaN cursor)
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.2.3
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-text-layout"]
+findings: [F-03, F-04, F-05, F-12]
+depends_on: [M0]
+blocks: [M5, M6]
+---
+
+# lite-bmfont -- one predicate, written twice, with opposite NaN behaviour
+
+PURPOSE
+  `_measureRange` writes `if (id >= 0 && id < 256)` and rejects NaN.
+  `draw` and `drawWrapped` write `if (id < 0 || id >= 256) continue;` and
+  ACCEPT it. The same intent, expressed two ways, disagreeing on the one value
+  that matters. Downstream, `glyphs[NaN * 7 + 6]` is `undefined` and
+  `cursorX += undefined * scale` poisons the cursor for every remaining glyph
+  on the line.
+
+  That is what makes F-04 silent. A `startIdx` of -1 in a layout buffer --
+  precisely the hand-off shape lite-text-layout produces -- makes
+  `charCodeAt(-1)` return NaN, which sails through the inverted guard, and the
+  entire line renders at NaN x. Five drawImage calls, no output, no warning.
+  A *fractional* start truncates and works fine, so the failure is not even
+  uniform across bad indices.
+
+  This is lite-bvh's B-03 in a renderer: one bad value enters once and the
+  output is wrong forever after, with no signal.
+
+WHY THESE FOUR TOGETHER
+  They are one property in four costumes: nothing in this package can state
+  where the cursor is supposed to be, so nothing can notice when it stops being
+  there. The fix is the law, and the guards fall out of it.
+
+THE DECISION (record it before coding)
+  Two forks, both real.
+
+  (1) The layout-buffer index door (F-04, F-05).
+  A. **NORMALIZE, per line.** `startIdx` and `endIdx` are read with the
+     NaN-safe idiom and clamped into `[0, text.length]`; `lineCount` is clamped
+     to `layoutBuffer.length >> 2`. Cost: four comparisons per LINE, zero per
+     glyph. A bad index becomes a short or empty line, never a NaN.
+  B. **THROW at the door.** `lineCount * 4 > layoutBuffer.length` throws; a
+     negative or NaN index throws. Loudest, catches the layout engine's bug at
+     the source. Cost: identical. Risk: this is a per-frame render call, and a
+     throw in one is a stopped rAF chain (see M1's option C).
+  C. Status quo, documented. Rejected outright: "the caller must not do that"
+     is not a policy when the failure mode is invisible.
+  Recommendation: **A for the per-line indices, B for the buffer length.** The
+  split is not a compromise, it is the severity difference: a short buffer is a
+  caller bug that cannot produce correct output under any interpretation, while
+  an out-of-range index has an obvious, cheap, correct interpretation (clamp)
+  that keeps the frame alive. Record that reasoning; a reviewer will ask.
+
+  (2) The missing-glyph advance (F-12).
+  A. **Status quo, documented.** Advance 0, so the next glyph overprints. Free.
+  B. **Fill unmapped ids at construction.** The glyph table already has all 256
+     slots. A `missingAdvance` constructor option (default 0 -- today's exact
+     behaviour) writes an advance into every id the descriptor did not cover.
+     Cost: **zero hot-path bytes.** The render loop still reads
+     `glyphs[id * 7 + 6]` and does not know anything changed.
+  C. **A hot-path branch** on "is this glyph mapped". Rejected: bytes in a hot
+     body to serve a cold-path mistake.
+  Recommendation: **B.** It is the cleanest illustration of law 7 -- the
+  constructor is cold, so a fix that fits there costs nothing. Default 0 keeps
+  1.x behaviour byte-identical; a caller who wants visible tofu opts in.
+  Ship `hasGlyph(id)` alongside it so a loader can detect coverage gaps at boot
+  instead of discovering them as overlapping text.
+
+TASKS
+  - Write decisions/0002-cursor-conservation.md BEFORE coding, containing the
+    three-way law from section 2 in full, both decisions above, and the
+    measured hot-path numbers.
+  - **F-03.** Make every id guard identical and NaN-rejecting. One idiom, three
+    sites (`draw`, `drawWrapped`, `_measureRange`). Add a comment at each naming
+    F-03, because the inverted form reads perfectly natural and someone will
+    "simplify" it back.
+  - **F-04.** Normalize `startIdx`/`endIdx` per line per the decision.
+  - **F-05.** Bounds-check `layoutBuffer.length` against `lineCount * 4` once
+    per CALL, throwing a library error naming both numbers.
+  - **F-12.** `missingAdvance` constructor option + `hasGlyph(id)` accessor.
+  - **Build the law into T0.** The oracle reads the original BMFont JSON, never
+    the Int16 store. The walk is recovered from the recording ctx's `dx` column.
+    All three sides must agree exactly -- no epsilon. Where they cannot (F-08's
+    truncation), the residual is asserted as an exact expected number and
+    labelled with its finding ID, not tolerated.
+  - Fill torture T2 completely per section 3. Every row named, every row with a
+    decided policy.
+  - Update README, llms.txt, d.ts: the layout buffer contract now says what
+    happens on a bad index and a short buffer, in the same words the code
+    enforces.
+
+HOT PATH
+  Three of the four hot bodies are edited. The budget is explicit:
+  - Per GLYPH: **zero new instructions.** The id guard changes shape, not count
+    -- two comparisons before, two after. Diff it. `missingAdvance` adds nothing
+    at all; it is a constructor-time table fill.
+  - Per LINE: at most four comparisons for index normalization.
+  - Per CALL: one comparison for the layout-buffer length.
+  A 40-glyph line therefore pays 4 comparisons where it previously paid 0, over
+  80 glyph iterations -- unmeasurable, but measure it anyway. `assertOps` on all
+  four bodies against the v1.2.2 baseline, numbers in the decision file.
+
+ASSERTIONS
+  - The three-way conservation law holds for 50k seeded (font, string, range,
+    scale) tuples: `walk === _measureRange === oracle`, exactly.
+  - `drawWrapped(ctx, 'HELLO', Float32Array.of(-1, 5, 40, 0), 1, ...)` produces
+    the same 5 dx values as the same buffer with start 0 -- `0, 8, 16, 24, 32`.
+    Today it produces five NaNs. Prove both directions.
+  - `drawWrapped(ctx, 'HELLO', new Float32Array(4), 3, ...)` throws a library
+    error naming 4 and 12. The same call with `lineCount: 1` does not throw --
+    the check is not vacuous.
+  - `nanCount === 0` across every tier, on every input in T1 and T2. There is no
+    input for which a NaN destination coordinate is correct.
+  - A char code that fails the range guard is skipped identically by `draw`,
+    `drawWrapped` and `_measureRange` -- asserted by walking the same string
+    through all three and comparing.
+  - `new BitmapFont(atlas, json, { missingAdvance: 6 })`:
+    `draw(ctx, 'A\u00C8A', 0, 0)` -> dx `0, 8, 14`. With the default:
+    dx `0, 8` and the second A at 8, i.e. today's behaviour, pinned.
+  - `hasGlyph(65) === true`, `hasGlyph(200) === false`, `hasGlyph(NaN) === false`,
+    `hasGlyph(-1) === false`, `hasGlyph(256) === false`.
+  - `assertOps` on draw / drawWrapped / _measureRange within noise of v1.2.2.
+  - `npm run torture` prints "ok"; T9 controls 3, 4, 5 and 7 each exit non-zero.
+
+NON-GOALS
+  No public `start`/`end` parameters (M6 -- and M6 is blocked on exactly this).
+  No measure() semantic change (M4). No descriptor validation (M3). No glyph
+  quads (M5).
+
+DONE WHEN
+  the conservation law is executable and green over the fuzz corpus;
+  every one of F-03/F-04/F-05/F-12 has a named failing-before/passing-after
+  test; the per-glyph body is diff-identical in instruction count;
+  `npm run torture` prints "ok"
+```
+
+===============================================================================
+# M3 -- lite-bmfont v1.3.0 -- the descriptor door
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.3.0
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler"]
+findings: [F-08, F-09, F-10, F-11, F-13]
+depends_on: [M2]
+blocks: [M4]
+---
+
+# lite-bmfont -- a font that cannot render should not construct
+
+PURPOSE
+  `new BitmapFont(atlas, { chars: 7 })` succeeds. `7.length` is `undefined`, the
+  loop never runs, and you get a font with zero glyphs whose every `measure()`
+  returns 0 for the rest of the process. `{ common: { lineHeight: NaN } }`
+  succeeds and puts every line at NaN Y. `atlas = null` succeeds and `draw()`
+  calls `drawImage(null, ...)` sixty times a second.
+
+  Meanwhile `null`, `{}` and a missing `chars` each throw a raw `TypeError`
+  naming an internal property the caller has never heard of.
+
+  Three malformed inputs accepted, three rejected with a stack trace pointing
+  at the wrong place. That is not a policy in either direction, and the
+  constructor is COLD -- there is no performance argument on either side of
+  this. The only real question is compatibility.
+
+THE DECISION (record it before coding)
+  A. **VALIDATE EVERYTHING, ALWAYS.** Every malformed descriptor throws a
+     library error naming the offending field and what was passed. Honest, and
+     it is what "fail closed on every unverified state" says. But it rejects
+     real-world exporter output: fractional `xadvance` (F-08) is emitted by
+     actual BMFont tools, and hard-failing on it turns a 0.6px drift into a
+     crash at load.
+  B. **CHECKED MODE.** `new BitmapFont(atlas, json, { checked: true })`. Off by
+     default in 1.x, on in tests and in the torture suite, default ON in 2.0.0.
+     Nothing changes for anyone until they ask. But a default-off validator is
+     a validator most callers never run, which is how the descriptor stayed
+     unvalidated for three minor versions in the first place.
+  C. **SPLIT BY WHETHER THE INPUT CAN POSSIBLY WORK.** Always throw for inputs
+     that cannot produce correct output under any interpretation: `atlas`
+     null/undefined, `fontJson` null, `common` missing, `chars` not array-like,
+     `lineHeight`/`base` non-finite. Route everything that is merely LOSSY --
+     an `xadvance` of 8.6 truncating to 8, an atlas x of 40000 wrapping, a
+     kerning amount of -1.7 truncating -- through `{ checked: true }`, where it
+     throws with the exact drift named.
+  Recommendation: **C.** The dividing line is not severity, it is
+  interpretability: there is no reading of `atlas: null` that renders anything,
+  and there is a perfectly good reading of `xadvance: 8.6` that renders text
+  0.6px per glyph too narrow. The first is a bug; the second is a tradeoff the
+  caller is entitled to make -- once they are told it exists. C also gives
+  M9 a clean promotion path: in 2.0.0 the lossy lane becomes default-on and the
+  option flips to `{ checked: false }`.
+
+  Note explicitly in the record: **throwing from the constructor is a behaviour
+  change**, and it is why this is 1.3.0 and not 1.2.4. Three descriptors that
+  construct today will stop constructing. All three produce a font that renders
+  nothing or renders at NaN, so no working call site changes -- but "no working
+  call site" is a claim, and the CHANGELOG must state it as one under a
+  "Changed (behaviour)" heading rather than burying it under Fixed.
+
+TASKS
+  - Write decisions/0003-descriptor-door.md BEFORE coding, with the full
+    accept/reject matrix and the always/checked split for each row.
+  - **F-10.** Validate `imageAtlas` (non-null object), `fontJson`, `common`,
+    `common.lineHeight` and `common.base` (finite numbers), and `chars`
+    (array-like with a numeric `length`). Library errors naming the field and
+    the received value -- never a raw TypeError naming an internal property.
+    Decide and record whether `chars: []` is legal (recommendation: yes, a font
+    with no glyphs is degenerate but coherent, and `hasGlyph` from M2 reports
+    it).
+  - **F-08.** In checked mode, reject any glyph field outside
+    `[-32768, 32767]` and any non-integer field, with the exact value and the
+    exact stored result in the message ("xadvance 8.6 stores as 8: 0.6px per
+    glyph, 24px over a 40-glyph line"). Unchecked, behaviour is byte-identical
+    to today and the truncation is documented in README with that number.
+  - **F-09.** Fix the kerning key bound to check BOTH ends:
+    `first >= 0 && first < 256 && second >= 0 && second < 256`, in the NaN-safe
+    idiom. Today a `first` of -1 computes index -191 and the write is silently
+    swallowed by the typed array. In checked mode, an out-of-range pair throws;
+    unchecked, it is skipped -- which is what the caller already thinks happens.
+    Truncation of `amount` follows the F-08 lane.
+  - **F-11.** Validate `align`, `vAlign` and `scale`. `align`/`vAlign` outside
+    {0,1,2} and any non-finite or non-positive `scale` currently produce NaN
+    coordinates or negative destination widths. This one IS on a hot path --
+    see HOT PATH.
+  - **F-13.** Decide the `flags` contract. It arrives through a `Float32Array`,
+    so `flags === 1` misses `1.0000001`, and every unknown value is silently
+    ignored. Options: exact bitfield with `(flags | 0)` and a validated mask
+    (recommended -- a layout engine emitting bit 1 for ellipsis and bit 2 for
+    something later needs the mask to exist before it needs bit 2), or keep the
+    strict compare and reject anything that is not exactly 0 or 1. Either way
+    an unknown flag must stop being silent.
+  - Fill torture T3 completely per section 3. Extend T2's flags row.
+  - Update d.ts (the options bag, the new errors), llms.txt, README.
+
+HOT PATH
+  The constructor is cold: validate freely, cost is irrelevant, and the decision
+  record should say so plainly so nobody re-litigates it.
+
+  `align`/`vAlign`/`scale` are the exception -- they are arguments to hot
+  bodies. Validating them per CALL is one comparison each on a call that draws
+  tens of glyphs; validating them per GLYPH is forbidden. The cheapest correct
+  form is a single NaN-safe range test on `scale` at the top of each draw method
+  (which also subsumes the `scale: NaN` case that currently reaches drawImage),
+  and normalizing `align` with a range test that falls through to 0 -- which is
+  what the code already effectively does, except silently. Decide whether an
+  out-of-range `align` throws or documents-as-left; recommendation: document as
+  left-aligned, because it already is and changing it helps nobody, but make
+  `scale` fail closed since a NaN scale draws nothing useful at any align.
+  `assertOps` on all four hot bodies against the v1.2.3 baseline; record.
+
+ASSERTIONS
+  - `{ chars: 7 }`, `{ common: { lineHeight: NaN } }`, `atlas: null`,
+    `atlas: undefined`, `fontJson: null`, `fontJson: {}`, `chars` missing --
+    each throws a library error whose message names the offending field. Seven
+    named tests. Today three of these succeed.
+  - Every error thrown by the constructor is an instance of the package's error
+    type, and no raw TypeError escapes. Assert `err.constructor.name` and that
+    the message contains the field name.
+  - `{ x: 40000 }` unchecked stores `-25536` (pinned, documented);
+    checked, throws naming 40000 and -25536.
+  - `xadvance: 8.6` unchecked -> `measure('AA') === 16`, exact oracle 17.2,
+    residual 1.2 asserted by number; checked, throws naming the per-glyph and
+    per-40-glyph drift.
+  - `kernings: [{ first: -1, second: 65, amount: -2 }]` unchecked -> no write,
+    `kerning[(255 << 8) | 65] === 0` and every neighbouring slot 0 (proving the
+    negative index wrote nowhere); checked, throws.
+  - `scale: NaN`, `scale: -1`, `scale: 0`, `scale: Infinity` each -> 0
+    drawImage calls, on all three draw methods. Twelve named cases.
+  - `align: 3`, `align: -1`, `align: 1.5`, `align: NaN` behave per the recorded
+    policy, each with a named test.
+  - `flags` in {0, 1, 1.0000001, 2, -1, NaN} behaves per the recorded policy;
+    `1.0000001` must no longer silently mean "no ellipsis".
+  - `assertOps` on all four hot bodies within noise of v1.2.3.
+  - `npm run torture` prints "ok" with T3 complete.
+
+NON-GOALS
+  No fix for the Int16 truncation itself -- detection only; the storage decision
+  is M9. No measure() semantics (M4). No new rendering API.
+
+DONE WHEN
+  every row of the T3 matrix has a decided policy and a named test;
+  no raw TypeError escapes the constructor; the always/checked split is
+  recorded with a stated reason; hot bodies measured unchanged
+```
+
+===============================================================================
+# M4 -- lite-bmfont v1.4.0 -- metrics coherence and the pixel-snap promise
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.4.0
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler"]
+findings: [F-06, F-07]
+depends_on: [M3]
+blocks: [M9]
+---
+
+# lite-bmfont -- the two functions disagree about what a width is
+
+PURPOSE
+  `measure('AA\nAA')` returns 32. The widest line is 16. `draw()` aligns each
+  line independently, so centring a multi-line string with the obvious call --
+  `draw(ctx, s, cx, y, 1, 1)` after checking `measure(s)` -- is wrong by the
+  width of every line that is not the longest. Two functions in a four-function
+  package, disagreeing about the package's central noun.
+
+  And the second half of the pixel-snap promise is not kept. `draw()` documents
+  "Pixel-snapped baseline for crisp pixel fonts" and rounds ONCE:
+  `cursorY = Math.round(y)`, then accumulates `cursorY += lineHeight * scale`
+  raw. At scale 1.1 with lineHeight 20 the lines land at -13.200000000000001,
+  4.4, 22 -- which is exactly the blur the promise exists to prevent, on every
+  line after the first. `drawWrapped` has the identical shape.
+
+THE DECISION (record it before coding)
+  (1) measure() semantics (F-06).
+  A. **LEAVE `measure` ALONE, ADD THE MISSING TWO.** `measureLine(text, start,
+     end, scale)` and `measureWidest(text, scale)`. Document the cross-newline
+     sum as what it is -- a total advance, useful for nothing the package does
+     -- and point callers at `measureWidest` for layout. Additive, 1.4.0, zero
+     risk.
+  B. **CHANGE `measure` to return the widest line.** Correct, obvious, and
+     breaking: every existing caller that measures a single-line string is
+     unaffected, and every caller that measures a multi-line string silently
+     gets a different number. Silent numeric changes are the worst kind of
+     breaking change because nothing throws.
+  C. **`measure` throws on an embedded newline.** Forces the caller to choose.
+     Loud, and hostile to the many callers measuring strings that happen to be
+     single-line.
+  Recommendation: **A now, B in M9.** A is additive and unblocks the real use
+  case today; B is the right long-run answer and gets a major bump, a migration
+  note and a CHANGELOG "Breaking" section rather than being smuggled into a
+  minor. Record the promotion explicitly so M9 does not have to re-derive it.
+
+  (2) Where to round (F-07).
+  A. **ACCUMULATE ROUNDED.** `cursorY = Math.round(cursorY + lineHeight * scale)`
+     each line. One round per line, and every line is on-grid. But the rounding
+     error compounds: line spacing wobbles between floor and ceil, and after N
+     lines the block can sit a full pixel away from where the metrics say.
+  B. **ROUND AT THE USE SITE FROM AN EXACT ACCUMULATOR.** Keep an unrounded
+     `baseY` and a line index, and compute
+     `Math.round(baseY + line * lineHeight * scale)` for each line. Same one
+     round per line, no drift, and the block's total height is exactly right.
+  Recommendation: **B**, and the two options are distinguishable by a number,
+  which is the whole reason to write them both down. With `lineHeight: 17` and
+  `scale: 1.1` (step 18.7), five lines land at:
+     B (no drift):      0, 19, 37, 56, 75
+     A (accumulating):  0, 19, 38, 57, 76   <- diverges from line 2 on
+     today (no round):  0, 18.7, 37.4, 56.1, 74.8
+  The T5 assertion pins the B row exactly. A reviewer can tell which
+  implementation shipped by reading one array.
+
+TASKS
+  - Write decisions/0004-metrics-and-snapping.md BEFORE coding, with the
+    five-line table above and the M9 promotion of measure().
+  - `measureWidest(text, scale)` -- one pass, tracks the max per-line width,
+    zero allocation, no split, no slice.
+  - `measureLine(text, start, end, scale)` -- the public face of
+    `_measureRange`. Note that this partly anticipates M6; keep the signatures
+    compatible so M6 is a widening, not a rename.
+  - **F-07** in `draw` and in `drawWrapped`, per the decision. Both have the
+    identical bug and must get the identical fix; a shared comment naming F-07
+    at both sites.
+  - Extend T0 with the per-line-vs-total residual law and T5 with the exact
+    five-line Y table.
+  - README, llms.txt, d.ts: the new methods, and a short "which width do I
+    want" note. The README currently shows `measure()` next to a centred
+    multi-line `draw()` in the same quick-start block, which is the exact
+    footgun; fix the example.
+
+HOT PATH
+  `measureWidest` is a new hot body -- same shape as `_measureRange`, indexed
+  reads only, no allocation, no slicing. `measureLine` is a thin forward to
+  `_measureRange` and must not add a frame; if the engine will not inline it,
+  say so in the decision file with the number rather than shipping a wrapper
+  that costs a call.
+
+  The F-07 fix adds one multiply and one round per LINE and removes one add per
+  line. A 12-line paragraph pays 12 rounds where it previously paid 1, against
+  several hundred glyph iterations. Measure it in the T6 window C anyway and
+  record the delta -- "obviously negligible" is not a measurement.
+
+ASSERTIONS
+  - `measure('AA\nAA') === 32` (pinned, unchanged);
+    `measureWidest('AA\nAA') === 16`.
+    `measure('A\nAAAAAA') === 56`; `measureWidest('A\nAAAAAA') === 48`.
+    All four numbers asserted literally.
+  - `measureWidest(s) === Math.max(...s.split('\n').map(l => measure(l)))` for
+    the whole T5 corpus, where the right-hand side is the allocating oracle.
+  - `measureLine(t, a, b, s) === _measureRange(t, a, b, s)` for 50k seeded
+    ranges, exactly.
+  - `draw(ctx, 'A\nB\nC\nD\nE', 0, 0, 1.1)` on a lineHeight-17 font produces
+    baselines exactly `[0, 19, 37, 56, 75]`. Today: `[0, 18.7, 37.4, 56.1,
+    74.8]`. The accumulating variant gives `[0, 19, 38, 57, 76]` and must FAIL
+    this assertion -- T9 gains a control that ships the accumulating form and
+    proves the test discriminates.
+  - Every recorded baseline in T5, across every multi-line case and every
+    fractional scale, satisfies `Number.isInteger`.
+  - `drawWrapped` produces the identical baseline sequence as `draw` for an
+    equivalent layout at the same origin and scale.
+  - `assertOps` on draw / drawWrapped within noise of v1.3.0; T6 window C
+    recorded.
+  - `npm run torture` prints "ok"; the accumulating-round control fails.
+
+NON-GOALS
+  No change to `measure`'s return value (that is M9, and it is breaking). No
+  vertical metrics accessors -- still in the rejection ledger, still no
+  consumer. No baseline-vs-top anchor change.
+
+DONE WHEN
+  measureWidest / measureLine shipped and oracle-verified;
+  every line's baseline is an integer at every fractional scale in T5;
+  the five-line Y table is asserted literally and the accumulating control fails
+```
+
+===============================================================================
+# M5 -- lite-bmfont v1.5.0 -- glyph quads (`layoutGlyphs` + `drawQuads`)
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.5.0
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler"]
+findings: [F-03, F-12]
+depends_on: [M2]
+blocks: [M6]
+---
+
+# lite-bmfont -- give the caller the cursor walk, not just its pixels
+
+TRIGGERING SIGNAL (unchanged from the original roadmap)
+  tripple win banners. Letters must stagger, bounce and fade individually.
+  Today `draw()` rasterises a whole string with no way to touch one letter.
+
+PURPOSE
+  Two methods, mirroring the `computeWrap` idiom already used across the suite
+  -- compute into a caller-owned buffer, then render it:
+
+      font.layoutGlyphs(text, outBuffer, scale = 1) -> glyphCount
+      font.drawQuads(ctx, buffer, glyphCount, x, y, scale = 1)
+
+  Stride 6 per glyph: `[sx, sy, sw, sh, dx, dy]` -- source rect in the atlas,
+  destination offset relative to the origin. Kerning and `xoffset`/`yoffset`
+  are already folded into `dx`/`dy`, so the caller never touches the kerning
+  LUT.
+
+  The animation seam is that the caller MUTATES the buffer between the two
+  calls -- displace `dx`/`dy`, skip a glyph, or draw subsets with different
+  `globalAlpha`. No callback, so no per-glyph indirect call and no risk of a
+  megamorphic call site.
+
+WHY IT COMES AFTER M2
+  The `dx` column IS the cursor walk. Every finding M2 fixes is a way the cursor
+  becomes NaN, and this session promotes that cursor to a public buffer format
+  that lite-text-layout and tripple will both read. Shipping this first would
+  bake F-03 into a format contract, which is the most expensive mistake
+  available in this document. The conservation law from M2 is what makes the
+  quad buffer verifiable at all: `dx[k]` must equal the cursor the reference
+  walk computes, exactly, for every k.
+
+THE DECISION (record it before coding)
+  Stride 6 or stride 8?
+  A. **STRIDE 6** `[sx, sy, sw, sh, dx, dy]`, uniform `scale` passed to
+     `drawQuads`. Destination size is `sw * scale`, `sh * scale`. 24 bytes per
+     glyph. Per-letter scale requires drawing subsets.
+  B. **STRIDE 8** adding `dw, dh`. Per-letter scale falls out for free. 32
+     bytes per glyph -- 33% more buffer traffic for every caller, to serve the
+     subset who animate scale.
+  C. Stride 6 plus a parallel per-glyph scale array. Two buffers to keep in
+     sync; the worst of both.
+  Recommendation: **A, with `drawQuads` taking `first` and `count`** so a caller
+  can render any contiguous subset with its own scale, alpha or transform:
+  `drawQuads(ctx, buf, first, count, x, y, scale)`. That is the same primitive
+  B offers, expressed as N draw calls for the N letters that actually need
+  independent scale, instead of 33% more bytes for the whole string forever.
+  Record B's rejection with the byte number; someone will propose it again the
+  first time they want a bouncing letter.
+
+  Export `GLYPH_STRIDE = 6` as a named constant. A caller who hardcodes 6 is a
+  caller who breaks when M9 revisits this.
+
+TASKS
+  - Write decisions/0005-glyph-quads.md BEFORE coding, with the stride decision
+    and the rejected callback form.
+  - `layoutGlyphs(text, outBuffer, scale)` -> glyphCount. Writes stride-6
+    records. Skips newlines and unmapped glyphs by the SAME rule as `draw`
+    (the M2 idiom, asserted identical). Advances the cursor by the SAME
+    arithmetic. Returns the count actually written and **stops at buffer
+    capacity**, returning the count written and never writing past
+    `outBuffer.length` -- with the overflow reported, not swallowed. Decide and
+    record: throw on overflow, or return a count smaller than the glyph count
+    and expose it. Recommendation: throw, because a silently truncated banner is
+    F-05 in a new costume.
+  - `drawQuads(ctx, buffer, first, count, x, y, scale)`.
+  - **Do not touch `draw()`.** It stays exactly as it is. `layoutGlyphs` is a
+    separate method so the common path keeps its current monomorphic shape and
+    current numbers. Diff `draw` to prove zero change.
+  - Extend T0's conservation law to a fourth witness: the quad buffer's `dx`
+    column must equal the `draw` walk for the same string, element for element.
+  - Extend T6 with a layoutGlyphs + drawQuads window.
+  - README, llms.txt, d.ts: buffer format table, the mutation seam, the
+    constant.
+
+HOT PATH
+  Both new methods are hot -- a banner lays out every frame. Indexed typed-array
+  reads and writes only, no closures, no per-glyph objects, no `subarray` inside
+  the loop. `drawQuads` reads six floats and issues one `drawImage`; that is the
+  entire body.
+
+ASSERTIONS
+  - Round-trip: for the whole T5 corpus, `layoutGlyphs` + `drawQuads` produces
+    a recorded ctx column set byte-identical to `draw` for the same string,
+    origin, scale and left alignment. Not "visually equivalent" -- identical
+    Float64 columns.
+  - `layoutGlyphs` returns the same glyph count that `draw` issues drawImage
+    calls for, over the whole corpus (`ctx.total` equality).
+  - The `dx` column satisfies the M2 conservation law against the descriptor
+    oracle.
+  - Mutating `buf[i * 6 + 5] += 10` between the calls moves exactly one glyph
+    by exactly 10 in y and nothing else -- asserted on all six columns.
+  - `drawQuads(ctx, buf, 2, 3, ...)` draws exactly glyphs 2, 3, 4 and issues
+    exactly 3 calls.
+  - An `outBuffer` one record too small behaves per the recorded overflow
+    policy, with a named test, and the exactly-large-enough buffer does not
+    trip it.
+  - `measureAllocs` reports `maxBytesPerCall: 0` for both methods.
+  - `git diff BitmapFont.js` shows zero change inside `draw`.
+  - `npm run torture` prints "ok".
+
+NON-GOALS
+  No per-glyph callback -- rejected in writing (an indirect call per glyph, and
+  a megamorphic call site the moment two callers pass different closures). No
+  rotation or per-glyph transform matrix. No range parameters yet (M6). No
+  change to `draw`.
+
+DONE WHEN
+  quad round-trip is byte-identical to draw() across the fuzz corpus;
+  0 bytes/call on both methods under measureAllocs;
+  a mutation between the calls moves exactly one letter; draw() diff-clean
+```
+
+===============================================================================
+# M6 -- lite-bmfont v1.6.0 -- range-addressable text
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.6.0
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-text-layout"]
+findings: [F-04]
+depends_on: [M2, M5]
+blocks: [M9]
+---
+
+# lite-bmfont -- close the last allocation in the lite-text-layout pipeline
+
+TRIGGERING SIGNAL (unchanged from the original roadmap)
+  Wrapped animated text. `computeWrap` reports `[startIdx, endIdx]` into the
+  ORIGINAL string; without range parameters every line needs `text.slice()`,
+  which allocates once per line per frame.
+
+PURPOSE
+  Add `start`/`end` to `measure`, `draw` and `layoutGlyphs`. The internal
+  `_measureRange` already does exactly this, so it is mostly promoting an
+  existing private capability to the public surface.
+
+  This makes the lite-text-layout contract allocation-free end to end, which is
+  the whole point of that package's output format.
+
+WHY IT COMES AFTER M2 (this is the load-bearing sentence of the session)
+  F-04 is a negative `startIdx` producing a whole line of NaN draws, and this
+  session makes `startIdx` a **public parameter of the most-used method in the
+  package**. Every bad index that a wrap engine can compute -- a negative from
+  an off-by-one, a NaN from a division, an end past the string from a stale
+  buffer -- arrives here. Shipping the public range API over the un-normalized
+  index door does not just leave F-04 unfixed; it multiplies its reach from one
+  method to four and writes it into a cross-package contract. Same ordering
+  argument as "A1 before X1, always".
+
+THE DECISION (record it before coding)
+  How is the range passed?
+  A. **APPENDED POSITIONAL PARAMETERS.**
+     `draw(ctx, text, x, y, scale, align, start, end)`. Eight parameters, which
+     is a lot, and the last two are easy to pass in the wrong order.
+  B. **AN OPTIONS OBJECT.** `draw(ctx, text, x, y, { start, end, scale, align })`.
+     Readable, self-documenting, and **it allocates one object per call per
+     frame**. In the package whose entire identity is that drawing does not
+     allocate. Sixty HUD values plus twelve paragraph lines is 72 object
+     literals per frame, every frame.
+  C. **A SEPARATE `drawRange` METHOD.** Keeps `draw`'s arity, adds surface, and
+     duplicates the body or adds a forwarding frame to the hot path.
+  Recommendation: **A**, and B's rejection goes in the ledger with the number,
+  because B is what every reviewer's instinct will suggest and it is the exact
+  mistake this package exists to avoid. Mitigate A's ordering hazard by making
+  `end` default to `text.length` and by asserting the swapped-argument case
+  (`start > end`) renders nothing rather than something surprising.
+
+TASKS
+  - Write decisions/0006-range-parameters.md BEFORE coding, with B's rejection
+    and its per-frame allocation count.
+  - `measure(text, scale, start, end)`, `draw(ctx, text, x, y, scale, align,
+    start, end)`, `layoutGlyphs(text, outBuffer, scale, start, end)`. Defaults
+    `start = 0`, `end = text.length`, so every existing call site is unchanged.
+  - Normalize both indices with the M2 idiom -- the SAME code path, not a copy.
+    If M2's normalization is not already factored so this session can reuse it,
+    factoring it is part of this session and must not add a per-glyph frame.
+  - Multi-line semantics inside a range: decide and record whether `\n` inside
+    `[start, end)` still breaks the line (recommendation: yes, identical to
+    `draw` on the sliced string -- the whole assertion below depends on it).
+  - Extend T0's conservation law to the public range surface. Extend T2 with
+    ranges arriving from a layout buffer.
+  - README, llms.txt, d.ts. Add an end-to-end lite-text-layout example that
+    renders a wrapped paragraph line by line with zero allocation, and gate it
+    in T6.
+
+HOT PATH
+  Two extra parameters on three hot bodies. Parameter count affects the
+  register allocation and the call sequence, so this is not free by inspection
+  -- `assertOps` on `measure` and `draw` against the v1.5.0 baseline, with the
+  numbers in the decision file. Index normalization happens ONCE per call (or
+  per line), never per glyph. Diff the per-glyph loops to prove they are
+  untouched.
+
+ASSERTIONS
+  - `draw(ctx, text, x, y, s, a, i, j)` produces a byte-identical recorded
+    column set to `draw(ctx, text.slice(i, j), x, y, s, a)` for 50k seeded
+    (string, i, j) pairs -- including i === j, i > j, i < 0, j > length,
+    i or j NaN or fractional. The slicing version is the allocating oracle.
+  - `measure(t, s, i, j) === measure(t.slice(i, j), s)` over the same corpus.
+  - Rendering a 12-line wrapped paragraph line by line, 100,000 frames:
+    `measureAllocs` reports `maxBytesPerCall: 0`, and `checkNoGc` reports
+    `maxMajor: 0`, `maxPauseMs <= 4`, `maxArrayBuffersGrowth: 0`.
+  - The same paragraph rendered with the `slice()` oracle allocates a non-zero,
+    reported number -- so the comparison is a measurement and not a claim. Put
+    that number in the README's benchmark block, stamped with the version and
+    machine.
+  - A negative `start` from a layout buffer produces 0 NaN coordinates
+    (`nanCount === 0`) and the clamped, correct glyph sequence. Failing before
+    M2, passing after; prove both directions.
+  - `assertOps` on measure / draw / layoutGlyphs within noise of v1.5.0.
+  - `npm run torture` prints "ok".
+
+NON-GOALS
+  No options-object API -- rejected in writing. No `drawWrapped` signature
+  change (it already takes ranges through the buffer). No bidi, no shaping.
+
+DONE WHEN
+  range draw is byte-identical to the slice() oracle across the fuzz corpus;
+  a 12-line paragraph renders at 0 bytes/frame with the oracle's number
+  recorded beside it; the negative-start case is proven fixed in both directions
+```
+
+===============================================================================
+# M7 -- lite-bmfont v1.7.0 -- atlas generation as a subpath export
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.7.0
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: []
+findings: [F-18]
+depends_on: [M0]
+blocks: [M9]
+---
+
+# lite-bmfont -- three copies of generateAtlas is a missing feature
+
+TRIGGERING SIGNAL (unchanged from the original roadmap)
+  Every consumer copy-pastes it. `demo/demo-lite-bmfont.html:261` has a 40-line
+  `generateAtlas(size, fontCSS, fillColor, shadowColor)` that returns
+  `{ atlas, json }` and is called four times (lines 309, 313, 317, 321), and
+  tripple needs the same function. Two copies is a coincidence; three is a
+  missing feature.
+
+PURPOSE
+  Ship it as a subpath export so the core stays free of any DOM reference:
+
+      import { generateAtlas } from '@zakkster/lite-bmfont/atlas';
+
+  Browser-only by construction (it needs `document.createElement`). The core
+  module must remain importable in Node -- tripple's headless tests depend on
+  that, and so does every node:test file in this repo.
+
+  This also removes the only real argument for a tinting API: a themed atlas per
+  colour is generated at boot and costs nothing per frame.
+
+THE DECISION (record it before coding)
+  The suite Law says "single PascalCase main file". A subpath export is a second
+  file. That tension is real and must be resolved on the record, not by
+  shrugging.
+  A. **SUBPATH `Atlas.js` + `Atlas.d.ts`.** The core stays one file, imports
+     nothing, and keeps `sideEffects: false`. Two files ship; the core is still
+     a single file and the second is never loaded unless asked for.
+  B. **FOLD IT INTO BitmapFont.js** behind a `typeof document` check. One file,
+     but the core now contains a DOM reference, a dead branch in every Node
+     bundle, and a `sideEffects` story that needs explaining.
+  C. **A SEPARATE PACKAGE** `@zakkster/lite-bmfont-atlas`. Cleanest boundary,
+     and a whole package's worth of overhead for 40 lines with one consumer.
+  Recommendation: **A.** The Law's intent is one module, no build step, no
+  bundler required -- and A satisfies all three. Write that reading down;
+  it will be cited by the next package that wants a subpath.
+
+  Second decision: the return shape. `{ atlas, json }` allocates one object and
+  two sub-objects per call. That is correct and it needs to be said out loud:
+  `generateAtlas` is a **boot-time cold path**, called once per theme, and it is
+  the only function in this package permitted to allocate. Mark it in the source
+  header, in llms.txt and in the d.ts so nobody "optimizes" it into an out
+  parameter, and so nobody cites it as precedent.
+
+TASKS
+  - Write decisions/0007-atlas-subpath.md BEFORE coding, with the Law reading.
+  - Extract `generateAtlas(size, fontCSS, fillColor, shadowColor)` from the demo
+    into `Atlas.js` verbatim first, then clean it. Verbatim first so the diff
+    that changes behaviour is separate from the diff that moves code.
+  - `exports` gains `"./atlas": { "types": "./Atlas.d.ts", "import":
+    "./Atlas.js" }`. `files[]` gains both. `sideEffects: false` stays true and
+    is asserted.
+  - The generated `json` must satisfy the M3 descriptor door -- generate a font
+    from it and construct a `BitmapFont` in checked mode. A generator whose
+    output its own validator rejects is a bug in one of them, and this test
+    finds out which.
+  - Update the demo to import it instead of defining it, and delete the local
+    copy. That is the finding's closure condition.
+  - T8 gains the DOM-free core assertion with the subpath present, and a
+    conformance test: `generateAtlas` output -> `new BitmapFont(..., { checked:
+    true })` -> `measure` and `draw` produce sane, asserted numbers.
+  - README section, llms.txt entry, d.ts.
+
+HOT PATH
+  None. `generateAtlas` is explicitly cold and labelled as such at every
+  mention. Nothing in this session touches BitmapFont.js -- `git diff` proves
+  it.
+
+ASSERTIONS
+  - `import { BitmapFont } from '../BitmapFont.js'` succeeds under
+    `node --test` with no DOM globals defined, with `Atlas.js` present in the
+    package. Assert `typeof document === 'undefined'` in the same file so the
+    test cannot pass by accident under a polyfill.
+  - `grep -n "document\|window\|HTMLCanvas" BitmapFont.js` returns nothing
+    outside JSDoc type annotations.
+  - `git diff --stat BitmapFont.js` is empty for this session.
+  - `npm pack --dry-run` includes Atlas.js and Atlas.d.ts and still excludes
+    test/ and demo/.
+  - The demo file contains no local `generateAtlas` definition and imports the
+    subpath; all four call sites still work.
+  - A font built from `generateAtlas` output constructs in checked mode,
+    `hasGlyph(65)` is true, and `measure('A')` equals the descriptor oracle.
+  - `npm run torture` prints "ok" with T8 complete.
+
+NON-GOALS
+  No tinting API at runtime -- generate a themed atlas at boot instead, and
+  record that as the reason tinting stays rejected. No SDF/MSDF generation
+  (ledger). No font loading, no fetch, no async surface in the core.
+
+DONE WHEN
+  `import ... from '@zakkster/lite-bmfont/atlas'` works; the demo imports it
+  and defines nothing; the core imports under node --test with no DOM;
+  generated output constructs in checked mode
+```
+
+===============================================================================
+# M8 -- lite-bmfont v1.8.0 -- `drawFastInt`
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.8.0
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler"]
+findings: [F-01, F-02]
+depends_on: [M1]
+blocks: [M9]
+---
+
+# lite-bmfont -- an integer counter should not read "120.0"
+
+TRIGGERING SIGNAL (unchanged from the original roadmap)
+  tripple's credit/score counter. `drawFast` always renders one decimal place
+  (`33.4`), so an integer counter shows `120.0`.
+
+PURPOSE
+  `drawFastInt(ctx, value, x, y, scale, align)` -- same zero-allocation
+  char-code path, no decimal point. Small and self-contained.
+
+WHY IT COMES AFTER M1
+  It is the same digit loop over the same 24-byte scratch, and it therefore has
+  the same two bugs before it is even written. Shipping it before M1 means
+  writing the magnitude door twice, or -- far more likely -- writing it once and
+  forgetting the copy. The original roadmap said "bundle it with whichever
+  session has room"; the answer to which session has room is the one that
+  already owns the door.
+
+THE DECISION (record it before coding)
+  Scratch buffer: share `_charScratch` with `drawFast`, or allocate a second?
+  A. **SHARE.** Zero extra bytes per font. Safe because neither method is
+     re-entrant: `ctx.drawImage` is the only foreign call, and a real
+     `CanvasRenderingContext2D` cannot call back into user code.
+  B. **A SECOND 24-byte SCRATCH.** 24 bytes per font, and re-entrancy stops
+     being an assumption.
+  Recommendation: **A, with the assumption written down as a contract line.**
+  It is true for Canvas2D and it is NOT true for an arbitrary object with a
+  `drawImage` method -- including the torture harness's recording ctx, which
+  could be made to re-enter. So the contract says "ctx.drawImage must not
+  re-enter the font", the harness obeys it, and T9 gains a control that violates
+  it and proves the corruption is real rather than theoretical. An undocumented
+  assumption that a test could break by accident is how a green suite hides a
+  bug.
+
+  Second decision: the integer ceiling. `drawFastInt` has 24 bytes for digits
+  and no '.' , so it fits 24 integer digits -- but doubles are only
+  integer-exact to 2^53. Above that, `value % 10` returns digits that are
+  arithmetic noise. Recommendation: ceiling at `Number.MAX_SAFE_INTEGER`
+  (9007199254740991, 16 digits), exported as `DRAWFASTINT_MAX`, with the same
+  silent-no-draw policy as M1. Rendering 18 confident digits of a number that
+  only has 16 is a lie the package should not tell.
+
+TASKS
+  - Write decisions/0008-drawfastint.md BEFORE coding.
+  - `drawFastInt(ctx, value, x, y, scale, align)`. Same door idiom as M1, same
+    loop bound, no decimal digit, no '.', ceiling at MAX_SAFE_INTEGER, negatives
+    clamped to 0 exactly as `drawFast` does.
+  - Export `DRAWFASTINT_MAX`.
+  - Add the ctx re-entrancy line to the contract in README, llms.txt and the
+    source header.
+  - T4 gains a full `drawFastInt` sweep with `String(Math.trunc(v))` as the
+    oracle. T6 gains a `drawFastInt` window. T9 gains the re-entrancy control.
+  - README, llms.txt, d.ts.
+
+HOT PATH
+  A new hot body, and a cheaper one than `drawFast` -- one fewer glyph, no
+  decimal arithmetic, no `Math.round(value * 10)`. It must be measurably faster
+  per rendered digit than `drawFast`; if it is not, something was copied that
+  should not have been. Record both numbers.
+
+  `drawFast` itself must be diff-clean. Do not "share" the digit loop by
+  extracting a helper that both call: an extracted helper is a call frame on
+  two hot paths to save twelve lines of source, and this package's law is bytes
+  in a hot body, not fewer lines in a file. Duplicate the loop, comment both
+  copies with each other's location, and let the T9 control catch a divergence.
+
+ASSERTIONS
+  - `drawFastInt(ctx, 120, 0, 0)` renders exactly "120" -- 3 calls, no '.'.
+    `drawFast(ctx, 120, 0, 0)` still renders "120.0" -- 5 calls. Both pinned.
+  - Sweep: 0, 1, 9, 10, 99, 100, 2^31, 2^53 - 1, MAX_SAFE_INTEGER,
+    MAX_SAFE_INTEGER + 1, 1e21, MAX_VALUE, NaN, +/-Infinity, -1, -0, 0.4, 0.5,
+    1.9. Every accepted value matches `String(Math.trunc(v))` exactly; every
+    rejected value gives `ctx.total === 0`. Decide and pin whether 1.9 renders
+    "1" or "2" -- truncation or rounding -- and say which in the docs.
+  - The whole tier completes in under 5 seconds (the F-01 clock, applied to the
+    new method before it can regress).
+  - `_charScratch.byteLength === 24` after a 200k-op mixed
+    `drawFast`/`drawFastInt` window; `maxArrayBuffersGrowth: 0`;
+    `measureAllocs` `maxBytesPerCall: 0`.
+  - Alternating `drawFast` and `drawFastInt` 100,000 times produces the same
+    per-call output as calling each in isolation -- the shared scratch is
+    proven safe by exercise, not by argument.
+  - T9 re-entrancy control: a ctx whose `drawImage` calls back into
+    `drawFastInt` corrupts the output, and the control asserts it does. If it
+    does not, the contract line is decorative and should be deleted rather than
+    believed.
+  - `git diff BitmapFont.js` shows zero change inside `drawFast`.
+  - `npm run torture` prints "ok".
+
+NON-GOALS
+  No thousands separators, no padding, no radix option, no sign rendering.
+  Negatives clamp to 0 exactly as `drawFast` does today; changing that is a
+  different decision and it is not this one.
+
+DONE WHEN
+  drawFastInt matches String(Math.trunc(v)) across the sweep;
+  0 bytes/call under measureAllocs; the shared-scratch contract is documented
+  and its violation is a passing control; drawFast diff-clean
+```
+
+===============================================================================
+# M9 -- lite-bmfont v2.0.0 -- the breaking consolidation
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 2.0.0
+status: planned
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak", "@zakkster/lite-text-layout"]
+findings: [F-06, F-08, F-09, F-13, F-14]
+depends_on: [M4, M6, M7, M8]
+---
+
+# lite-bmfont -- collect every breaking change into one major
+
+WHY A 2.0.0 IS WARRANTED (argue it before doing it)
+  Most of this roadmap ships as patches and minors, and that is correct: a call
+  that used to hang and now returns has no working call site to break, and a
+  descriptor that used to construct a font rendering nothing but now throws has
+  no working call site either. Those are bug fixes, they ship early, and their
+  CHANGELOG entries say "Changed (behaviour)" so nobody has to guess.
+
+  Four things left over are genuinely breaking, and every one of them changes a
+  number a working call site reads:
+
+  1. **`measure()` returning the widest line instead of the cross-newline sum**
+     (F-06). A caller measuring `'AA\nAA'` gets 16 where they got 32. Nothing
+     throws. Silent numeric changes are the most expensive kind, and they are
+     precisely what a major exists to announce.
+  2. **Sub-pixel advances** (F-08). Fixing the truncation changes the output of
+     `measure()` and the position of every glyph after the first, for every font
+     with a fractional `xadvance`. That is every font produced by several real
+     exporters.
+  3. **Checked mode on by default** (M3's option C, promoted). Descriptors that
+     construct today with a lossy warning start throwing. That is the whole
+     point, and it is breaking.
+  4. **`Object.freeze(BitmapFont.prototype)`** (F-14). Anyone monkey-patching a
+     method -- and monkey-patching a renderer method is a real, if unwise,
+     pattern -- stops working.
+
+  Four breaking changes dribbled across four minors is four migrations. One
+  major with one migration note is one. That is the argument.
+
+THE DECISION (record it before coding)
+  Sub-pixel advances (F-08). The glyph table is `Int16Array`, stride 7, and the
+  README publishes `font.glyphs[id * 7 + 6]` as a supported read, so this is a
+  format change in public.
+  A. **KEEP Int16, DOCUMENT THE TRUNCATION.** Free. Drift stays at up to 0.5px
+     per glyph -- 24px across a 40-glyph line with `xadvance: 8.6`. For a pixel
+     font this is invisible; for a scaled or anti-aliased atlas it is a
+     visibly wrong line length.
+  B. **A PARALLEL `Float32Array(256)` FOR ADVANCES.** Exact. 1 KB per font.
+     One extra typed-array load in the innermost loop of all four hot bodies,
+     from a second cache line. This is the option that costs bytes in a hot
+     body, and it must be measured before it is chosen, not after.
+  C. **1/16-PIXEL FIXED POINT IN THE EXISTING SLOT.** Store
+     `Math.round(xadvance * 16)` in slot 6 and shift right by 4 at read.
+     Zero extra memory, zero extra loads, one shift per glyph. Error drops from
+     0.6px/glyph to 0.025px/glyph -- 24px to 1px across 40 glyphs. Range: the
+     advance slot then tops out at 2047.9375px, which is far beyond any real
+     advance. **The same trick cannot apply to x/y/width/height** in slots 0-3,
+     because those legitimately reach four digits and F-08's 40000 case would
+     overflow immediately -- so C changes the meaning of exactly one slot, and
+     the kerning LUT alongside it.
+  Recommendation: **C**, contingent on the measurement. It is the only option
+  that improves accuracy by 24x while adding zero bytes of memory and one
+  integer shift per glyph. Its cost is that `font.glyphs[id * 7 + 6]` changes
+  meaning for every external reader -- including the layout helper printed in
+  this package's own README and llms.txt, and including lite-text-layout. That
+  is a cross-package format change, which is exactly what a major is for.
+  Ship `FORMAT.md`, a `GLYPH_ADVANCE_SHIFT` constant, an `advanceOf(id)`
+  accessor so nobody has to know, and a conformance test that runs from both
+  repos.
+
+TASKS
+  - Write decisions/0009-two-oh.md BEFORE coding, with the four breaking
+    changes, the fixed-point measurement, and the migration table.
+  - **FORMAT.md**: the glyph stride and slot meanings including the new fixed
+    point, the kerning key derivation, the layout-buffer stride 4 including the
+    F-13 flags mask, the quad stride 6, and a `FORMAT_VERSION` constant that
+    both this package and lite-text-layout assert.
+  - **F-06.** `measure` returns the widest line. `measureWidest` stays as an
+    alias so M4-era code keeps working. Add `measureTotalAdvance` if anyone
+    actually wants the old number -- and if nobody does, do not add it, and say
+    so in the ledger.
+  - **F-08 + F-09.** Implement the chosen storage. Kerning amounts go to the
+    same fixed point. `advanceOf(id)` and `kernOf(a, b)` accessors so external
+    readers stop indexing raw.
+  - **F-13.** The flags bitfield becomes real: a validated mask, bit 0 =
+    ellipsis, unknown bits rejected. Reserve and document the remaining bits.
+  - **F-14.** `Object.freeze(BitmapFont.prototype)`. One line; a renderer's
+    method table is a law, not a mutable bag.
+  - Checked mode defaults on; the option becomes `{ checked: false }`.
+  - Update every doc surface, including the layout helper recipes in README and
+    llms.txt, which index `glyphs[id * 7 + 6]` directly and are wrong the
+    instant C lands. Grep for `* 7 + 6` across the whole ecosystem, not just
+    this repo.
+  - Migration section in CHANGELOG under Breaking, with a before/after table per
+    change.
+  - Three-place version sync 1.8.0 -> 2.0.0.
+
+HOT PATH
+  This is the one session permitted to change a hot body's instruction count,
+  and it must therefore be the most carefully measured. `assertOps` on all four
+  hot bodies plus `layoutGlyphs`, before and after, on the same machine in the
+  same run, with the numbers in the decision record and in the README benchmark
+  block stamped with version and machine. If option C's shift costs more than
+  2% on `_measureRange`, that is a finding: write it down and re-open the
+  decision rather than shipping a number nobody looked at.
+
+ASSERTIONS
+  - `measure('AA\nAA') === 16` and `measure('A\nAAAAAA') === 48` -- the exact
+    inversion of the v1.x pinned values, with both old numbers quoted in the
+    migration note.
+  - With `xadvance: 8.6`: `measure('AA')` is within 0.05 of 17.2 under option C
+    (exactly 17.25), against 16 in v1.x. Assert the literal.
+  - Over a 40-glyph line the total error against the descriptor oracle is
+    <= 1.0px under C, against 24px in v1.x. Assert both bounds.
+  - The M2 conservation law holds with the oracle now reading fractional
+    advances -- the residual that F-08 forced T0 to tolerate is gone, and the
+    three-way equality is exact. Delete the tolerance and prove the law tightens.
+  - `Object.isFrozen(BitmapFont.prototype)` is true; assigning to
+    `BitmapFont.prototype.draw` throws in strict mode.
+  - `FORMAT_VERSION` asserted in this package and in lite-text-layout's
+    conformance test; both green.
+  - Every v1.x test still present, either passing or explicitly migrated with a
+    comment naming the breaking change and its decision record.
+  - `assertOps` on all five hot bodies recorded against v1.8.0.
+  - `npm run torture` prints "ok"; every T9 control exits non-zero;
+    `BMFONT_TORTURE_BREAK=1 npm run torture` exits non-zero.
+  - `npm pack --dry-run` includes FORMAT.md and excludes test/.
+
+NON-GOALS
+  No Unicode beyond 8-bit -- see the ledger; it is a different data structure
+  and a different package. No SDF/MSDF. No rich text. No 3D. No WebGL backend.
+  No change to the layout-buffer stride 4 or the quad stride 6.
+
+DONE WHEN
+  FORMAT.md + FORMAT_VERSION shipped and asserted from both repos;
+  the four breaking changes each have a before/after migration row;
+  the conservation law is exact with no tolerance;
+  all five hot bodies measured and recorded; /release 2.0.0 clean
+```
+
+---
+
+## 6. How to run it
+
+In order. `status: planned -> shipped` after each `/release`. Author the brief
+in the package, then `Use the planner subagent on BRIEF.md`, then coder,
+reviewer, qa, then `/release`. Reviewer REJECTED goes back to coder, not
+forward.
+
+The budget frontmatter is identical in every brief and never moves. This
+package has exactly one identity -- zero allocation per rendered frame -- and
+`gc_maxMajor: 0`, `alloc_bytes_per_op: 0` and `leak_cycles: 4096` are that
+identity written as numbers. `gc_maxPauseMs: 4` is the frame budget's quarter,
+which is the largest pause a 60 fps renderer can absorb without a visible hitch.
+
+Every session's DONE WHEN is a command you can run or an assertion you can name.
+None of them is a feeling.
+
+### If you only do a subset
+
+1. **M0 first, regardless.** Everything else in this document leans on one
+   command that does not exist. And `npm test` currently exits 127 in a
+   published package, which means the suite Law's "no gate output is a FAIL"
+   rule has been failing quietly for three minor versions.
+2. **M1 today after that.** `drawFast(ctx, Number.MAX_VALUE, 0, 0)` freezes the
+   tab, forever, with no stack to catch, in a method whose documented purpose is
+   a per-frame HUD counter fed by caller arithmetic. The trigger is one runaway
+   accumulator. The fix makes the hot body smaller. Nothing else here has that
+   ratio.
+3. **M2 is non-negotiable.** One predicate written twice with opposite NaN
+   behaviour, and a layout hand-off shape that turns a wrap engine's off-by-one
+   into a whole line of invisible draw calls. It blocks both feature sessions
+   for a reason.
+4. **M2 before M6, always.** M6 makes `startIdx` a public parameter of the
+   most-used method in the package. F-04 is what a bad `startIdx` does. Shipping
+   the API first writes the bug into a cross-package contract.
+5. **M7 is the free win.** It touches no hot body, has a named consumer, closes
+   a finding, and is the only session in this document that can be done in
+   parallel with anything else.
+6. **Do not start M9 until M4, M6, M7 and M8 have all shipped.** A major that
+   collects three breaking changes and then discovers a fourth is two majors.
+
+### The rejection ledger
+
+Carried forward from the old roadmap's "Deferred indefinitely" section, with a
+reason attached to each, plus the rejections this roadmap generated. A rejection
+without a reason gets re-proposed every six months.
+
+| Rejected | Reason |
+| --- | --- |
+| **Unicode beyond ASCII 0-255** | The 64K kerning LUT (`first << 8 \| second`) is why the package is fast and why it is 1.3 KB. It is structurally 8-bit. Unicode is a different data structure, not an addition -- and it would be a different package, because the memory profile stops being 128 KB flat. |
+| **SDF / MSDF atlases** | A different renderer with a different shader contract, not a feature of this one. |
+| **Rich text (per-run styling)** | Solvable by the caller once M5 lands: lay out once, draw subsets with different contexts. Shipping it here would duplicate what `drawQuads(first, count)` already gives away. |
+| **Vertical metrics (ascent/descent accessors)** | No consumer has asked; `lineHeight` and `base` have covered every case so far. Revisit when a named consumer appears, not before. |
+| **A per-glyph callback in `layoutGlyphs`/`drawQuads`** | An indirect call per glyph, and a megamorphic call site the moment two callers pass different closures. The mutable-buffer seam gives the same power with none of the cost. |
+| **An options object for range parameters** | One object literal per call per frame -- 72 of them for a HUD plus a paragraph -- in the package whose identity is that drawing does not allocate. |
+| **Growing `_charScratch` to fix F-02** | Puts a growth path next to a hot buffer and buys decimal digits that are already floating-point noise above 1e21. The T6 `maxArrayBuffersGrowth: 0` rule exists specifically to catch this fix. |
+| **A runtime tinting API** | M7 makes a themed atlas a boot-time cost. Per-frame tinting would be a `globalCompositeOperation` dance in a package that issues exactly one `drawImage` per glyph and nothing else. |
+| **DOM in the core module** | tripple's headless tests and every node:test file in this repo import the core. A `typeof document` branch in the core is a dead branch in every Node bundle. |
+| **A second ctx shape in the torture harness** | Two hidden classes through `draw`'s single `drawImage` call site makes it polymorphic, and the measurement stops describing a real app. One shape, built once. |
+| **`measure()` throwing on an embedded newline** | Hostile to the many callers measuring strings that merely happen to be single-line. M9 changes the return value instead, with a major bump. |
+| **Extracting the shared digit loop from `drawFast`/`drawFastInt`** | A call frame on two hot paths to save twelve lines of source. Duplicate, cross-reference in comments, and let a control catch divergence. |
+
+### The habit this roadmap is built around
+
+Every finding in section 2 came from running the code. F-01 was found by a probe
+that had to be killed with SIGTERM after six seconds -- there is no amount of
+reading that produces that result, and there is no code review that catches
+`while (temp > 0)` when `temp` is `Infinity`, because the line looks correct and
+is correct for every value anyone would type into a test.
+
+F-03 is the sharpest lesson in the set and it is worth keeping in front of the
+reviewer subagent. The package contains the same predicate twice, forty lines
+apart, written two different ways. Both look right. Both ARE right for every
+value except one. The measure path rejects NaN and the draw path accepts it, and
+the disagreement has been shipping since 1.0.0 in a package with 40 tests --
+none of which ever passed a NaN through `draw`, because why would you.
+
+Coverage is not the same as exercise. Forty tests, three describes, and not one
+of them could execute, which meant nobody noticed that not one of them crossed
+a guard with the value the guard exists for. When the reviewer subagent reads a
+test, the question is not "does this test the feature" -- it is **"would this
+test fail if the feature were broken"**. Every ASSERTIONS block above is written
+to be answerable in that form, and every T9 control exists to answer it out
+loud.
+
+MIT (c) Zahary Shinikchiev
