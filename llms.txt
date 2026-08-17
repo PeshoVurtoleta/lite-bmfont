@@ -15,7 +15,7 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0–255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.2.2'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.2.3'.
 
 ## Export: DRAWFAST_MAX (number)
 1e21 -- the largest magnitude drawFast can render. The "d.d" form of 1e21 is
@@ -27,14 +27,28 @@ so Math.max(-DRAWFAST_MAX, Math.min(DRAWFAST_MAX, v)) is always renderable.
 ## Export: BitmapFont (class)
 
 ### Constructor
-new BitmapFont(imageAtlas, fontJson)
+new BitmapFont(imageAtlas, fontJson, opts?)
   - imageAtlas: HTMLImageElement | HTMLCanvasElement
   - fontJson:   standard BMFont JSON (common, chars, optional kernings)
+  - opts.missingAdvance: number, default 0 (byte-identical to 1.2.x). The xadvance
+    written into every glyph id the descriptor did not cover, so an absent glyph
+    leaves a gap instead of overprinting the next (F-12). Must be finite in
+    [0, 32767] or the constructor throws RangeError; truncated to an integer by the
+    Int16 store. Id 10 is never given a missing advance.
+
+### id-10 policy
+A descriptor entry for id 10 (`\n`) is DISCARDED at construction -- width, height,
+offsets, advance, and any kerning pair naming it. A newline is a layout
+instruction, not a glyph. `hasGlyph(10)` is always false.
 
 ### Methods
 
 measure(text, scale = 1) -> number
   Kerning-aware pixel width of `text` at `scale`.
+
+hasGlyph(id) -> boolean
+  Does the descriptor cover this glyph id? Fail-closed on every non-integer: NaN,
+  -1, 256, 65.5 are all false. Id 10 is always false. Throws after destroy().
 
 draw(ctx, text, x, y, scale = 1, align = 0) -> void
   Multi-line `\n`-aware renderer. `align`: 0=left, 1=center, 2=right.
@@ -65,6 +79,18 @@ drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale
         [2] lineWidth  — pixel width of this line AT scale=1 (used for alignment)
         [3] flags      — 0 = normal; 1 = append "..." ellipsis after content
   - Surplus capacity in `layoutBuffer` is ignored — reuse one buffer across renders.
+  - Contract, enforced (1.2.3):
+      * lineCount is floored to an integer and clamped at 0. NaN, negatives and
+        values below 1 draw nothing and return (0.5 drew a full line in 1.2.2).
+      * The buffer MUST hold at least lineCount*4 floats. A short buffer THROWS a
+        RangeError naming both numbers (surplus lines vanished silently in 1.2.2).
+      * startIdx < 0 or NaN clamps to 0; endIdx > text.length or NaN clamps to
+        text.length; endIdx < startIdx draws an empty line. Fractional indices are
+        truncated, not floored.
+      * layoutBuffer may be any indexable with numeric length (Float64Array and a
+        plain Array work identically); no type check is performed.
+      * Id 10 inside a line range is NOT a line break here -- it advances 0 and
+        draws nothing.
 
 destroy() -> void
   Releases the atlas reference and typed arrays (glyphs, kerning, internal scratch).
@@ -120,9 +146,9 @@ font.drawWrapped(ctx, 'Hello world…', layout, n, 200, 100, 10, 10, 1, 1, 1); /
 See source file BitmapFont.js for full JSDoc API documentation.
 
 ## Testing
-- npm test -> node --expose-gc --test test/*.test.js: 72 tests, 64 pass, 0 fail,
-  8 todo -- 46 in BitmapFont.test.js, 1 version-sync block in packaging.test.js,
-  17 in boundary.test.js, 8 finding-watch todos in findings.test.js.
+- npm test -> node --expose-gc --test test/*.test.js: 93 tests, 86 pass, 0 fail,
+  7 todo -- 58 in BitmapFont.test.js, 1 version-sync block in packaging.test.js,
+  27 in boundary.test.js, 7 finding-watch todos in findings.test.js.
 - npm run torture -> node --expose-gc test/torture.mjs: prints exactly "ok", exit 0.
   Zero-allocation is measured, not just claimed -- draw / drawFast / drawWrapped /
   measure each pass maxMajor:0, maxPauseMs:4, maxArrayBuffersGrowth:0 and

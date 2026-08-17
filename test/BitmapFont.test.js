@@ -1,7 +1,10 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BitmapFont, DRAWFAST_MAX } from '../BitmapFont.js';
-import { rec, resetRec } from './torture/harness.mjs';
+import {
+    rec, resetRec, ATLAS,
+    FONT_ASCII, FONT_GAP, FONT_NL, JSON_ASCII, JSON_GAP, oracleAdvance,
+} from './torture/harness.mjs';
 
 // The next representable double above v (v >= 0). 1e21's ulp is 2^17 = 131072.
 const DF_NEXT = new DataView(new ArrayBuffer(8));
@@ -708,6 +711,167 @@ describe('BitmapFont.drawWrapped', () => {
         for (let i = 0; i < 10; i++) font.drawWrapped(ctx, 'ABC', layout, 1, 100, 100, 0, 0);
 
         assert.deepEqual(Array.from(layout), snapshot);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+});
+
+// ---- M2: the cursor conservation session (F-03/04/05/12/24/25) -------------
+// Twelve blocks, each named for the finding it lands and tagged whether v1.2.2
+// fails it. They share the harness `rec`; each resets it and ends by asserting
+// the two fault counters. The F-24/F-25 non-ASCII test chars are written
+// String.fromCharCode(200), never a literal byte (ASCII-only source Law).
+describe('BitmapFont M2: cursor conservation', () => {
+    const E = String.fromCharCode(200); // id 200, unmapped in JSON_ASCII
+
+    test('F-03: a NaN char code is rejected identically by draw, drawWrapped and measure', () => {
+        // v1.2.2 FAILS: the drawWrapped NaN vector (a bad index) drew five glyphs
+        // at NaN x. The three sites now share one guard idiom. _measureRange is the
+        // one site a NaN id reaches through the public surface (an out-of-range end
+        // -> charCodeAt NaN); draw has no range and drawWrapped clamps, so an
+        // out-of-range CODE (>=256) exercises their guard instead.
+        resetRec(ATLAS);
+        assert.equal(FONT_ASCII._measureRange('A', 0, 2, 1), 12); // NaN id at index 1 skipped
+        resetRec(ATLAS);
+        FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(-1, 5, 60, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        let nan = 0; for (let i = 0; i < rec.calls; i++) if (rec.dx[i] !== rec.dx[i]) nan++;
+        assert.equal(nan, 0); // FAILS on 1.2.2 (five NaN)
+        const s = 'A' + String.fromCharCode(300) + 'B'; // id 300 out of range
+        assert.equal(FONT_ASCII.measure(s), 24);
+        resetRec(ATLAS); FONT_ASCII.draw(rec, s, 0, 0);
+        const dCalls = rec.calls;
+        assert.equal(dCalls, 2);
+        resetRec(ATLAS); FONT_ASCII.drawWrapped(rec, s, Float32Array.of(0, 3, 24, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.equal(rec.calls, dCalls); // draw and drawWrapped skip the same id
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-04: startIdx -1 renders the same five glyphs as startIdx 0', () => {
+        // v1.2.2 FAILS: five NaN dx. H13 clamps startIdx to 0.
+        resetRec(ATLAS);
+        FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(-1, 5, 40, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.equal(rec.calls, 5);
+        assert.deepEqual(Array.from(rec.dx.slice(0, 5)), [0, 12, 24, 36, 48]);
+        resetRec(ATLAS);
+        FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 40, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.deepEqual(Array.from(rec.dx.slice(0, 5)), [0, 12, 24, 36, 48]);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-04: a NaN startIdx clamps to 0; a NaN endIdx clamps to text.length', () => {
+        // v1.2.2 FAILS: both drew a NaN line.
+        resetRec(ATLAS);
+        FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(NaN, 5, 60, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.equal(rec.calls, 5);
+        assert.deepEqual(Array.from(rec.dx.slice(0, 5)), [0, 12, 24, 36, 48]);
+        resetRec(ATLAS);
+        FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(0, NaN, 60, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.equal(rec.calls, 5);
+        assert.deepEqual(Array.from(rec.dx.slice(0, 5)), [0, 12, 24, 36, 48]);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-05: a layoutBuffer shorter than lineCount * 4 throws naming both numbers', () => {
+        // v1.2.2 FAILS: no throw, surplus lines vanished. Float32Array.of(...) is
+        // length 4; lineCount 3 needs 12.
+        resetRec(ATLAS);
+        assert.throws(
+            () => FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 0), 3, 1000, 1000, 0, 0, 1, 0, 0),
+            (e) => e instanceof RangeError && e.message.includes('4') && e.message.includes('12'));
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-05: the same short buffer with lineCount 1 does not throw', () => {
+        // The non-vacuity twin -- passes on both versions. A correctly-sized call
+        // (length 4, lineCount 1 needs 4) draws its five glyphs.
+        resetRec(ATLAS);
+        assert.doesNotThrow(
+            () => FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 0), 1, 1000, 1000, 0, 0, 1, 0, 0));
+        assert.equal(rec.calls, 5);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-05: lineCount 0.5 draws nothing; 1.5 draws one line', () => {
+        // v1.2.2 FAILS on 0.5 (drew a whole line). H11 floors and clamps at 0.
+        resetRec(ATLAS);
+        FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 0), 0.5, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.equal(rec.calls, 0);
+        resetRec(ATLAS);
+        FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 0), 1.5, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.equal(rec.calls, 5);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-12: missingAdvance defaults to 0 and 1.2.x output is unchanged', () => {
+        // The semver guarantee in test form: byte-identical to 1.2.2 for the
+        // documented inputs. draw('A' + chr(200) + 'A') -> dx 0,12 (overprint).
+        resetRec(ATLAS);
+        FONT_ASCII.draw(rec, 'A' + E + 'A', 0, 0);
+        assert.equal(rec.calls, 2);
+        assert.deepEqual(Array.from(rec.dx.slice(0, 2)), [0, 12]);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-12: missingAdvance 6 gives the absent glyph real width', () => {
+        // NOT constructible on 1.2.2. 2 calls, dx 0,18 -- the absent glyph has
+        // width 0 / height 0, so it is never passed to drawImage; it only advances
+        // the cursor, moving the second A from 12 to 18. Call count matches the
+        // default exactly.
+        const atlas = {};
+        const font = new BitmapFont(atlas, JSON_ASCII, { missingAdvance: 6 });
+        resetRec(atlas);
+        font.draw(rec, 'A' + E + 'A', 0, 0);
+        assert.equal(rec.calls, 2);
+        assert.deepEqual(Array.from(rec.dx.slice(0, 2)), [0, 18]);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-12: hasGlyph is fail-closed on NaN, -1, 256, 65.5 and 10', () => {
+        // NOT constructible on 1.2.2 (no hasGlyph).
+        resetRec(ATLAS);
+        assert.equal(FONT_ASCII.hasGlyph(65), true);
+        for (const bad of [NaN, -1, 256, 65.5, 10]) {
+            assert.equal(FONT_ASCII.hasGlyph(bad), false, 'hasGlyph(' + bad + ')');
+        }
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-24: an unmapped glyph breaks the kerning chain, and the oracle agrees', () => {
+        // 34 on both sides (12 + kern(65,200)=3 + 0 + kern(200,66)=7 + 12). The
+        // v1.2.2 oracle's adv[id] skip gave 19 -- this is the assertion that makes
+        // fork (3) non-decorative.
+        resetRec(ATLAS);
+        const s = 'A' + E + 'B';
+        assert.equal(FONT_GAP._measureRange(s, 0, 3, 1), 34);
+        assert.equal(oracleAdvance(JSON_GAP, s, 0, 3, 1), 34);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-25: a descriptor mapping id 10 is discarded; measure is 24, not 31', () => {
+        // v1.2.2 FAILS: measure was 31 (it charged 7px for the newline).
+        resetRec(ATLAS);
+        assert.equal(FONT_NL.measure('A\nA'), 24);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('F-25: drawWrapped never renders a newline as a glyph', () => {
+        // v1.2.2 FAILS: 4 calls (it drew the 9x9 newline mid-line). H6 zeroes the
+        // size so gw>0 && gh>0 is false.
+        resetRec(ATLAS);
+        FONT_NL.drawWrapped(rec, 'AB\nC', Float32Array.of(0, 4, 36, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.equal(rec.calls, 3);
+        assert.deepEqual(Array.from(rec.dx.slice(0, 3)), [0, 12, 24]);
         assert.equal(rec.dropped, 0);
         assert.equal(rec.imgMismatch, 0);
     });

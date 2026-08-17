@@ -6,16 +6,17 @@
  *     node --expose-gc test/torture.mjs        -> prints exactly "ok", exit 0
  *     npm run torture
  *
- * Ten tiers share one shape (ROADMAP section 3). M0 stands up the harness, the
- * shared recording ctx, and wires the tiers this package needs now:
+ * Ten tiers share one shape (ROADMAP section 3). Wired so far:
  *
- *     T0  conservation law          T1  degenerate sweep
- *     T6  the zero-alloc gate       T7  soak + retention
- *     T9  controls (must be able to fail)
+ *     T0  conservation law (M2)     T1  degenerate sweep (M0)
+ *     T2  layout-buffer matrix (M2) T4  numeric door + oracle (M1)
+ *     T6  the zero-alloc gate (M0)  T7  soak + retention (M0)
+ *     T9  controls (must be able to fail, M0)
  *
- * T2, T3, T4, T5 and T8 are REGISTERED but empty in M0 -- each prints one
- * `torture: TODO -- ...` line to stderr and returns. A registered-empty tier is
- * a visible TODO; an unregistered one is a forgotten one.
+ * T3 (descriptor, M3), T5 (allocating reference renderer, M4) and T8 (packaging,
+ * M7) are REGISTERED but empty -- each prints one `torture: TODO -- ...` line to
+ * stderr and returns. A registered-empty tier is a visible TODO; an unregistered
+ * one is a forgotten one.
  *
  * lite-gc-profiler is one-measurement-at-a-time, so tiers run STRICTLY
  * SEQUENTIALLY -- never nested, never concurrent.

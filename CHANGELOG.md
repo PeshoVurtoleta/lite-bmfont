@@ -2,6 +2,64 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.2.3 -- 2026-08-17
+
+The advance conservation law (the NaN cursor). Nothing in the package could
+state where the cursor was supposed to be, so nothing could notice when a NaN
+char code, a bad layout index, an unmapped glyph or a mapped newline moved it off
+the rails. This release lands the three-way conservation law (T0) and fixes the
+seven findings the law exposes. Design record: `decisions/0002-cursor-conservation.md`.
+
+### Added
+- `missingAdvance` constructor option (default **0**): the xadvance written into
+  every uncovered glyph id at construction, so an absent glyph leaves a gap
+  instead of letting the next glyph overprint it (F-12). Opt-in; the default is
+  byte-identical to 1.2.x. Must be a finite number in `[0, 32767]` or the
+  constructor throws `RangeError`.
+- `hasGlyph(id): boolean` -- fail-closed coverage query. `NaN`, `-1`, `256`,
+  `65.5` and id `10` are all `false`. Detect coverage gaps at load time instead
+  of as overlapping text at runtime.
+- T0's advance conservation law in full: 50,000 seeded three-way tuples
+  (`walk === _measureRange === oracle`), the fork fixtures, and a law-4
+  non-vacuity assertion that detects its own vacuity (F-21).
+- T2 filled: the 22-row layout-buffer abuse matrix, each row a decided policy
+  (clamp / throw / documented no-op) with its killing mutation.
+- 12 named `node:test` blocks pinning F-03/04/05/12/24/25 as real assertions.
+
+### Fixed
+
+| ID | Sev | Finding | Reproduction | Fixed in |
+| --- | --- | --- | --- | --- |
+| **F-03** | S1 | The NaN guard polarity was inverted between `_measureRange` (`id >= 0 && id < 256`, rejects NaN) and both draw paths (`id < 0 \|\| id >= 256`, accepts NaN). All three sites now share the reference form; the two draw guards are reshaped to `!(id >= 0 && id < 256)`. | `(NaN < 0 \|\| NaN >= 256)` -> `false` (accepted); now `!(NaN >= 0 && NaN < 256)` -> `true` (skipped) | 1.2.3 |
+| **F-04** | S1 | A `startIdx < 0` or `NaN` in the layout buffer rendered a whole line at `NaN` x (`charCodeAt(-1)` is NaN, which passed the inverted guard) -- the exact hand-off shape `@zakkster/lite-text-layout` emits. Per-line indices are now clamped: `startIdx` to 0, `endIdx` to `text.length`. | `drawWrapped(ctx,'HELLO',Float32Array.of(-1,5,40,0),1,...)` -> was 5 NaN dx; now dx `0,12,24,36,48` | 1.2.3 |
+| **F-05** | S2 | `drawWrapped` never bounds-checked `layoutBuffer` against `lineCount * 4`; surplus lines vanished silently. A short buffer now throws a `RangeError` naming both numbers; `lineCount` below 1, or `NaN`, or fractional is floored and clamped at 0. | `drawWrapped(ctx,'HELLO',Float32Array.of(0,5,60,0),3,...)` -> was no throw, 2 lines dropped; now `RangeError` naming 4 and 12. `lineCount 0.5` -> was 5 calls; now 0 | 1.2.3 |
+| **F-12** | S3 | A glyph absent from the atlas advanced by zero, so the next glyph overprinted it -- undocumented. Now documented, opt-in-correctable via `missingAdvance`, and detectable at load via `hasGlyph`. | `draw(ctx,'A'+chr(200)+'A',0,0)` -> dx `0,12` (second A overprints); with `{missingAdvance:6}` -> dx `0,18` | 1.2.3 |
+| **F-21** | S3 | T0 law 4 (the seam-kerning equation) was the only kerning check in the gate and it was vacuous: `FONT_KERN` shipped 3 pairs against an 8836-seam corpus, so 0 seams carried non-zero kerning under either shipped seed. `JSON_KERN` is densified to ~85% non-zero seams, and law 4 now counts and asserts its own non-zero seam count. | default seed -> eligible 246, non-zero 0; seed 12345 -> 247, 0. Mutation: deleting the kerning term from `_measureRange` now turns T0 red (it passed clean before) | 1.2.3 |
+| **F-24** | S3 | The advance oracle claimed an unmapped id "advances 0 AND does not become the kerning prev" and called it the implementation's behaviour; it was never true. The library kerns across an unmapped id and the oracle now agrees (fork (3): the oracle changed, not the library). | `FONT_GAP._measureRange('A'+chr(200)+'B',0,3,1)` -> 34; v1.2.2 oracle gave 19 | 1.2.3 |
+| **F-25** | S1 | A descriptor entry for id 10 (`\n`) charged advance in `_measureRange`, ran kerning through the line break, and -- because `drawWrapped` has no id-10 case -- drew the newline as a visible 9x9 glyph mid-line. A descriptor entry for id 10 is now DISCARDED (width, height, offsets, advance, and any kerning pair naming it). | `FONT_NL.measure('A\nA')` -> was 31, now 24; `drawWrapped('AB\nC',...)` -> was 4 calls, now 3 | 1.2.3 |
+
+### Changed (behaviour)
+
+Three deltas, each confined to inputs that were already producing undefined or
+silently-wrong output. Every other call is byte-identical to 1.2.2.
+
+- **A `layoutBuffer` shorter than `lineCount * 4` now throws `RangeError`** instead
+  of dropping the surplus lines. This input previously produced undefined or
+  silently-wrong output.
+- **`drawWrapped` with `lineCount = 0.5` now draws nothing** (floored to 0)
+  instead of drawing a full line. This input previously produced undefined or
+  silently-wrong output.
+- **A descriptor entry mapping id 10 (`\n`) is now discarded.** This input
+  previously produced undefined or silently-wrong output (an advance-charging,
+  kerning-through, mid-line-drawn newline that no two of the three code paths
+  agreed on).
+
+### Structural
+- Each font gains a 32-byte `Uint32Array(8)` glyph-coverage bitmap (`_mapped`),
+  moving the per-font structural total from 134,680 to 134,712 bytes. Pinned by
+  T6. The four T6 `rec.total` windows are unchanged (12,710,000 / 1,025,000 /
+  6,560,000 / 0): no glyph started or stopped being drawn.
+
 ## 1.2.2 -- 2026-08-17
 
 The `drawFast` magnitude door. Fixes an unkillable infinite loop and a silent

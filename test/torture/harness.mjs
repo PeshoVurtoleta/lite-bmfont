@@ -210,17 +210,36 @@ export const JSON_NUM = (() => {
     return { common: { lineHeight: 20, base: 16 }, chars, kernings: [] };
 })();
 
-/** JSON_ASCII plus a non-zero seam kerning so T0's additivity law is not vacuous. */
+/**
+ * JSON_ASCII plus a DENSE kerning table so T0 law 4 is not vacuous (F-21).
+ *
+ * The three original pairs are preserved verbatim -- node:test blocks assert
+ * them by name. Every other (first, second) in 33..126 gets an amount from
+ * `((f * 31 + s * 17) % 7) - 3`, in [-3, 3], with the zeros dropped. That is
+ * ~6/7 of 8833 remaining pairs, so about 85% of ALL possible seams carry
+ * non-zero kerning and the law is non-vacuous for EVERY seed, not just the two
+ * that happened to ship. The multiplier on `s` is 17 and not 7 on purpose:
+ * 7 % 7 === 0 would make the amount independent of `s`, which reintroduces
+ * whole rows of zeros -- the same degeneracy in a new costume.
+ *
+ * Built ONCE at module scope (harness rule 1); the array is ~7,500 objects and
+ * never enters a measured window.
+ */
 export const JSON_KERN = (() => {
-    return {
-        common: { lineHeight: 20, base: 16 },
-        chars: JSON_ASCII.chars,
-        kernings: [
-            { first: 65, second: 66, amount: -1 },
-            { first: 66, second: 65, amount: 2 },
-            { first: 65, second: 65, amount: -2 },
-        ],
-    };
+    const kernings = [
+        { first: 65, second: 66, amount: -1 },
+        { first: 66, second: 65, amount: 2 },
+        { first: 65, second: 65, amount: -2 },
+    ];
+    for (let f = 33; f <= 126; f++) {
+        for (let s = 33; s <= 126; s++) {
+            if (f === 65 && (s === 65 || s === 66)) continue;
+            if (f === 66 && s === 65) continue;
+            const a = ((f * 31 + s * 17) % 7) - 3;
+            if (a !== 0) kernings.push({ first: f, second: s, amount: a });
+        }
+    }
+    return { common: { lineHeight: 20, base: 16 }, chars: JSON_ASCII.chars, kernings };
 })();
 
 /** 200 glyphs (ids 32..231), 500 kerning pairs, all integer. T7 only. */
@@ -239,10 +258,41 @@ export const JSON_SOAK = (() => {
     return { common: { lineHeight: 20, base: 16 }, chars, kernings };
 })();
 
+/**
+ * Fork fixtures (M2, decisions/0002). Built once at module scope.
+ *
+ * JSON_GAP: ids 65, 66 only (advance 12), with kernings that reach ACROSS an
+ * unmapped id (200) and name it as a partner -- the evidence fork (3) rests on.
+ * JSON_GAP6: the same descriptor with { missingAdvance: 6 }, so the unmapped id
+ * occupies real width -- the fork (2)x(3) interaction.
+ * JSON_NL: JSON_ASCII plus a descriptor that MAPS id 10 (width/height 9, advance
+ * 7) -- the entry fork (4) discards. `.concat` so JSON_ASCII.chars is untouched.
+ * JSON_NLK: JSON_NL plus kernings naming id 10 -- the H7 filter FONT_NL cannot
+ * kill on its own.
+ */
+export const JSON_GAP = { common: { lineHeight: 20, base: 16 }, chars: [
+    { id: 65, x: 0, y: 0, width: 10, height: 14, xoffset: 0, yoffset: 2, xadvance: 12 },
+    { id: 66, x: 10, y: 0, width: 10, height: 14, xoffset: 0, yoffset: 2, xadvance: 12 },
+], kernings: [
+    { first: 65, second: 66, amount: -5 },
+    { first: 65, second: 200, amount: 3 },
+    { first: 200, second: 66, amount: 7 },
+] };
+export const JSON_GAP6 = JSON_GAP;
+export const JSON_NL = { common: { lineHeight: 20, base: 16 },
+    chars: JSON_ASCII.chars.concat([{ id: 10, x: 0, y: 0, width: 9, height: 9, xoffset: 0, yoffset: 0, xadvance: 7 }]),
+    kernings: [] };
+export const JSON_NLK = { common: JSON_NL.common, chars: JSON_NL.chars,
+    kernings: [ { first: 65, second: 10, amount: -4 }, { first: 10, second: 65, amount: 5 } ] };
+
 /** Fonts constructed once at module scope; never inside a loop. */
 export const FONT_ASCII = new BitmapFont(ATLAS, JSON_ASCII);
 export const FONT_NUM = new BitmapFont(ATLAS, JSON_NUM);
 export const FONT_KERN = new BitmapFont(ATLAS, JSON_KERN);
+export const FONT_GAP = new BitmapFont(ATLAS, JSON_GAP);
+export const FONT_GAP6 = new BitmapFont(ATLAS, JSON_GAP6, { missingAdvance: 6 });
+export const FONT_NL = new BitmapFont(ATLAS, JSON_NL);
+export const FONT_NLK = new BitmapFont(ATLAS, JSON_NLK);
 
 /** 64 chars, 3 lines, 2 newlines, NO spaces -> 62 drawn glyphs exactly. */
 export const S64 = 'A'.repeat(21) + '\n' + 'A'.repeat(21) + '\n' + 'A'.repeat(20);
@@ -275,15 +325,29 @@ export const NUM_CYCLE = (() => {
  * never touching the Int16Array store -- so the residual between this and
  * _measureRange IS the F-08 truncation drift when a font has one.
  *
- * MISSING-GLYPH POLICY (pinned, F-12): a character with no descriptor entry
- * advances by ZERO and does not become the kerning `prev`. That is today's
- * implementation behaviour, pinned as a contract so M2 changes it deliberately.
+ * MISSING-GLYPH POLICY, fork (3) option A -- decided in M2, recorded in
+ * decisions/0002. An unmapped id in [0, 256) advances by whatever the glyph
+ * table says (0 by default, `missingAdvance` if the caller opted in) AND BECOMES
+ * THE KERNING `prev`, exactly as all three walk sites in BitmapFont.js do. The
+ * 1.2.2 comment here claimed the opposite and called it "today's implementation
+ * behaviour"; it was never true (F-24) and it would have failed M2's three-way
+ * law on day one for a reason that is not any of F-03/F-04/F-05/F-12.
+ *
+ * The oracle must still read the ORIGINAL JSON, never the Int16 store, or the
+ * F-08 residual disappears -- so an unmapped id contributes `missingAdvance`
+ * (passed in), not `font.glyphs[id * 7 + 6]`. Id 10 is handled exactly as the
+ * library handles it: `adv[10]` is forced out of the map by buildOracleMaps
+ * (which skips `c.id === 10`), and `kern` keys naming 10 are skipped, so the
+ * oracle reproduces the constructor's policy from the JSON side without knowing
+ * about it.
  *
  * @param {object} json   the ORIGINAL descriptor, not the font
  * @param {string} text
  * @param {number} start  inclusive
  * @param {number} end    exclusive
  * @param {number} scale
+ * @param {number} [missingAdvance=0]  advance charged to an id in [0,256) the
+ *                                     descriptor did not cover
  * @returns {number}
  */
 const oracleCache = new WeakMap();
@@ -292,17 +356,22 @@ function buildOracleMaps(json) {
     const kern = Object.create(null);
     for (let i = 0; i < json.chars.length; i++) {
         const c = json.chars[i];
-        if (c.id >= 0 && c.id < 256) adv[c.id] = c.xadvance;
+        // Id 10 is a layout instruction, not a glyph -- its descriptor entry is
+        // discarded (F-25), so the oracle must not see its advance either.
+        if (c.id >= 0 && c.id < 256 && c.id !== 10) adv[c.id] = c.xadvance;
     }
     if (json.kernings) {
         for (let i = 0; i < json.kernings.length; i++) {
             const k = json.kernings[i];
-            if (k.first < 256 && k.second < 256) kern[(k.first << 8) | k.second] = k.amount;
+            // A newline cannot be a kerning partner (H7); mirror the filter here.
+            if (k.first < 256 && k.second < 256 && k.first !== 10 && k.second !== 10) {
+                kern[(k.first << 8) | k.second] = k.amount;
+            }
         }
     }
     return { adv, kern };
 }
-export function oracleAdvance(json, text, start, end, scale) {
+export function oracleAdvance(json, text, start, end, scale, missingAdvance = 0) {
     let maps = oracleCache.get(json);
     if (maps === undefined) { maps = buildOracleMaps(json); oracleCache.set(json, maps); }
     const adv = maps.adv;
@@ -311,13 +380,16 @@ export function oracleAdvance(json, text, start, end, scale) {
     let prevId = -1;
     for (let i = start; i < end; i++) {
         const id = text.charCodeAt(i);
-        // Missing-glyph policy: no descriptor -> advances 0 AND does not become prev.
-        if (id >= 0 && id < 256 && adv[id] !== undefined) {
+        // An id in [0,256) advances and becomes prev regardless of coverage --
+        // an unmapped id contributes `missingAdvance` (0 by default). Id 10 was
+        // dropped from `adv`, so `adv[10] === undefined` -> it advances 0 and
+        // resets nothing extra, matching the library's zeroed-slot policy.
+        if (id >= 0 && id < 256) {
             if (prevId !== -1) {
                 const kk = kern[(prevId << 8) | id];
                 if (kk !== undefined) width += kk * scale;
             }
-            width += adv[id] * scale;
+            width += (adv[id] === undefined ? missingAdvance : adv[id]) * scale;
             prevId = id;
         }
     }

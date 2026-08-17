@@ -23,8 +23,17 @@ export class BitmapFont {
      *   chars: Array<{ id: number, x: number, y: number, width: number, height: number, xoffset: number, yoffset: number, xadvance: number }>,
      *   kernings?: Array<{ first: number, second: number, amount: number }>
      * }} fontJson  Standard BMFont JSON descriptor.
+     * @param {{ missingAdvance?: number }} [opts]
+     *   Optional policy. `missingAdvance` (default **0**, which is v1.2.x
+     *   behaviour byte-for-byte) is the xadvance written into every glyph id
+     *   the descriptor did not cover, so an absent glyph leaves a gap instead
+     *   of letting the next glyph overprint it (F-12). Must be a finite number
+     *   in [0, 32767] or the constructor throws; it is truncated to an integer
+     *   by the Int16 store, exactly as a descriptor xadvance is (F-08).
+     *   Id 10 (`\n`) is NEVER given a missing advance -- see the id-10 policy
+     *   below. Use `hasGlyph(id)` to detect coverage gaps at load time.
      */
-    constructor(imageAtlas, fontJson) {
+    constructor(imageAtlas, fontJson, opts) {
         this.atlas = imageAtlas;
         this.lineHeight = fontJson.common.lineHeight;
         this.base = fontJson.common.base;
@@ -37,6 +46,26 @@ export class BitmapFont {
         // Reusable scratch for drawFast's char-code buffer. Max width of a 64-bit float
         // rendered with one decimal is well under 24 bytes.
         this._charScratch = new Uint8Array(24);
+        // 256-bit glyph-coverage bitmap, 8 words of 32 bits, THIRTY-TWO bytes.
+        // A 256-byte Uint8Array was the obvious form and was rejected: this
+        // package publishes 134,680 bytes per font as a number, and 32 is the
+        // smallest honest way to answer hasGlyph(). The cost of the bitmap is
+        // that hasGlyph must test integrality explicitly (`id === (id | 0)`),
+        // which a byte-per-id map would have got for free -- see hasGlyph.
+        this._mapped = new Uint32Array(8);
+
+        // Cold path, fail closed. `null is not zero`: an explicitly-passed NaN,
+        // null or Infinity is a caller error and throws here, at construction,
+        // rather than becoming a silently-truncated 0 in the glyph table. The
+        // `!(a && b)` form rejects NaN on both bounds (ROADMAP law 4 idiom).
+        let missingAdvance = 0;
+        if (opts !== undefined && opts !== null && opts.missingAdvance !== undefined) {
+            const m = opts.missingAdvance;
+            if (!(m >= 0 && m <= 32767)) {
+                throw new RangeError('lite-bmfont: missingAdvance must be a finite number in [0, 32767], got ' + m);
+            }
+            missingAdvance = m;
+        }
 
         for (let i = 0; i < fontJson.chars.length; i++) {
             const char = fontJson.chars[i];
@@ -51,13 +80,66 @@ export class BitmapFont {
                 this.glyphs[ptr + 4] = char.xoffset;
                 this.glyphs[ptr + 5] = char.yoffset;
                 this.glyphs[ptr + 6] = char.xadvance;
+                // Mark coverage only for INTEGER ids. A fractional id already
+                // writes nothing to `glyphs` (a non-integer index on a typed
+                // array is discarded by spec), so marking it would make
+                // hasGlyph() disagree with the table it describes. Descriptor
+                // validation proper is M3's (F-10); this only keeps the two
+                // structures consistent with each other.
+                if (id === (id | 0)) this._mapped[id >>> 5] |= 1 << (id & 31);
+            }
+        }
+
+        // ---- id 10 ('\n') is a LAYOUT INSTRUCTION, NOT A GLYPH (F-25) -------
+        // Stated policy, not an implementation detail: a descriptor entry for
+        // id 10 is DISCARDED. Some BMFont exporters emit one; against such a
+        // descriptor v1.2.2 charged 7px of advance in `_measureRange`, ran the
+        // kerning chain THROUGH the line break, and -- because `drawWrapped`
+        // has no `id === 10` case at all -- drew the newline as a visible 9x9
+        // glyph in the middle of a line. `draw` has always disagreed with both.
+        //
+        // Zeroing all seven slots settles all three at once, at ZERO per-glyph
+        // cost: width 0 and height 0 make `gw > 0 && gh > 0` false so no
+        // renderer ever passes it to drawImage, and xadvance 0 plus an empty
+        // kerning row/column (see the kernings loop) makes `_measureRange`
+        // arithmetically identical to `draw`'s skip-and-reset. The alternative
+        // -- an `id === 10` branch in `_measureRange` -- was the brief's
+        // recommendation and is rejected in decisions/0002 fork (4): it costs a
+        // comparison on every glyph of every measure to serve a cold-path fact.
+        //
+        // It does NOT make `draw` and `drawWrapped` produce the same dx column
+        // across a newline; nothing can, because only `draw` breaks the line.
+        // T0 law 5 is scoped to newline-free ranges and proves the exclusion.
+        const nlPtr = 10 * 7;
+        this.glyphs[nlPtr] = 0; this.glyphs[nlPtr + 1] = 0;
+        this.glyphs[nlPtr + 2] = 0; this.glyphs[nlPtr + 3] = 0;
+        this.glyphs[nlPtr + 4] = 0; this.glyphs[nlPtr + 5] = 0;
+        this.glyphs[nlPtr + 6] = 0;
+        this._mapped[0] &= ~(1 << 10);
+
+        // ---- F-12: fill uncovered ids, at CONSTRUCTION (ROADMAP law 7) ------
+        // The render loop still reads `glyphs[id * 7 + 6]` and does not know
+        // anything changed. Zero hot-path bytes. Default 0 => this loop does
+        // not run and 1.2.x output is byte-identical.
+        if (missingAdvance !== 0) {
+            for (let id = 0; id < 256; id++) {
+                if (id === 10) continue;
+                if ((this._mapped[id >>> 5] >>> (id & 31) & 1) === 0) {
+                    this.glyphs[id * 7 + 6] = missingAdvance;
+                }
             }
         }
 
         if (fontJson.kernings) {
             for (let i = 0; i < fontJson.kernings.length; i++) {
                 const k = fontJson.kernings[i];
-                if (k.first < 256 && k.second < 256) {
+                // The id-10 half of the F-25 policy: a newline is not a glyph,
+                // so it cannot be a kerning partner. Dropping these two cases
+                // here is what lets `_measureRange` reproduce `draw`'s chain
+                // reset with no per-glyph test. (The negative-key hole this
+                // condition still has is F-09 and belongs to M3; do not widen
+                // the scope of this hunk.)
+                if (k.first < 256 && k.second < 256 && k.first !== 10 && k.second !== 10) {
                     this.kerning[(k.first << 8) | k.second] = k.amount;
                 }
             }
@@ -78,6 +160,12 @@ export class BitmapFont {
 
         for (let i = start; i < end; i++) {
             const id = text.charCodeAt(i);
+            // F-03 REFERENCE FORM. This is the correct polarity and it is the
+            // one `draw` and `drawWrapped` were converted to. NaN fails BOTH
+            // comparisons, so a NaN id is REJECTED. Do not "simplify" this to
+            // `if (id < 0 || id >= 256) continue;` -- that reads perfectly
+            // natural, is what the other two sites used to say, and ACCEPTS
+            // NaN, which is what poisoned the cursor for a whole line.
             if (id >= 0 && id < 256) {
                 if (prevId !== -1) {
                     width += this.kerning[(prevId << 8) | id] * scale;
@@ -97,6 +185,24 @@ export class BitmapFont {
      */
     measure(text, scale = 1.0) {
         return this._measureRange(text, 0, text.length, scale);
+    }
+
+    /**
+     * Does the descriptor cover this glyph id? Cold path -- built for a loader
+     * that wants to detect coverage gaps at boot instead of discovering them as
+     * overlapping text at runtime (F-12).
+     *
+     * Fail-closed on every non-integer: `NaN`, `-1`, `256`, `65.5` and
+     * `undefined` are all `false`. Id 10 is ALWAYS false -- a newline is a
+     * layout instruction, not a glyph, and its descriptor entry is discarded at
+     * construction. Throws after `destroy()`, like every other read.
+     *
+     * @param {number} id
+     * @returns {boolean}
+     */
+    hasGlyph(id) {
+        return id >= 0 && id < 256 && id === (id | 0) &&
+            (this._mapped[id >>> 5] >>> (id & 31) & 1) === 1;
     }
 
     /**
@@ -144,7 +250,11 @@ export class BitmapFont {
                 continue;
             }
 
-            if (id < 0 || id >= 256) continue;
+            // F-03: NaN-safe, and the SAME idiom as _measureRange:76. The old
+            // `id < 0 || id >= 256` form is also false for NaN, which means it
+            // ACCEPTED NaN and `cursorX += undefined * scale` poisoned every
+            // remaining glyph on the line. Two comparisons before, two after.
+            if (!(id >= 0 && id < 256)) continue;
 
             if (prevId !== -1) {
                 cursorX += this.kerning[(prevId << 8) | id] * scale;
@@ -279,7 +389,23 @@ export class BitmapFont {
      *     [2] lineWidth — pixel width of this line **at scale=1** (used for alignment)
      *     [3] flags     — 0 = normal line; 1 = append "..." ellipsis after content
      *
-     * Buffer must contain at least `lineCount * 4` floats. Excess capacity is ignored.
+     * **Contract, enforced (1.2.3):**
+     *
+     * - `lineCount` is floored to an integer and clamped at 0. `NaN`, a
+     *   negative, and any value below 1 draw NOTHING and return. (`0.5` drew a
+     *   full line in 1.2.2; that was a defect.)
+     * - The buffer MUST hold at least `lineCount * 4` floats. Short buffers
+     *   THROW a `RangeError` naming both numbers. In 1.2.2 the surplus lines
+     *   vanished silently, which no caller could detect.
+     * - `startIdx` below 0, or `NaN`, is clamped to 0. `endIdx` above
+     *   `text.length`, or `NaN`, is clamped to `text.length`. An `endIdx`
+     *   below `startIdx` draws an empty line. Fractional indices are read as
+     *   `charCodeAt` reads them: truncated.
+     * - `layoutBuffer` may be any indexable with a numeric `length`
+     *   (`Float32Array` is the intended type; `Float64Array` and a plain
+     *   `Array` behave identically). No type check is performed.
+     * - Id 10 (`\n`) inside a line range is NOT a line break here -- lines come
+     *   from the layout buffer. It advances 0 and draws nothing.
      *
      * The ellipsis flag is for layout engines that truncated a line and want the
      * renderer to append "…" without paying for a separate string. Requires
@@ -298,7 +424,22 @@ export class BitmapFont {
      * @param {0|1|2} [vAlign=0]  0 = top,  1 = middle, 2 = bottom
      */
     drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale = 1.0, align = 0, vAlign = 0) {
-        if (lineCount === 0) return;
+        // F-05 / the lineCount degenerates. Fork (1): CLAMP the index-like
+        // value, THROW on the buffer length. Both are per CALL, zero per glyph.
+        // `!(lineCount >= 1)` rejects NaN, negatives and everything below one
+        // line in a single NaN-safe test; Math.floor then kills the fractional
+        // case that drew a whole extra line in 1.2.2.
+        const n = !(lineCount >= 1) ? 0 : Math.floor(lineCount);
+        if (n === 0) return;
+        // A buffer too short cannot produce correct output under ANY
+        // interpretation, so it is the one case that throws rather than
+        // clamps. `.length` (not `byteLength`) is deliberate: it is what makes
+        // a plain Array and a Float64Array work, which the contract promises.
+        if (n * 4 > layoutBuffer.length) {
+            throw new RangeError('lite-bmfont: layoutBuffer holds ' + layoutBuffer.length +
+                ' floats, lineCount ' + n + ' needs ' + (n * 4));
+        }
+        const tlen = text.length;
 
         // `cursorY` tracks the baseline of the current line. The user passes `y` as the
         // container's top edge, so we shift down by `base * scale` so the first line's
@@ -307,18 +448,28 @@ export class BitmapFont {
 
         // Zero-loop vertical alignment
         if (vAlign > 0 && boxHeight > 0) {
-            const totalHeight = lineCount * this.lineHeight * scale;
+            const totalHeight = n * this.lineHeight * scale;
             if (vAlign === 1) cursorY += Math.round((boxHeight - totalHeight) / 2);
             else if (vAlign === 2) cursorY += Math.round(boxHeight - totalHeight);
         }
 
         let ptr = 0;
 
-        for (let l = 0; l < lineCount; l++) {
-            const startIdx = layoutBuffer[ptr++];
-            const endIdx = layoutBuffer[ptr++];
+        for (let l = 0; l < n; l++) {
+            // F-04: per-LINE index normalization -- two comparisons per line,
+            // ZERO per glyph. `!(v >= 0)` and `!(v <= tlen)` each reject NaN,
+            // so a NaN or negative index becomes an empty or short line and can
+            // never reach charCodeAt(). `startIdx = -1` used to render the
+            // whole line at NaN x -- the exact hand-off shape lite-text-layout
+            // produces. Fractional indices are deliberately NOT floored:
+            // charCodeAt truncates, so 0.5 already reads glyph 0, and a floor
+            // here would buy nothing and cost a call (T2 row 6 pins it).
+            let startIdx = layoutBuffer[ptr++];
+            let endIdx = layoutBuffer[ptr++];
             const lineWidth = layoutBuffer[ptr++];
             const flags = layoutBuffer[ptr++];
+            if (!(startIdx >= 0)) startIdx = 0;
+            if (!(endIdx <= tlen)) endIdx = tlen;
 
             let cursorX = x;
 
@@ -336,7 +487,9 @@ export class BitmapFont {
 
             for (let i = startIdx; i < endIdx; i++) {
                 const id = text.charCodeAt(i);
-                if (id < 0 || id >= 256) continue;
+                // F-03, identical to draw:147 and _measureRange:81. Third of
+                // three sites; all three now read the same way.
+                if (!(id >= 0 && id < 256)) continue;
 
                 if (prevId !== -1) cursorX += this.kerning[(prevId << 8) | id] * scale;
 
@@ -389,9 +542,9 @@ export class BitmapFont {
     /** Release atlas reference and typed arrays. */
     destroy() {
         this.atlas = null;
-        this.glyphs = this.kerning = this._charScratch = null;
+        this.glyphs = this.kerning = this._charScratch = this._mapped = null;
     }
 }
 export default BitmapFont;
 
-export const VERSION = '1.2.2';
+export const VERSION = '1.2.3';

@@ -144,12 +144,17 @@ export function run() {
     check(rec.dx[0] === 0 && rec.dx[1] === 12,
         () => 'T1/F-12: dx ' + rec.dx[0] + ',' + rec.dx[1] + ' != 0,12');
 
-    // F-04 (M2): startIdx < 0 -> charCodeAt(-1) is NaN, passes the inverted F-03
-    // guard, poisons cursorX -> the whole line renders at NaN x. 5 draws, dx NaN.
+    // F-04 (FIXED in M2, contract now): startIdx < 0 is CLAMPED to 0 (H13), so
+    // the line renders the same five glyphs as startIdx 0 -- 5 draws, dx
+    // 0,12,24,36,48, and nanScan 0. This block used to pin the DEFECT (5 NaN dx);
+    // it now pins the CONTRACT. Killed by removing the `if (!(startIdx >= 0))`
+    // clamp -> the NaN column returns and nanScan goes to 5.
     resetRec(ATLAS);
     FONT_ASCII.drawWrapped(rec, 'HELLO', LAYOUT_F04, 1, 100, 100, 0, 0, 1, 0, 0);
     check(rec.calls === 5, () => 'T1/F-04: expected 5 draws, got ' + rec.calls);
-    check(nanScan() === 5, () => 'T1/F-04: expected nanScan 5 (dx only), got ' + nanScan());
+    check(nanScan() === 0, () => 'T1/F-04: expected nanScan 0 (clamped), got ' + nanScan());
+    check(rec.dx[0] === 0 && rec.dx[1] === 12 && rec.dx[2] === 24 && rec.dx[3] === 36 && rec.dx[4] === 48,
+        () => 'T1/F-04: clamped dx != 0,12,24,36,48');
 
     // F-11 (M3): scale===NaN is unvalidated and reaches drawImage. 4 draws, and
     // dx/dy/dw/dh all NaN -> nanScan 16.
@@ -158,16 +163,17 @@ export function run() {
     check(rec.calls === 4, () => 'T1/F-11: expected 4 draws, got ' + rec.calls);
     check(nanScan() === 16, () => 'T1/F-11: expected nanScan 16 (4 calls x 4 cols), got ' + nanScan());
 
-    // F-05 (M2): drawWrapped never bounds-checks the buffer against lineCount*4.
-    // LAYOUT_F05 holds ONE line (4 floats) but lineCount is 3: line 0 draws HELLO
-    // (5 glyphs), lines 1 and 2 read undefined and silently vanish -- no throw.
-    // (An all-zero Float32Array(4) would draw 0 glyphs; a seeded one-line buffer
-    // is what exposes the "extra lines vanish" symptom the finding describes.)
+    // F-05 (FIXED in M2, contract now): drawWrapped now bounds-checks the buffer
+    // against lineCount*4 and THROWS a RangeError naming both numbers (H11).
+    // LAYOUT_F05 holds ONE line (4 floats) but lineCount is 3, so 3*4=12 > 4 and
+    // the call throws instead of silently dropping lines 1 and 2. This block used
+    // to pin the DEFECT (!threw, 5 draws); it now pins the CONTRACT. Killed by
+    // deleting the buffer-length throw -> the surplus lines vanish silently again.
     resetRec(ATLAS);
     let threw = false;
     try { FONT_ASCII.drawWrapped(rec, 'HELLO', LAYOUT_F05, 3, 100, 100, 0, 0, 1, 0, 0); }
-    catch { threw = true; }
-    check(!threw, () => 'T1/F-05: drawWrapped threw on an under-length buffer (should silently vanish)');
-    check(rec.calls === 5, () => 'T1/F-05: expected 5 draws (only line 0), got ' + rec.calls);
+    catch (e) { threw = e instanceof RangeError && e.message.includes('4') && e.message.includes('12'); }
+    check(threw, () => 'T1/F-05: drawWrapped did not throw a RangeError naming 4 and 12 on an under-length buffer');
+    check(rec.calls === 0, () => 'T1/F-05: expected 0 draws (threw before drawing), got ' + rec.calls);
     check(nanScan() === 0, () => 'T1/F-05: expected no NaN, got ' + nanScan());
 }

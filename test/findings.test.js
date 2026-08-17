@@ -1,9 +1,11 @@
 /**
  * QA-M0 findings probe -- session M0 final gate.
  *
- * Reproduces F-03 through F-18 against the CURRENT tree and pins today's
- * ANSWER (the defect), not a fix (F-01/F-02 were fixed in 1.2.2 -- see the note
- * below). M0's NON-GOALS forbid fixing anything in
+ * Reproduces the STILL-OPEN findings against the CURRENT tree and pins today's
+ * ANSWER (the defect), not a fix. F-01/F-02 were fixed in 1.2.2, and F-03/F-04/
+ * F-05/F-12 in 1.2.3 (M2); those no longer live here (see the notes below). The
+ * seven remaining todos are F-07, F-08, F-09, F-10, F-13, F-14, F-18. M0's
+ * NON-GOALS forbid fixing anything in
  * `BitmapFont.js` (zero diff except the appended `VERSION` export), and the
  * CHANGELOG ledger claims every one of these survives unfixed except the
  * process/tooling half of F-14/F-15/F-16/F-17. This file is the independent
@@ -30,9 +32,10 @@
  *     nothing. This QA header's former claim that session law forbade
  *     reproducing them no longer holds; the door is the session that changed it.
  *
- * F-04, F-05, F-06, F-11, F-12 already have exact-count pins in the
- * committed torture tiers (`test/torture/t0-laws.mjs`, `t1-degenerate.mjs`)
- * and are not duplicated here.
+ * F-06 and F-11 have exact-count pins in the committed torture tiers
+ * (`test/torture/t0-laws.mjs`, `t1-degenerate.mjs`) and are not duplicated here.
+ * F-04, F-05 and F-12 are now FIXED (M2); their contracts are pinned as real
+ * assertions in `BitmapFont.test.js` and the torture tiers, not as todos.
  *
  * Uses the shared recording ctx from `test/torture/harness.mjs` -- never a
  * second hand-rolled mock ctx.
@@ -43,15 +46,10 @@ import { readFileSync } from 'node:fs';
 import { BitmapFont } from '../BitmapFont.js';
 import { rec, resetRec, FONT_ASCII, JSON_ASCII, ATLAS } from './torture/harness.mjs';
 
-test.todo('F-03: NaN guard polarity -- _measureRange rejects NaN, draw/drawWrapped accept it', () => {
-    // _measureRange's guard: `id >= 0 && id < 256` -- NaN fails every comparison,
-    // so this correctly REJECTS (fail-closed).
-    assert.equal(NaN >= 0 && NaN < 256, false);
-    // draw()/drawWrapped()'s guard: `id < 0 || id >= 256` -- NaN fails BOTH
-    // comparisons too, so `continue` never fires and the glyph is ACCEPTED.
-    // Same predicate, opposite polarity -- this is the bug, still present.
-    assert.equal(NaN < 0 || NaN >= 256, false);
-});
+// F-03 (the NaN guard polarity) was FIXED in M2. Its watch-todo is removed here;
+// its content ships as real assertions in BitmapFont.test.js ("BitmapFont M2:
+// cursor conservation", block F-03) and in the torture gate (t0-laws law 11,
+// t1-degenerate's F-04 pin). A finding fixed is a finding that leaves this file.
 
 test.todo('F-07: only the first line is pixel-snapped in Y; later lines drift unrounded', () => {
     // A base=12/yoffset=0/lineHeight=16 font isolates the rounding mechanism

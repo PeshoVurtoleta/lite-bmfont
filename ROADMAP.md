@@ -139,13 +139,17 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-18** | S3 | **`generateAtlas` is duplicated, as the roadmap's Session 3 predicts.** `demo/demo-lite-bmfont.html:261` defines a 40-line `generateAtlas` and calls it four times; `tripple` needs the same function. | `demo/demo-lite-bmfont.html:261,309,313,317,321` |
 | **F-19** | S3 | **Non-ASCII bytes in shipped `files[]`, violating the Law's ASCII-only rule** (U+00D7 and U+00B5 excepted). `BitmapFont.d.ts` is now CLEAN (de-Unicoded by M1: em dash, plus-minus, en dash in comments). Remaining debt: `BitmapFont.js` (10 lines, U+2014 em dashes), `README.md` (47: emoji, U+2192, U+2014, U+2026, en dash), `llms.txt` (10). Docs (`README.md`, `llms.txt`) are de-Unicodeable in any session. No single behaviour fix touches all the affected source lines (the file header at line 1, and the `drawWrapped` doc block at 242-275), so the source de-Unicoding rides M9's hardening pass alongside the F-14 prototype freeze rather than being smeared across the behaviour sessions. | `grep -c -P '[^\x00-\x7F]' BitmapFont.js BitmapFont.d.ts README.md llms.txt` -> `10 / 0 / 47 / 10` |
 | **F-20** | S3 | **`draw()`/`drawFast()` center/right-align math is asserted only by directional inequality**, so an off-by-constant regression in the divisor is invisible to `npm test` and every wired torture tier. `drawWrapped()`'s align tests assert exact pixels (44, 88, 38) and are load-bearing; `draw`'s (`rec.dx[0] < 100`) are not. Closed prospectively by qa's `test/boundary.test.js`; the ported `BitmapFont.test.js` still carries the weak assertions. | scratch-edit `draw()`'s `... / 2` to `... / 3` -> `npm test` passes and `npm run torture` prints `ok`, exit 0 |
-| **F-21** | S3 | **T0 law 4 is vacuous -- the only kerning check in the torture gate never tests kerning (AR-02).** `FONT_KERN` kerns 3 pairs (A-B, B-A, A-A); the corpus is ASCII 33..126, so a random seam is 3/8836 = 0.034%. Under both shipped seeds ZERO eligible seams carry non-zero kerning, so law 4 degenerates to `left + right === full`. Route to the session revising `t0-laws.mjs`/its corpus (M2 owns F-06's T0 update); fix by a seeded corpus planting A/B seams or a dense `FONT_KERN`. | default seed -> eligible 246, seams 0; seed 12345 -> eligible 247, seams 0. Deleting the kern term from `_measureRange` passes `npm run torture` clean |
+| **F-21** | S3 | **T0 law 4 is vacuous -- the only kerning check in the torture gate never tests kerning (AR-02).** `FONT_KERN` kerns 3 pairs (A-B, B-A, A-A); the corpus is ASCII 33..126, so a random seam is 3/8836 = 0.034%. Under both shipped seeds ZERO eligible seams carry non-zero kerning, so law 4 degenerates to `left + right === full`. **Routed to M2**, which revises `t0-laws.mjs` and its corpus and builds the conservation law on top of it; fix by a seeded corpus planting A/B seams or a dense `FONT_KERN`, BEFORE the law leans on it. | default seed -> eligible 246, seams 0; seed 12345 -> eligible 247, seams 0. Deleting the kern term from `_measureRange` passes `npm run torture` clean |
 | **F-22** | S3 | **The documented word-wrap recipe does not type-check.** `README.md:124-125` and `llms.txt:75-76` read `font.glyphs[id * 7 + 6]` and `font.kerning[(prevId << 8) \| id]`; both are real `Int16Array` members at runtime and neither was declared in `BitmapFont.d.ts`. A TypeScript consumer copying the package's own answer to "compute the layoutBuffer yourself" cannot compile the primary integration path. Fixed in 1.2.2 (M1): `readonly glyphs` / `readonly kerning` declared, stride marked a cross-package contract. | `tsc` on the README recipe -> `Property 'glyphs' does not exist on type 'BitmapFont'` |
 | **F-23** | S2 | **`drawFast`'s digit loop is inexact in two bands (routed to M8, which reopens the body).** Band 1 (`\|value\| < 2^53`): off-by-one-tenth on near-ties -- `Math.round(value * 10)` rounds the float product, not the real value, breaking the documented "rounded to nearest tenth" guarantee. Band 2 (`2^53 < \|value\| <= 1e21`): the integer digits themselves are wrong and silent -- the value is scaled through a double before extraction, so it prints digits the value does not have. 15,858/191,255 in-door samples diverge (1,738 band 1, 14,120 band 2). The 1.2.2 door ceiling `DRAWFAST_MAX = 1e21` is the buffer boundary; 2^53 is the correctness boundary, chosen deliberately (see `decisions/0001`). Ground truth is a bit-exact mantissa oracle; `toFixed(1)` is exact below 1e21, the plan's `BigInt(Math.round(v*10))` oracle was rejected because it shares the library's float multiply. | `drawFast(ctx, 8.45, 0, 0)` -> `"8.5"` (exact `8.4`); `drawFast(ctx, 762638538843020900000, 0, 0)` -> `"762638538843020800088.0"` (exact `762638538843020853248.0`) |
+| **F-24** | S3 | **The harness oracle's pinned missing-glyph policy is NOT what the implementation does, and M2's centrepiece law is a three-way equality against that oracle.** `harness.mjs:314` documents "a character with no descriptor entry advances by ZERO **and does not become the kerning `prev`**", claiming it pins "today's implementation behaviour". The second half is false: all three walk sites (`BitmapFont.js:86`, `:168`, `:357`) set `prevId = id` for any id in `[0, 256)` regardless of whether the descriptor covered it, so an unmapped glyph DOES break the kerning chain in the library and does NOT in the oracle. Invisible under every shipped fixture because `JSON_KERN` kerns only mapped ids -- the same vacuity shape as F-21. Wire T0's law as written and it fails on day one for a reason that is not F-03/F-04/F-05/F-12. The underlying question -- does a missing glyph break the kerning chain? -- is a second, independent policy fork that M2's decision (2) does not ask. | font `{65:adv 12, 66:adv 12}`, `kern(65,66) = -5`, text `'A\u00C8B'`: `_measureRange` -> `24`, `oracleAdvance` -> `19` |
+| **F-25** | S2 | **`_measureRange` treats `\n` as a renderable glyph and runs the kerning chain THROUGH it; `draw` skips it and resets the chain.** `draw` special-cases `id === 10` (`BitmapFont.js:135`) and sets `prevId = -1`; `_measureRange` has no newline case at all, so `10` passes the `[0, 256)` guard, contributes `glyphs[10*7+6]` to the width, and stays in the kerning chain across the line break. Distinct from F-06, which is about summing line widths -- this is the newline character itself carrying advance and kerning. Silent under every shipped fixture (id 10 unmapped -> advance 0, kerning 0), so it surfaces only against a descriptor that maps id 10 (some exporters emit one) or kerns against it. M2 owns T0's newline residual assertion and must state which of the two walks is correct before it can assert the residual exactly. **Third face, measured 2026-08-17:** `drawWrapped` has no `id === 10` case at all, so against a descriptor mapping id 10 it RENDERS the newline as a visible glyph mid-line -- 3 draw calls where `draw` makes 2 on separate lines. Section 3's T0 law "drawWrapped with a one-line layout covering `[0, len)` produces the byte-identical `dx` column that `draw` produces" is therefore false for any font mapping id 10, which is a precondition of M2's centrepiece that nobody stated. | descriptor maps `{id: 10, xadvance: 7}`: `measure('A\nA')` -> `31`, `draw` dx -> `[0, 0]`, `drawWrapped` over `[0,3)` dx -> `[0, 12, 19]` |
+| **F-26** | S3 | **The F-03 guard reshape in `draw` and `drawWrapped` is unfalsifiable through the public API, and M2 shipped it anyway -- deliberately.** Revert BOTH reshaped guards to the NaN-accepting `if (id < 0 \|\| id >= 256) continue;` and `npm test` (93 blocks) and `npm run torture` (10 tiers) both stay green. The reason is structural: `draw` has no range parameters, so `charCodeAt` over `[0, len)` can never yield NaN; and after M2's H13 per-line clamp, `drawWrapped`'s indices can no longer reach the guard as NaN either. **The load-bearing F-04 fix is the clamp, not the reshape** -- reverting `if (!(startIdx >= 0)) startIdx = 0;` reddens T2 row 9 instantly. The third site, `_measureRange`, IS falsifiable, because it takes `start`/`end` as parameters: T0 law 11 kills its inversion. So one of three sites is pinned behaviourally and two are pinned only by DONE WHEN rows 7/8, which are a source-text gate a human runs, not something `npm test` or CI can see. **Routed to M6**, which promotes `start`/`end` to the public surface and thereby creates the first NaN-capable call path into `draw`'s guard; M6 must add the behavioural kill and this row closes there. Recorded rather than "fixed" because the honest options today are a synthetic test of a private path or nothing, and F-20/F-21 are both in this ledger because someone preferred a comfortable assertion to an absent one. | revert both guards -> `npm test` exit 0, `npm run torture` -> `ok` exit 0. Invert `_measureRange`'s -> `torture: FAIL -- T0.law11: _measureRange("A",0,2) NaN != 12 (NaN id leaked past the guard)` |
+| **F-27** | S3 | **T7's "second independent witness" does not witness anything. The retention tier cannot see a leaked font.** `t7-soak.mjs:49` tracks a fresh throwaway `{cycle: c}` object and `:57` untracks it in the SAME iteration, unconditionally. The font is never tracked, so `tracker.size() === 0` is true by construction whether or not fonts leak. The tier's own docstring claims "a typed-array leak and a JS-object leak must not be able to hide behind each other" -- as implemented, the JS-object half is unmanned. Proven by qa: injecting a genuine owner-cascade leak into the constructor that retains all 4096 font shells forever left `npm run torture` at exit 0, `ok`, `tracker.size() === 0`, and heap growth still inside 512 KB -- because `destroy()` nulls the typed arrays, so the retained shells are tiny. Introduced by M0, not by M2; M2 found it. Every session between M0 and the fix reports a T7 retention number that proves typed-array nulling only. **Routed to M9** (the hardening pass, alongside F-14's prototype freeze). Fix: track the font itself, or a proxy whose lifetime is provably tied to it, with a cleanup that does not close over the target, and read `tracker.size()`/`audit()` after a real `gc()` + settle tick -- never a same-iteration track/untrack pair. | plant a module-level retainer in the constructor -> 4096 fonts retained -> `npm run torture` -> `ok`, exit 0, `tracker.size()` 0 |
 
-(The F-12 reproduction string contains one non-ASCII character; it is written
-here as the JS escape `'A\u00C8A'` so this file stays ASCII. The string under
-test is unchanged.)
+(The F-12 and F-24 reproduction strings contain one non-ASCII character; it is
+written here as the JS escape `'A\u00C8A'` / `'A\u00C8B'` so this file stays
+ASCII. The strings under test are unchanged.)
 
 ### F-01 and F-02 are the same bug at two scales
 
@@ -809,15 +813,16 @@ DONE WHEN
 ---
 package: "@zakkster/lite-bmfont"
 version_target: 1.2.3
-status: planned
+status: done          # 2026-08-17; 93 tests, torture ok; F-03/F-04/F-05/F-12/F-21/F-24/F-25 closed, F-26/F-27 opened
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-text-layout"]
-findings: [F-03, F-04, F-05, F-12]
-depends_on: [M0]
+findings: [F-03, F-04, F-05, F-12, F-21, F-24, F-25]
+depends_on: [M0]      # M1 precedes it in the order but does not gate it
 blocks: [M5, M6]
+frozen_baseline: BitmapFont.js@1.2.2 sha256 ead84b59fe58993b3f743703755bc5dccb40fd80078723bd3ea6bfa754a5300c
 ---
 
 # lite-bmfont -- one predicate, written twice, with opposite NaN behaviour
@@ -880,6 +885,41 @@ THE DECISION (record it before coding)
   Ship `hasGlyph(id)` alongside it so a loader can detect coverage gaps at boot
   instead of discovering them as overlapping text.
 
+  (3) Does a missing glyph BREAK THE KERNING CHAIN? (F-24 -- added 2026-08-17,
+      measured, not in the original brief.)
+  This is independent of (2) and the brief never asks it. The library says yes
+  implicitly -- all three walk sites set `prevId = id` for any id in `[0, 256)`,
+  mapped or not -- and the harness oracle says no explicitly, in a comment that
+  claims to pin the implementation. They disagree by the kerning amount:
+  for `'A' + <unmapped id 200> + 'B'`, `_measureRange` is 24 and the oracle
+  is 19.
+  A. **Missing glyph BREAKS the chain** (library's current behaviour): the
+     unmapped id becomes `prev`, so `kern(prev, next)` is looked up against a
+     glyph that was never drawn and is 0 in the LUT. Kerning silently vanishes
+     across any gap.
+  B. **Missing glyph is TRANSPARENT to kerning** (oracle's current claim): skip
+     it entirely, so `kern(A, B)` still applies across the gap.
+  Note the interaction with (2): under `missingAdvance > 0` the glyph occupies
+  real width, and B would then kern two glyphs that are no longer adjacent.
+  A and B are defensible; what is not defensible is shipping a three-way law
+  whose two independent sides were written to different answers. Decide it,
+  then make `harness.mjs`'s comment true or change the oracle -- and add a
+  fixture that kerns ACROSS an unmapped id, or the choice stays untested for the
+  same reason F-21 is vacuous.
+
+  (4) Is `\n` a renderable glyph? (F-25 -- added 2026-08-17, measured.)
+  `draw` says no and resets the kerning chain at the break; `_measureRange`
+  says yes, adds `glyphs[10*7+6]`, and carries `prev` through. Against a
+  descriptor that maps id 10 with `xadvance: 7`, `measure('A\nA')` is 31 for
+  two glyphs' worth of text. M2 must state which walk is correct before T0 can
+  assert the newline residual as an exact number, which is a DONE WHEN below.
+  Recommendation: **`draw` is correct** -- a newline is a layout instruction,
+  not a glyph -- so `_measureRange` grows the same `id === 10` case. That is
+  per-GLYPH, so it is the one place in this session where the per-glyph budget
+  below is genuinely at risk; measure it rather than asserting it, and consider
+  hoisting the newline test into the existing loop's structure rather than
+  adding a branch.
+
 TASKS
   - Write decisions/0002-cursor-conservation.md BEFORE coding, containing the
     three-way law from section 2 in full, both decisions above, and the
@@ -897,8 +937,22 @@ TASKS
     All three sides must agree exactly -- no epsilon. Where they cannot (F-08's
     truncation), the residual is asserted as an exact expected number and
     labelled with its finding ID, not tolerated.
+  - **F-21.** The corpus revision this session already performs is the fix.
+    `FONT_KERN` kerns 3 of 8836 possible seams, and under both shipped seeds
+    ZERO eligible seams carry non-zero kerning -- so T0's additivity law
+    degenerates to `left + right === full` and deleting the kern term from
+    `_measureRange` passes the whole torture gate. Plant A/B seams in the
+    seeded corpus or densify `FONT_KERN`, then prove it: delete the kern term
+    and the tier must go red. Do that BEFORE building the law on top of it, or
+    the law inherits the vacuity.
+  - **F-24.** Decide fork (3), then make `harness.mjs:314`'s comment and
+    `oracleAdvance` agree with the implementation -- or change the
+    implementation. Add a fixture kerning across an unmapped id.
+  - **F-25.** Decide fork (4) and make the two walks agree on `\n`. Add a
+    fixture mapping id 10.
   - Fill torture T2 completely per section 3. Every row named, every row with a
-    decided policy.
+    decided policy. `lineCount` fractional/negative/NaN are measured above and
+    are no longer "undecided" rows -- they are pending policies.
   - Update README, llms.txt, d.ts: the layout buffer contract now says what
     happens on a bad index and a short buffer, in the same words the code
     enforces.
@@ -918,19 +972,41 @@ ASSERTIONS
   - The three-way conservation law holds for 50k seeded (font, string, range,
     scale) tuples: `walk === _measureRange === oracle`, exactly.
   - `drawWrapped(ctx, 'HELLO', Float32Array.of(-1, 5, 40, 0), 1, ...)` produces
-    the same 5 dx values as the same buffer with start 0 -- `0, 8, 16, 24, 32`.
-    Today it produces five NaNs. Prove both directions.
+    the same 5 dx values as the same buffer with start 0 -- `0, 12, 24, 36, 48`
+    under the harness fixture. (The brief originally said `0, 8, 16, 24, 32`;
+    `JSON_ASCII` advances 12, not 8. Measured 2026-08-17. Today the bad buffer
+    produces five NaNs and the good one produces `0, 12, 24, 36, 48`.) Prove
+    both directions.
   - `drawWrapped(ctx, 'HELLO', new Float32Array(4), 3, ...)` throws a library
     error naming 4 and 12. The same call with `lineCount: 1` does not throw --
-    the check is not vacuous.
+    the check is not vacuous. Today the short-buffer call does NOT throw: it
+    draws line 0's five glyphs and silently vanishes lines 1 and 2.
+  - `lineCount` degenerates are MEASURED, not undecided (2026-08-17):
+    `-1` -> 0 calls, `NaN` -> 0 calls, `0.5` -> 5 calls, `1.5` -> 5 calls. A
+    fractional `lineCount` renders a whole extra line today. Each of the four
+    gets a decided policy and a named test; `0.5` drawing a full line is the
+    row most likely to be wrong under any reading.
   - `nanCount === 0` across every tier, on every input in T1 and T2. There is no
     input for which a NaN destination coordinate is correct.
   - A char code that fails the range guard is skipped identically by `draw`,
     `drawWrapped` and `_measureRange` -- asserted by walking the same string
     through all three and comparing.
   - `new BitmapFont(atlas, json, { missingAdvance: 6 })`:
-    `draw(ctx, 'A\u00C8A', 0, 0)` -> dx `0, 8, 14`. With the default:
-    dx `0, 8` and the second A at 8, i.e. today's behaviour, pinned.
+    `draw(ctx, 'A\u00C8A', 0, 0)` -> **2 calls, dx `0, 18`** under the
+    harness fixture. Note the call COUNT does not change with `missingAdvance`:
+    the unmapped glyph has width 0 and height 0, so `gw > 0 && gh > 0` is false
+    and it is never passed to `drawImage` -- it only advances the cursor. The
+    brief's `0, 8, 14` (and its mechanical rescaling to `0, 12, 18`) listed
+    three dx entries for two drawn glyphs and was wrong on both counts.
+    With the default: 2 calls, dx `0, 12` -- the second A overprints the first
+    at 12. Both measured 2026-08-17 and pinned.
+  - The F-24 fork is asserted BOTH ways: a fixture that kerns across an
+    unmapped id, with `_measureRange`, the walk and the oracle all agreeing on
+    the decided answer. Deleting the chosen policy from either side must turn
+    the tier red -- otherwise the decision is decorative (AR-02).
+  - The F-25 fork is asserted against a descriptor that MAPS id 10 with a
+    non-zero `xadvance`. Under `JSON_ASCII` the newline is unmapped and the
+    assertion is vacuous in exactly the way F-21 is.
   - `hasGlyph(65) === true`, `hasGlyph(200) === false`, `hasGlyph(NaN) === false`,
     `hasGlyph(-1) === false`, `hasGlyph(256) === false`.
   - `assertOps` on draw / drawWrapped / _measureRange within noise of v1.2.2.
@@ -943,9 +1019,12 @@ NON-GOALS
 
 DONE WHEN
   the conservation law is executable and green over the fuzz corpus;
-  every one of F-03/F-04/F-05/F-12 has a named failing-before/passing-after
-  test; the per-glyph body is diff-identical in instruction count;
-  `npm run torture` prints "ok"
+  every one of F-03/F-04/F-05/F-12/F-21/F-24/F-25 has a named
+  failing-before/passing-after test; the corpus is proven non-vacuous by
+  deleting the kern term and watching T0 go red; forks (3) and (4) are recorded
+  in decisions/0002 with the measured numbers; the per-glyph body is
+  diff-identical in instruction count except the decided `\n` case, whose cost
+  is measured and recorded; `npm run torture` prints "ok"
 ```
 
 ===============================================================================

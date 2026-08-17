@@ -197,12 +197,23 @@ per-frame measurement.
 
 ## ⚙️ API
 
-### `new BitmapFont(imageAtlas, fontJson)`
+### `new BitmapFont(imageAtlas, fontJson, opts?)`
 - `imageAtlas`: loaded `HTMLImageElement` or `HTMLCanvasElement`
 - `fontJson`: standard BMFont JSON with `common`, `chars`, and optional `kernings`
+- `opts.missingAdvance`: optional. See the options table below.
+
+A descriptor entry for id 10 (`\n`) is **discarded** at construction -- width,
+height, offsets, advance, and any kerning pair naming it. A newline is a layout
+instruction, not a glyph.
 
 ### `measure(text, scale?) → number`
 Returns kerning-aware pixel width.
+
+### `hasGlyph(id) -> boolean`
+Does the descriptor cover this glyph id? Fail-closed on every non-integer: `NaN`,
+`-1`, `256`, `65.5` are all `false`. Id 10 is always `false`. Throws after
+`destroy()`. Use it to detect coverage gaps at load time instead of as
+overlapping text at runtime.
 
 ### `draw(ctx, text, x, y, scale?, align?) → void`
 Multi-line `\n`-aware renderer. `align`: `0` = left, `1` = center, `2` = right.
@@ -221,11 +232,12 @@ Above 2^53 (9007199254740992) the rendered integer digits are approximate -- the
 value is scaled through a double before digit extraction. Exact below that. Values
 outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` draw nothing.
 
-### Constants
+### Constants and options
 
 | Name | Value | Meaning |
 |------|-------|---------|
 | `DRAWFAST_MAX` | `1e21` | largest magnitude `drawFast` renders; outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` it draws nothing (both endpoints inclusive) |
+| `opts.missingAdvance` | `0` (default) | xadvance written into every glyph id the descriptor did not cover, so an absent glyph leaves a gap instead of overprinting the next. Opt-in; the default is byte-identical to 1.2.x. Must be finite in `[0, 32767]` or the constructor throws `RangeError`. Id 10 is never given a missing advance |
 
 ### `drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale?, align?, vAlign?) → void`
 Renders a pre-laid-out `Float32Array` of lines into a box. See the **Wrapped Text** section above for buffer format and a layout helper recipe.
@@ -234,6 +246,19 @@ Renders a pre-laid-out `Float32Array` of lines into a box. See the **Wrapped Tex
 - `align`: `0` = left, `1` = center, `2` = right.
 - `vAlign`: `0` = top, `1` = middle, `2` = bottom.
 - A line with `flags === 1` is rendered followed by an `…` ellipsis.
+
+**Contract, enforced (1.2.3):**
+- `lineCount` is floored to an integer and clamped at 0. `NaN`, a negative, and any
+  value below 1 draw nothing and return (`0.5` drew a full line in 1.2.2).
+- The buffer MUST hold at least `lineCount * 4` floats. A short buffer throws a
+  `RangeError` naming both numbers (surplus lines vanished silently in 1.2.2).
+- `startIdx` below 0, or `NaN`, clamps to 0. `endIdx` above `text.length`, or `NaN`,
+  clamps to `text.length`. `endIdx < startIdx` draws an empty line. Fractional
+  indices are truncated, not floored.
+- `layoutBuffer` may be any indexable with a numeric `length` (`Float64Array` and a
+  plain `Array` behave identically); no type check is performed.
+- Id 10 (`\n`) inside a line range is NOT a line break here -- it advances 0 and
+  draws nothing.
 
 ### `destroy() → void`
 Releases the atlas reference and typed arrays.

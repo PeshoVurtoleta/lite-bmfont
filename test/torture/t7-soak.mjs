@@ -2,17 +2,18 @@
  * T7 -- soak and retention.
  *
  * 4096 build/draw/destroy cycles. Each cycle constructs a fresh
- * new BitmapFont(ATLAS, JSON_SOAK) -- 200 glyphs, 500 kerning pairs, 134,680
- * bytes of typed array (3584 + 131072 + 24) -- draws a 64-char string, a
+ * new BitmapFont(ATLAS, JSON_SOAK) -- 200 glyphs, 500 kerning pairs, 134,712
+ * bytes of typed array (3584 + 131072 + 24 + 32) -- draws a 64-char string, a
  * drawFast value and an 8-line wrapped layout, then destroy()s it. Total churn
- * is 4096 x 134,680 = 551,649,280 bytes (~552 MB).
+ * is 4096 x 134,712 = 551,780,352 bytes (~552 MB).
  *
  * After each cycle destroy() must null every reference (atlas, glyphs, kerning,
- * _charScratch), and a SECOND, independent witness (lite-leak) must return to
- * size 0 -- so a typed-array leak and a JS-object leak cannot hide behind each
- * other. The tracked target is a fresh per-cycle PROXY object with a module-level
- * NOOP cleanup: tracking the font itself, or a cleanup that closes over the font,
- * violates lite-leak's held-value contract and pins the very object it watches.
+ * _charScratch, _mapped -- the M2 coverage bitmap), and a SECOND, independent
+ * witness (lite-leak) must return to size 0 -- so a typed-array leak and a
+ * JS-object leak cannot hide behind each other. The tracked target is a fresh
+ * per-cycle PROXY object with a module-level NOOP cleanup: tracking the font
+ * itself, or a cleanup that closes over the font, violates lite-leak's
+ * held-value contract and pins the very object it watches.
  *
  * Heap is sampled at cycle boundaries only, after globalThis.gc(), before and
  * after the loop -- intra-cycle churn is never misread as growth.
@@ -52,6 +53,7 @@ export function run() {
         check(font.glyphs === null, () => 'T7: cycle ' + c + ' glyphs not nulled');
         check(font.kerning === null, () => 'T7: cycle ' + c + ' kerning not nulled');
         check(font._charScratch === null, () => 'T7: cycle ' + c + ' _charScratch not nulled');
+        check(font._mapped === null, () => 'T7: cycle ' + c + ' _mapped not nulled');
 
         tracker.untrack(h);
     }

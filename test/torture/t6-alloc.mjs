@@ -43,6 +43,12 @@ function structural(font, label) {
         () => 'T6/' + label + ': glyphs byteLength ' + font.glyphs.byteLength + ' != 3584');
     check(font.kerning.byteLength === 131072,
         () => 'T6/' + label + ': kerning byteLength ' + font.kerning.byteLength + ' != 131072');
+    // M2: the 256-bit coverage bitmap. 8 words x 4 bytes = 32. Per-font structural
+    // total 24 + 3584 + 131072 + 32 = 134,712 (decisions/0002). This is the only
+    // structural baseline that moved this session; the four rec.total windows below
+    // do NOT, because missingAdvance defaults to 0 and no glyph changed drawing.
+    check(font._mapped.byteLength === 32,
+        () => 'T6/' + label + ': _mapped byteLength ' + font._mapped.byteLength + ' != 32');
     check(rec.dropped === 0 && rec.imgMismatch === 0,
         () => 'T6/' + label + ': dropped ' + rec.dropped + ' imgMismatch ' + rec.imgMismatch);
 }
