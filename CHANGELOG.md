@@ -2,6 +2,94 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.3.0 -- 2026-08-18
+
+The descriptor door. Three of the four things a `BitmapFont` needs in order to
+render were unchecked, and the fourth admitted four types that are not numbers:
+`new BitmapFont(atlas, { chars: 7 })` returned a font whose every `measure()` was
+0 forever, `atlas: null` returned a font that called `drawImage(null, ...)` sixty
+times a second, and a fractional or string `char.id` silently wrote a glyph the
+descriptor never named. This release validates the descriptor once, at
+construction, in a cold body, and fails closed on every input with no correct
+reading. Design record: `decisions/0003-descriptor-door.md`.
+
+### Added
+- `BitmapFontError` -- the one error type the constructor throws (F-10). It
+  EXTENDS `RangeError`, so a `catch (e) { if (e instanceof RangeError) }` around a
+  `new BitmapFont(...)` still fires; `e.name` is `'BitmapFontError'`, and
+  `e.field` / `e.value` are own properties so a caller can branch on the field
+  without parsing English. Every message starts `lite-bmfont: ` and names the
+  field and the received value.
+- `opts.checked` (default **false**, must be a boolean): opens the LOSSY lane.
+  Two lanes -- inputs with no correct reading (a null atlas, a NaN metric, a
+  non-number id, a fractional kerning key) ALWAYS throw; lossy-but-interpretable
+  inputs (an atlas coordinate past Int16, a fractional `xadvance`, an id outside
+  `[0, 256)`) are skipped or truncated silently by default and throw only under
+  `{ checked: true }`. An unknown own key on the `opts` bag throws (F-28), so
+  `{ missingAdvanc: 6 }` -- one dropped letter -- is an error, not a silent
+  default.
+- **F-08 detection (detection only).** `{ checked: true }` reports the Int16
+  store's lossy cases with their exact numbers -- an atlas coordinate of `40000`
+  stores as `-25536`, an `xadvance` of `8.6` stores as `8` (0.6px per glyph, 24px
+  over a 40-glyph line), and a negative field truncates toward zero. **The storage
+  behaviour itself is unchanged in 1.3.0**; unchecked output is byte-identical.
+  The unchecked pins (`x: 40000` -> `-25536`, `measure('AA') === 16` against an
+  exact `17.2`) are documented contracts with a T3 row each, so an M9 storage
+  change lands visibly, not silently.
+- `chars: []` is now explicitly LEGAL: a coherent zero-glyph font whose `measure`
+  is 0 and whose `hasGlyph` is false for every id.
+- T3 filled: the 50-row descriptor abuse matrix plus six tier-wide rows (the
+  error-type sweep, the message-quality sweep, lane symmetry), every throwing row
+  carrying its non-vacuity twin.
+
+### Fixed
+
+| ID | Sev | Finding | Reproduction | Fixed in |
+| --- | --- | --- | --- | --- |
+| **F-09** | S3 | Kerning keys were checked only on the upper bound, so a negative computed a discarded negative index and a non-number or fractional key silently kerned a pair the descriptor never named. Both keys now use the SAME integer predicate as `char.id`; a finite key outside `[0, 256)` is skipped (checked: throws), a non-number or fractional key always throws. `amount` rides the F-08 lane. | `kernings:[{first:'65',second:66,amount:5}]` -> was written to slot 16706; now throws naming `kernings[0].first`. `first:-1` -> writes nowhere, checked throws | 1.3.0 |
+| **F-10** | S2 | The constructor accepted three malformed descriptors and rejected four others with raw `TypeError`s naming internal properties. `imageAtlas`, `fontJson`, `common`, `common.lineHeight`, `common.base`, `chars` and `kernings` are now validated and throw a `BitmapFontError` naming the field. No raw `TypeError` escapes. | `new BitmapFont(atlas,{chars:7})` -> was a 0-glyph font; now throws naming `chars`. `new BitmapFont(atlas,null)` -> was raw `TypeError`; now `BitmapFontError` naming `fontJson` | 1.3.0 |
+| **F-11** | S3 | `scale` was unvalidated in the three draw bodies: `NaN` reached `drawImage`, `0` and `-1` produced zero and negative destination widths. A per-call range door `if (!(scale > 0 && scale < Infinity)) return;` now draws NOTHING for `NaN`, `0`, a negative or `Infinity`. Out-of-range `align` (renders LEFT) and `vAlign` (renders TOP) are now documented contracts. | `draw(ctx,'AAAA',100,0,NaN,0)` -> was 4 NaN quads; now 0 calls. `scale:-1` -> was 4 negative-width quads; now 0 | 1.3.0 |
+| **F-13** | S3 | `flags` was strict-compared to `1` through a `Float32Array`, so `1.0000001` missed the ellipsis and unknown flag values were silently ignored. `flags` is now ToInt32'd and masked -- `(flags\|0) & FLAG_ELLIPSIS` -- and an unknown bit throws under `checked`. | `flags = 1.0000001` -> was 5 calls (no ellipsis); now 8. `flags = 2` under `{checked:true}` -> throws naming the unknown bit | 1.3.0 |
+| **F-28** | S2 | The `opts` bag accepted any non-null value and silently ignored unknown keys, so `{ missingAdvanc: 6 }` -- one dropped letter -- constructed with the default. `opts` must now be a plain object; every own key must be in the frozen allowlist `['missingAdvance','checked']`; an unknown or inherited key throws; `checked` must be an exact boolean. | `{missingAdvanc:6}` -> was default 0, no error; now throws naming the key and the allowlist. `{checked:1}` -> throws | 1.3.0 |
+| **F-29** | S2 | A non-number or non-integer `char.id` silently wrote a glyph the descriptor never named -- `id: '65'` wrote four slots but `hasGlyph(65)` stayed false, so `_mapped` and `glyphs` disagreed and the coverage API lied. `char.id` now requires an integer number; a finite id outside `[0, 256)` is skipped (checked: throws), everything else throws. | `id:'65'` -> was 4 slots written, `hasGlyph(65) === false`; now throws naming `chars[0].id` | 1.3.0 |
+| **F-30** | S2 | A non-finite glyph field (`x: NaN`, `+/-Infinity`) stored 0 and reported the glyph covered, asserting with full confidence that it sat at the sheet's top-left corner. `null is not zero`: a non-finite field now ALWAYS throws, in both lanes -- there is no reading of `x: NaN` that renders the intended glyph. | `char.x = NaN` -> was `glyphs[65*7] === 0`, `hasGlyph(65) === true`; now throws naming `chars[0].x` | 1.3.0 |
+
+### Changed (behaviour)
+
+**We believe no working call site changes: every newly-rejected input produced a
+font that renders nothing, renders at NaN, or renders a glyph the descriptor
+never named.** If you are constructing fonts from user-supplied descriptors, this
+release can make a previously-silent path throw. `{ checked: true }` is opt-in in
+1.x and becomes the default in 2.0.0.
+
+Descriptors that constructed on 1.2.3 and now throw: `atlas: null` / `undefined`,
+`chars: 7` / `'AB'` / `{length:-1}`, `kernings: 7`, `common.lineHeight: NaN`,
+`common.base: NaN`, `id: '65'` / `null` / `true` / `65.5` / `NaN`, `x: NaN`,
+kerning `first: '65'` / `65.5` / `true`, `opts: 7`, and any `opts` with an unknown
+own key. Each produced a font that renders nothing, renders at NaN, or renders a
+glyph the descriptor never named.
+
+Per-call deltas: `scale` `NaN` / `0` / `-1` / `Infinity` now draw NOTHING on
+`draw`, `drawFast` and `drawWrapped` (they produced NaN coordinates or
+zero/negative destination widths). `flags: 1.0000001` now draws the ellipsis it
+always should have. `flags: -1` now draws an ellipsis too (`-1 | 0 === -1` and
+`-1 & 1 === 1`) -- measured 5 calls before, 8 after; if you relied on `-1` meaning
+"no ellipsis", that is the one delta here that a working call site could notice.
+
+The four inputs that threw a raw `TypeError` on 1.2.3 and now throw a
+`BitmapFontError` (which is NOT a `TypeError`): **`fontJson: null`,
+`fontJson: {}`, `common: null`, and a missing `chars`.** A `catch (e) { if (e
+instanceof TypeError) }` around a constructor stops firing for these -- grep your
+own `catch` blocks. `instanceof RangeError` is preserved for every throw,
+including M2's `missingAdvance` and short-buffer `RangeError`s.
+
+The `missingAdvance` range error's **message text** changed: 1.2.x said
+`lite-bmfont: missingAdvance must be a finite number in [0, 32767], got ...`; it
+now says `lite-bmfont: opts.missingAdvance must be ...`, so the message names the
+field (`e.field === 'opts.missingAdvance'`) that a caller can branch on. The
+range and NaN rejection are unchanged. The `drawWrapped` short-buffer throw keeps
+its exact 1.2.x message and stays a bare `RangeError`.
+
 ## 1.2.3 -- 2026-08-17
 
 The advance conservation law (the NaN cursor). Nothing in the package could
@@ -175,7 +263,7 @@ guarantee, `S3` = hygiene or contract gap.
 | **F-05** | S2 | `drawWrapped` never bounds-checks `layoutBuffer` against `lineCount * 4`. A `lineCount` larger than the buffer holds reads `undefined` for every field and the line silently vanishes. | `drawWrapped(ctx,'HELLO', new Float32Array(4), 3, ...)` -> no throw, draws only line 0 | M2 |
 | **F-06** | S2 | `measure()` sums across newlines while `draw()` aligns per line, so centring a multi-line string with `measure()` is wrong by the width of every other line. | `measure('AA\nAA')` -> `32`; the longest line is `16`. `measure('A\nAAAAAA')` -> `56`; longest line is `48` | M4 |
 | **F-07** | S2 | Only the first line is pixel-snapped in Y. `cursorY = Math.round(y)` runs once, then `cursorY += lineHeight * scale` accumulates unrounded. | `draw(ctx,'A\nB\nC',0,0,1.1)` -> dst Y `-13.200000000000001`, `4.4`, `22` | M4 |
-| **F-08** | S2 | `Int16Array` truncation and wrap in the constructor are silent: an atlas coordinate of `40000` wraps, and a fractional `xadvance` truncates into an accumulating drift. | `char.x = 40000` -> `glyphs[65*7] === -25536`; `xadvance 8.6` -> `8`, so `measure('AA')` is `16` where exact is `17.2` | M3 |
+| **F-08** | S2 | `Int16Array` truncation and wrap in the constructor are silent: an atlas coordinate of `40000` wraps, and a fractional `xadvance` truncates into an accumulating drift. M3 makes the drift DETECTABLE under `{ checked: true }` with its exact numbers; the storage behaviour itself is M9's. | `char.x = 40000` -> `glyphs[65*7] === -25536`; `xadvance 8.6` -> `8`, so `measure('AA')` is `16` where exact is `17.2` | M3 (detection) / M9 (storage) |
 | **F-09** | S3 | Kerning keys are checked only on the upper bound, so negatives compute a negative index whose write the typed array silently discards. `amount` is truncated too. | `kernings:[{first:-1,second:65,amount:-2}]` -> no write, no error; `amount -1.7` -> stored `-1` | M3 |
 | **F-10** | S2 | The constructor accepts three malformed descriptors and rejects three others with raw `TypeError`s naming internal properties. Neither half is a policy. | `new BitmapFont(atlas, {chars: 7})` -> constructs; every `measure` returns 0 forever | M3 |
 | **F-11** | S3 | `align` / `vAlign` / `scale` are unvalidated: out-of-range aligns render left, `scale: NaN` reaches `drawImage`, `scale: -1` produces a negative destination width. | `draw(ctx,'AAAA',100,0,1,3)` -> same x as `align:0`; `scale:NaN` -> 4 calls, dst x `NaN` | M3 |

@@ -126,7 +126,7 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-05** | S2 | **`drawWrapped` never bounds-checks `layoutBuffer` against `lineCount * 4`.** A `lineCount` larger than the buffer holds reads `undefined` for every field; the inner loop `for (i = undefined; i < undefined; ...)` never runs and the line silently vanishes. The doc comment says "Buffer must contain at least `lineCount * 4` floats" and nothing enforces it. Fail-open on unverified state. | `drawWrapped(ctx,'HELLO', new Float32Array(4), 3, ...)` -> no throw, draws only line 0 |
 | **F-06** | S2 | **`measure()` sums across newlines; `draw()` aligns per line.** The two disagree on what "the width of this text" means, and centring a multi-line string using `measure()` -- the obvious thing to do -- is wrong by the width of every other line. | `measure('AA\nAA')` -> `32`; the longest line is `16`. `measure('A\nAAAAAA')` -> `56`; longest line is `48` |
 | **F-07** | S2 | **Only the first line is pixel-snapped in Y.** `draw()` documents "Pixel-snapped baseline for crisp pixel fonts" and does `cursorY = Math.round(y)` once, then accumulates `cursorY += this.lineHeight * scale` unrounded. At any fractional `lineHeight * scale` every line after the first lands off-grid, which is precisely the blur the promise exists to prevent. `drawWrapped` has the identical shape. | `draw(ctx,'A\nB\nC',0,0,1.1)` -> dst Y `-13.200000000000001`, `4.4`, `22` |
-| **F-08** | S2 | **`Int16Array` truncation and wrap in the constructor are silent.** Glyph fields are stored into `Int16Array` with no range check: an atlas coordinate of `40000` wraps to `-25536`, and a fractional `xadvance` of `8.6` truncates to `8` -- a 0.6px-per-glyph drift that accumulates across a string. BMFont exporters do emit fractional advances. | `char.x = 40000` -> `glyphs[65*7] === -25536`; `xadvance 8.6` -> `8`, so `measure('AA')` is `16` where exact is `17.2` |
+| **F-08** | S2 | **`Int16Array` truncation and wrap in the constructor are silent.** Glyph fields are stored into `Int16Array` with no range check: an atlas coordinate of `40000` wraps to `-25536`, and a fractional `xadvance` of `8.6` truncates to `8` -- a 0.6px-per-glyph drift that accumulates across a string. BMFont exporters do emit fractional advances. **Owner: M3 (detection) / M9 (storage)** -- M3 (v1.3.0) makes the drift DETECTABLE under `{ checked: true }` with its exact numbers; the storage behaviour itself is unchanged and is M9's. | `char.x = 40000` -> `glyphs[65*7] === -25536`; `xadvance 8.6` -> `8`, so `measure('AA')` is `16` where exact is `17.2` |
 | **F-09** | S3 | **Kerning keys are checked only on the upper bound.** `if (k.first < 256 && k.second < 256)` admits negatives: `first = -1` computes index `-191` and the write is silently discarded by the typed array; `second = -1` computes index `-1`, same. `k.amount` is also silently truncated (`-1.7` -> `-1`). | `kernings:[{first:-1,second:65,amount:-2}]` -> no write, no error; `amount -1.7` -> stored `-1` |
 | **F-10** | S2 | **The constructor accepts three malformed descriptors and rejects three others with raw `TypeError`s.** `{chars: 7}` constructs a font with zero glyphs (`7.length` is `undefined`, loop never runs) so every `measure` returns 0 forever. `{common:{lineHeight:NaN}}` constructs and every line lands at `NaN` Y. `atlas = null` constructs and `draw()` happily calls `drawImage(null, ...)`. Meanwhile `null`, `{}` and a missing `chars` each throw a raw `TypeError` naming an internal property. Neither half is a policy. | see `probe.mjs` F-10 block |
 | **F-11** | S3 | **`align` / `vAlign` / `scale` are unvalidated.** `align: 3` and `align: -1` both silently render left-aligned. `scale: NaN` issues drawImage calls at `NaN`. `scale: -1` issues them with a negative destination width. | `draw(ctx,'AAAA',100,0,1,3)` -> same x as `align:0`; `scale:NaN` -> 4 calls, dst x `NaN` |
@@ -146,6 +146,12 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-25** | S2 | **`_measureRange` treats `\n` as a renderable glyph and runs the kerning chain THROUGH it; `draw` skips it and resets the chain.** `draw` special-cases `id === 10` (`BitmapFont.js:135`) and sets `prevId = -1`; `_measureRange` has no newline case at all, so `10` passes the `[0, 256)` guard, contributes `glyphs[10*7+6]` to the width, and stays in the kerning chain across the line break. Distinct from F-06, which is about summing line widths -- this is the newline character itself carrying advance and kerning. Silent under every shipped fixture (id 10 unmapped -> advance 0, kerning 0), so it surfaces only against a descriptor that maps id 10 (some exporters emit one) or kerns against it. M2 owns T0's newline residual assertion and must state which of the two walks is correct before it can assert the residual exactly. **Third face, measured 2026-08-17:** `drawWrapped` has no `id === 10` case at all, so against a descriptor mapping id 10 it RENDERS the newline as a visible glyph mid-line -- 3 draw calls where `draw` makes 2 on separate lines. Section 3's T0 law "drawWrapped with a one-line layout covering `[0, len)` produces the byte-identical `dx` column that `draw` produces" is therefore false for any font mapping id 10, which is a precondition of M2's centrepiece that nobody stated. | descriptor maps `{id: 10, xadvance: 7}`: `measure('A\nA')` -> `31`, `draw` dx -> `[0, 0]`, `drawWrapped` over `[0,3)` dx -> `[0, 12, 19]` |
 | **F-26** | S3 | **The F-03 guard reshape in `draw` and `drawWrapped` is unfalsifiable through the public API, and M2 shipped it anyway -- deliberately.** Revert BOTH reshaped guards to the NaN-accepting `if (id < 0 \|\| id >= 256) continue;` and `npm test` (93 blocks) and `npm run torture` (10 tiers) both stay green. The reason is structural: `draw` has no range parameters, so `charCodeAt` over `[0, len)` can never yield NaN; and after M2's H13 per-line clamp, `drawWrapped`'s indices can no longer reach the guard as NaN either. **The load-bearing F-04 fix is the clamp, not the reshape** -- reverting `if (!(startIdx >= 0)) startIdx = 0;` reddens T2 row 9 instantly. The third site, `_measureRange`, IS falsifiable, because it takes `start`/`end` as parameters: T0 law 11 kills its inversion. So one of three sites is pinned behaviourally and two are pinned only by DONE WHEN rows 7/8, which are a source-text gate a human runs, not something `npm test` or CI can see. **Routed to M6**, which promotes `start`/`end` to the public surface and thereby creates the first NaN-capable call path into `draw`'s guard; M6 must add the behavioural kill and this row closes there. Recorded rather than "fixed" because the honest options today are a synthetic test of a private path or nothing, and F-20/F-21 are both in this ledger because someone preferred a comfortable assertion to an absent one. | revert both guards -> `npm test` exit 0, `npm run torture` -> `ok` exit 0. Invert `_measureRange`'s -> `torture: FAIL -- T0.law11: _measureRange("A",0,2) NaN != 12 (NaN id leaked past the guard)` |
 | **F-27** | S3 | **T7's "second independent witness" does not witness anything. The retention tier cannot see a leaked font.** `t7-soak.mjs:49` tracks a fresh throwaway `{cycle: c}` object and `:57` untracks it in the SAME iteration, unconditionally. The font is never tracked, so `tracker.size() === 0` is true by construction whether or not fonts leak. The tier's own docstring claims "a typed-array leak and a JS-object leak must not be able to hide behind each other" -- as implemented, the JS-object half is unmanned. Proven by qa: injecting a genuine owner-cascade leak into the constructor that retains all 4096 font shells forever left `npm run torture` at exit 0, `ok`, `tracker.size() === 0`, and heap growth still inside 512 KB -- because `destroy()` nulls the typed arrays, so the retained shells are tiny. Introduced by M0, not by M2; M2 found it. Every session between M0 and the fix reports a T7 retention number that proves typed-array nulling only. **Routed to M9** (the hardening pass, alongside F-14's prototype freeze). Fix: track the font itself, or a proxy whose lifetime is provably tied to it, with a cleanup that does not close over the target, and read `tracker.size()`/`audit()` after a real `gc()` + settle tick -- never a same-iteration track/untrack pair. | plant a module-level retainer in the constructor -> 4096 fonts retained -> `npm run torture` -> `ok`, exit 0, `tracker.size()` 0 |
+| **F-28** | S2 | **The `opts` bag M2 introduced fails OPEN, and M3's entire design hangs off it.** The constructor reads `opts.missingAdvance` and validates that one value hard, but never validates `opts` itself and never rejects an unknown key. `new BitmapFont(atlas, json, { missingAdvanc: 6 })` -- one dropped `e` -- constructs silently with `missingAdvance` 0 and no error, which is the exact F-12 gap the option exists to close. `opts` of `7` or `'x'` also construct: the `opts !== undefined && opts !== null` door admits every primitive, and `(7).missingAdvance` is `undefined`. This matters beyond the typo: M3 proposes `{ checked: true }` in the same bag, so a caller who typos the flag gets the unchecked lane with no signal -- a validator most callers never run, defeated by a keystroke. Opened by M2 (the bag is M2's), found in the M3 precondition probe. Fix belongs in M3, ahead of any `checked` work: reject non-object `opts`, and reject unknown own keys against a frozen allowlist. Cold path; cost is irrelevant. | `new BitmapFont(ATLAS, OK, { missingAdvanc: 6 })` -> constructs, `glyphs[65*7+6]` unchanged; `new BitmapFont(ATLAS, OK, 7)` -> constructs; `new BitmapFont(ATLAS, OK, { checked: true })` -> constructs |
+| **F-29** | S2 | **A non-number `id` coerces through the range test, writes the glyph table, and is never marked in `_mapped` -- so `hasGlyph` disagrees with the table it describes.** M2 shipped `_mapped` with the stated invariant that it "keeps the two structures consistent with each other," and scoped the integrality test to `id === (id \| 0)`, which is correct for a fractional number and wrong for every other type. `id: '65'` passes `id >= 0 && id < 256` by string-to-number coercion, `ptr = '65' * 7` is `455`, four slots are written, `measure('A')` returns 12 -- the glyph renders -- and `hasGlyph(65)` is `false`. `id: null` coerces to 0 and writes glyph id 0; `id: true` coerces to 1 and writes glyph id 1. Three silent writes to ids the descriptor never named, each invisible to `hasGlyph`. This is the coverage-detection API from M2 lying in the direction that matters: a caller checking `hasGlyph` at load time to find gaps is told a glyph is missing that will in fact draw. | `new BitmapFont(ATLAS, {chars:[{id:'65',...}]})` -> 4 non-zero slots, `measure('A') === 12`, `hasGlyph(65) === false`; `id: null` -> writes ptr 0; `id: true` -> writes ptr 7 |
+| **F-30** | S2 | **A non-finite glyph field stores as 0 and the glyph is reported covered.** `x: NaN`, `x: Infinity` and `x: -Infinity` each write `glyphs[65*7] === 0` -- the Int16 store maps every non-finite to zero -- and `hasGlyph(65)` returns `true`. `null is not zero`: an atlas x of NaN is an unverified state, and the table now claims the glyph sits at the top-left corner of the sheet with full confidence. Distinct from F-08, whose two cases (wrap and fractional truncation) are both LOSSY-but-interpretable and therefore belong in the checked lane: there is no reading of `x: NaN` that renders the intended glyph, so it belongs in the always-throw lane. Recording it separately so the M3 accept/reject matrix cannot route it by analogy to F-08. | `chars:[{id:65,x:NaN,...}]` -> `glyphs[455] === 0`, `hasGlyph(65) === true` |
+| **F-31** | S2 | **T6's structural gate pins four NAMED arrays and cannot see a fifth, so any new per-font allocation is invisible to the whole suite.** `t6-alloc.mjs:39-53` asserts `_charScratch.byteLength === 24`, `glyphs === 3584`, `kerning === 131072` and `_mapped === 32` -- four independent equalities and no total. Nothing asserts that the font has no OTHER typed array. Proven in M3: adding `this._bloat = new Float64Array(512)` (4096 bytes) to every font left `npm run torture` at `ok` exit 0 and `npm test` at 103/100/0/3, with all four named checks green. T7 builds 4096 fonts, so that mutation adds 16.7 MB across the soak and no tier notices; the package publishes 134,712 bytes per font as a headline number in README and `decisions/0002`, and that number is unguarded. This is the AR-02 question answered NO: the plan's assertion A29 named this gate as the detector for exactly this mutation and the attribution does not reproduce. Distinct from F-27 (which blinds the RETENTION witness): this blinds the STRUCTURAL witness, and the two together mean a per-font allocation added in any future session is caught by nothing. Fix: assert the sum, derived by walking the instance's own typed-array properties, so an unlisted array raises the total and fails. **Routed to M9** alongside F-27. | `this._bloat = new Float64Array(512)` in the constructor -> `npm run torture` `ok`, `npm test` 103/100/0/3, all four structural equalities green |
+| **F-32** | S2 | **The zero-alloc and retention gates never drive the REJECT branch of the three new per-call `scale` doors, so a leak or an allocation planted there is invisible end to end.** T6's alloc/ops windows all call with `scale = 1` (window A passes it explicitly at `t6-alloc.mjs:80`; B and C take the default), which is the ACCEPT branch. The reject branch is exercised only by T1's correctness sweep and T3 rows 41-43, and neither gates allocation or retention. Proven twice, independently, in M3: replacing `draw`'s `if (!(scale > 0 && scale < Infinity)) return;` with a body that does `this._rejectLog = (this._rejectLog || []).concat(scale); return;` -- an unbounded per-instance leak AND a per-call allocation on the session's headline new code -- left `npm test` at 103/100/0/3 and `npm run torture` at `ok` exit 0. Third instance of the class that F-27 (retention witness tracks a throwaway) and F-31 (structural gate has no total) belong to: each blinds a different witness, and together they mean the zero-GC claim is unenforced on every path the measured windows do not happen to take. **Routed to M9** with F-27 and F-31. Fix: drive each door's reject branch inside a measured window, or record that fail-closed branches are correctness-tested only and never alloc-gated. | plant `this._rejectLog = (this._rejectLog \|\| []).concat(scale)` in `draw`'s scale-door reject -> `npm test` 103/100/0/3, `npm run torture` `ok` exit 0 |
+| **F-33** | S3 | **T3 row 56 claims every CHECKED row runs in BOTH lanes; row 26 runs only one.** The tier-wide contract (`SESSION-M3.md` section 6.2 row 56, restated in `decisions/0003`) is that each checked-lane row is asserted twice -- once with `{checked: true}` and once without -- because a row asserted in a single lane cannot see a door that migrated to the wrong lane. Row 26 (`xadvance: -8.6`) asserts only the CHECKED throw (`t3-descriptor.mjs:174-178`, duplicated at `BitmapFont.test.js:1013-1014`); the UNCHECKED half -- that the Int16 store truncates toward ZERO and stores `-8`, not `-9` -- is asserted nowhere executable and survives only as prose in `decisions/0003` and the ROADMAP PROBE. The checked half is genuine, so F-08's message-wording requirement (must say "toward zero", never "floor") is really pinned; what is unpinned is the storage behaviour that wording DESCRIBES. Same shape as F-24: a record asserting a property no gate checks. Found by qa in M3, fixed in M3. | before the fix, no executable assertion in `test/` pinned `glyphs[65*7+6] === -8`, while row 56's both-lanes claim appears in three files |
 
 (The F-12 and F-24 reproduction strings contain one non-ASCII character; it is
 written here as the JS escape `'A\u00C8A'` / `'A\u00C8B'` so this file stays
@@ -1035,16 +1041,100 @@ DONE WHEN
 ---
 package: "@zakkster/lite-bmfont"
 version_target: 1.3.0
-status: planned
+status: done          # 2026-08-18; 103 tests, torture ok; F-08(detection)/F-09/F-10/F-11/F-13/F-28/F-29/F-30/F-33 closed, F-31/F-32 opened
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler"]
-findings: [F-08, F-09, F-10, F-11, F-13]
+findings: [F-08, F-09, F-10, F-11, F-13, F-28, F-29, F-30]
 depends_on: [M2]
 blocks: [M4]
+frozen_baseline: v1.2.3 (f1d4796, published 2026-08-17)
 ---
+
+PRECONDITION PROBE -- measured against the shipped 1.2.3, 2026-08-17.
+Everything below this line that contradicts the prose above it WINS. The prose
+was written against 1.2.1 and three of its prescriptions do not survive
+measurement. Do not plan against an unmeasured number in this brief.
+
+  (a) THE F-10 FIX AS WRITTEN DOES NOT CLOSE F-10. "array-like with a numeric
+      `length`" admits `chars: 'AB'` -- a string has a numeric length, the loop
+      runs twice, `'A'.id` is `undefined`, `undefined >= 0` is false, and you
+      get the zero-glyph font F-10 exists to prevent, now with a validator in
+      front of it. `chars: {length: -1}` passes too (0 glyphs). And
+      `chars: {length: 3}` with no elements still throws the raw
+      `TypeError: Cannot read properties of undefined (reading 'id')` from
+      inside the loop -- the precise failure mode the task says must stop.
+      The test is not "has a numeric length", it is "every index in [0,length)
+      yields an object". Decide whether that is validated up front (a cold
+      pre-pass) or per element as the loop runs, and record which.
+
+  (b) THE F-09 FIX AS WRITTEN CLOSES ONLY THE NEGATIVE HOLE. Measured, every
+      one of these passes `first >= 0 && first < 256 && second >= 0 &&
+      second < 256` and writes:
+        first 65.5  -> writes 16706  (the INTEGER A-B slot; a fractional first
+                                      silently kerns a pair it does not name)
+        first '65'  -> writes 16706
+        first 255.9 -> writes 65346
+        first true  -> writes 322    (kerns id 1 against id 66)
+      The bound is not the whole contract. Integrality and type are, and they
+      are the same requirement F-29 raises for `char.id`. Fix both keys with
+      one predicate or they will drift apart.
+
+  (c) A NaN-SAFE RANGE TEST ON `scale` DOES NOT COVER `scale`. Measured on
+      `draw(ctx,'AAAA',0,0,scale,0)`:
+        scale NaN       -> 4 calls, dx0 NaN,  dw0 NaN
+        scale -1        -> 4 calls, dx0 0,    dw0 -10      <- finite, not NaN
+        scale 0         -> 4 calls, dx0 0,    dw0 0        <- finite, not NaN
+        scale Infinity  -> 4 calls, dx0 NaN,  dw0 Infinity
+      Only two of the four produce NaN. The door is `scale > 0 &&
+      scale < Infinity`, not a NaN test.
+
+  (d) `scale` HAS A THIRD HOT BODY: `drawFast`. Measured `drawFast(rec, 1234,
+      0, 0, NaN, 0)` -> 6 calls at dx NaN. The brief says "each draw method"
+      and the HOT PATH section reasons about draw/drawWrapped only. M2
+      committed to zero new instructions in all four hot bodies and shipped
+      that. Adding a `scale` door to `drawFast` breaks that commitment
+      deliberately or not at all -- decide it in the record with the assertOps
+      number, do not let it arrive as a side effect of "each draw method".
+
+  (e) THE F-13 CALL COUNTS IN THE F-13 LEDGER ROW (8 / 5 / 5) ARE FROM A
+      RETIRED PROBE FIXTURE and reproduce nothing in the current suite. Against
+      a 64-char 'B' run in a 40px box the same six flag values measure
+      20 / 23 / 20 / 20 / 20 / 20 for 0 / 1 / 1.0000001 / 2 / -1 / NaN. The
+      DIRECTION is confirmed and is the finding: exact `1` fires, `1.0000001`
+      (stored 1.0000001192092896) does not. Re-derive every count against the
+      fixture the assertion will actually use. This is the M2 failure repeated
+      -- that brief asserted an advance of 8 against a fixture whose advance
+      is 12, and every dx column downstream of it was wrong.
+
+  (f) `common.base` IS UNGUARDED TOO AND IS NOT IN THE ASSERTION LIST.
+      `{ common: { lineHeight: 20, base: NaN } }` constructs; `lineHeight` is
+      the only one the ASSERTIONS name. `base` feeds every dy.
+
+  (g) `vAlign` HAS NO ASSERTION ROW even though TASKS names it. Measured,
+      `vAlign` of 3, -1 and NaN all fall through to top (dy0 2), identically to
+      `align`. Whatever policy `align` gets, `vAlign` gets, with its own cases.
+
+  (h) `kernings: 7` CONSTRUCTS -- `7.length` is `undefined`, the loop never
+      runs, every kern pair in the descriptor is silently dropped. Same shape
+      as `chars: 7`, and the brief never mentions it. Validate `kernings` on
+      the same predicate as `chars` when it is present.
+
+  (i) CONFIRMED UNCHANGED from the 1.2.1 prose, re-measured on 1.2.3:
+      `atlas` null and undefined construct (and `draw` issues real drawImage
+      calls with a null image -- 2 calls, imgMismatch 2); `chars: 7` and
+      `chars: []` construct with 0 glyphs; `{common:{lineHeight:NaN}}`
+      constructs; `fontJson` null, `fontJson {}`, `common: null` and missing
+      `chars` each throw a raw `TypeError` -- FOUR distinct messages, not
+      three, each naming an internal property; `x: 40000` -> `-25536`;
+      `xadvance: 8.6` -> stored 8, `measure('AA') === 16` against an exact
+      17.2, residual exactly 1.2; `xadvance: -8.6` -> stored -8 (the Int16
+      store truncates toward ZERO, not floor -- the checked-mode message must
+      not say "floor"); kerning `first: -1` / `second: -1` write nowhere;
+      `amount: -1.7` -> -1; `amount: 40000` -> -25536; `align` 3, -1, 1.5 and
+      NaN all render left.
 
 # lite-bmfont -- a font that cannot render should not construct
 

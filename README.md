@@ -200,7 +200,22 @@ per-frame measurement.
 ### `new BitmapFont(imageAtlas, fontJson, opts?)`
 - `imageAtlas`: loaded `HTMLImageElement` or `HTMLCanvasElement`
 - `fontJson`: standard BMFont JSON with `common`, `chars`, and optional `kernings`
-- `opts.missingAdvance`: optional. See the options table below.
+- `opts.missingAdvance`, `opts.checked`: optional. See the options table below.
+
+**The descriptor is validated at construction (F-10).** `imageAtlas`, `common`,
+`common.lineHeight`, `common.base`, `chars` and (when present) `kernings` are
+checked, and a malformed one throws a **`BitmapFontError`** naming the field --
+no raw `TypeError` escapes. `BitmapFontError` extends `RangeError`, so a
+`catch (e) { if (e instanceof RangeError) }` still fires; `e.field` and `e.value`
+are own properties. `chars: []` is **legal** -- a coherent zero-glyph font whose
+`measure` is 0 and whose `hasGlyph` is false for every id.
+
+Two lanes: inputs with no correct reading (a null atlas, a NaN metric, a
+non-number id, a fractional kerning key) **always throw**; lossy-but-interpretable
+inputs (an atlas coord past Int16, a fractional `xadvance`, an id outside
+`[0, 256)`) are skipped or truncated silently by default and throw only under
+`{ checked: true }`, which reports the exact drift (F-08 detection). Storage is
+unchanged in 1.3.0: unchecked output is byte-identical.
 
 A descriptor entry for id 10 (`\n`) is **discarded** at construction -- width,
 height, offsets, advance, and any kerning pair naming it. A newline is a layout
@@ -216,8 +231,11 @@ Does the descriptor cover this glyph id? Fail-closed on every non-integer: `NaN`
 overlapping text at runtime.
 
 ### `draw(ctx, text, x, y, scale?, align?) → void`
-Multi-line `\n`-aware renderer. `align`: `0` = left, `1` = center, `2` = right.
-`x, y` is the **baseline anchor** of the first line.
+Multi-line `\n`-aware renderer. `align`: `0` = left, `1` = center, `2` = right;
+any value outside `{0, 1, 2}` (`NaN`, negatives, fractionals) renders **left**.
+A `scale` outside `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity` --
+draws **nothing** and returns (F-11). `x, y` is the **baseline anchor** of the
+first line.
 
 ### `drawFast(ctx, value, x, y, scale?, align?) → void`
 Zero-alloc number renderer with one decimal place.
@@ -230,22 +248,28 @@ Zero-alloc number renderer with one decimal place.
 
 Above 2^53 (9007199254740992) the rendered integer digits are approximate -- the
 value is scaled through a double before digit extraction. Exact below that. Values
-outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` draw nothing.
+outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` draw nothing. A `scale` outside
+`(0, Infinity)` draws **nothing** and returns (F-11), same as `draw`.
 
 ### Constants and options
 
 | Name | Value | Meaning |
 |------|-------|---------|
 | `DRAWFAST_MAX` | `1e21` | largest magnitude `drawFast` renders; outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` it draws nothing (both endpoints inclusive) |
-| `opts.missingAdvance` | `0` (default) | xadvance written into every glyph id the descriptor did not cover, so an absent glyph leaves a gap instead of overprinting the next. Opt-in; the default is byte-identical to 1.2.x. Must be finite in `[0, 32767]` or the constructor throws `RangeError`. Id 10 is never given a missing advance |
+| `opts.missingAdvance` | `0` (default) | xadvance written into every glyph id the descriptor did not cover, so an absent glyph leaves a gap instead of overprinting the next. Opt-in; the default is byte-identical to 1.2.x. Must be finite in `[0, 32767]` or the constructor throws `BitmapFontError` (which is a `RangeError`). Id 10 is never given a missing advance |
+| `opts.checked` | `false` (default) | must be a boolean. Opens the lossy validation lane: an atlas coord past Int16, a fractional `xadvance`/`amount`, or an id/kerning key outside `[0, 256)` throws a `BitmapFontError` naming the exact drift instead of being truncated/skipped silently (F-08 detection). Inputs with no correct reading throw in both lanes. Storage is unchanged in 1.3.0; unchecked output is byte-identical |
 
 ### `drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale?, align?, vAlign?) → void`
 Renders a pre-laid-out `Float32Array` of lines into a box. See the **Wrapped Text** section above for buffer format and a layout helper recipe.
 
 - `x, y` is the box's **top-left corner**.
-- `align`: `0` = left, `1` = center, `2` = right.
-- `vAlign`: `0` = top, `1` = middle, `2` = bottom.
-- A line with `flags === 1` is rendered followed by an `…` ellipsis.
+- A `scale` outside `(0, Infinity)` draws **nothing** and returns (F-11).
+- `align`: `0` = left, `1` = center, `2` = right; outside `{0, 1, 2}` renders **left**.
+- `vAlign`: `0` = top, `1` = middle, `2` = bottom; outside `{0, 1, 2}` renders **top**.
+- `flags` is a bitfield read via ToInt32 -- `(flags | 0) & 1` appends a `"..."`
+  ellipsis, so `1.0000001` (a `Float32Array` rounding artifact) and `-1` both fire
+  it (F-13); `2`, `0` and `NaN` do not. A bit outside the mask throws under
+  `{ checked: true }` and is ignored otherwise.
 
 **Contract, enforced (1.2.3):**
 - `lineCount` is floored to an integer and clamped at 0. `NaN`, a negative, and any
@@ -282,8 +306,16 @@ Rendering a 12-line wrapped paragraph at 60 fps:
 ## 📦 TypeScript
 
 Full TypeScript declarations included in `BitmapFont.d.ts`. The `Align`, `VAlign`,
-`BMFontJson`, `BMFontChar`, and `BMFontKerning` types are also exported for downstream
-typing of layout helpers and JSON loaders.
+`BMFontJson`, `BMFontChar`, `BMFontKerning` and `BitmapFontOptions` types, plus the
+`BitmapFontError` class, are exported for downstream typing of layout helpers, JSON
+loaders and `catch` blocks.
+
+## 🧪 Testing
+
+`npm test` runs **103 tests** (100 pass, 0 fail, 3 finding-watch todos: F-07,
+F-14, F-18) across `node:test`. `npm run torture` runs the ten-tier zero-GC gate
+(`node --expose-gc test/torture.mjs`) and prints exactly `ok`; the descriptor door
+is proven by T3's 50-row abuse matrix and T9's control 10.
 
 ## 📚 LLM-Friendly Documentation
 

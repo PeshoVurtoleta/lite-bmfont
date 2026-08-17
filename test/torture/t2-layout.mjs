@@ -19,11 +19,15 @@
 
 import {
     check, nanScan, rec, resetRec, ATLAS,
-    FONT_ASCII, FONT_NL, WRAP_TEXT, WRAP_LAYOUT,
+    FONT_ASCII, FONT_NL, JSON_ASCII, WRAP_TEXT, WRAP_LAYOUT,
 } from './harness.mjs';
+import { BitmapFont } from '../../BitmapFont.js';
 
 const TEXT = 'HELLO';
 const CLEAN_DX = [0, 12, 24, 36, 48];
+// A { checked: true } sibling of FONT_ASCII, built ONCE at module scope (harness
+// rule 1). Only row 14b uses it -- the checked lane throws on unknown flag bits.
+const FONT_ASCII_CHECKED = new BitmapFont(ATLAS, JSON_ASCII, { checked: true });
 
 /** Assert the clean 5-glyph column and the three tier-wide invariants. */
 function cleanColumn(label) {
@@ -143,17 +147,57 @@ export function run() {
         () => 'T2/12: dots at ' + rec.dx[5] + ',' + rec.dx[6] + ',' + rec.dx[7] + ' != 60,72,84');
     invariants('12');
 
-    // row 13: flags = 1.0000001 -> 5 calls. F-13 (the Float32 strict-compare miss)
-    // is M3's; pinned here so a fix to it lands visibly, not silently, and never in M2.
+    // row 13: flags = 1.0000001 -> 8 calls. FIXED in M3 (F-13, decisions/0003
+    // fork 8): the flags word is ToInt32'd, so (1.0000001192092896 | 0) === 1 and
+    // the ellipsis now FIRES where a strict `=== 1` missed it. Dots land at
+    // 60, 72, 84 (row 12's numbers). MEASURED before 5 / after 8. Killed by
+    // reverting (flags|0) & FLAG_ELLIPSIS to a strict compare against 1.
     wrap(Float32Array.of(0, 5, 60, 1.0000001), 1);
-    check(rec.calls === 5, () => 'T2/13: flags 1.0000001 drew ' + rec.calls + ' (F-13 is M3, not M2)');
+    check(rec.calls === 8, () => 'T2/13: flags 1.0000001 drew ' + rec.calls + ' != 8 (ellipsis must fire, F-13/M3)');
+    check(rec.dx[5] === 60 && rec.dx[6] === 72 && rec.dx[7] === 84,
+        () => 'T2/13: dots at ' + rec.dx[5] + ',' + rec.dx[6] + ',' + rec.dx[7] + ' != 60,72,84');
     invariants('13');
 
-    // row 14: flags = 2, -1, NaN -> 5 calls each (unknown flags ignored; F-13/M3).
-    for (const f of [2, -1, NaN]) {
+    // row 14: flags = 2 and NaN -> 5 calls each, UNCHANGED. `2 & 1 === 0` and
+    // `NaN | 0 === 0`, so neither sets the ellipsis bit. SPLIT from `-1` (row 14a)
+    // deliberately: folding all three into one loop with -1's new count would stop
+    // pinning 2 and NaN at all -- that is risk (f), and the split is the fix.
+    for (const f of [2, NaN]) {
         wrap(Float32Array.of(0, 5, 60, f), 1);
         check(rec.calls === 5, () => 'T2/14: flags ' + f + ' drew ' + rec.calls + ' != 5');
         invariants('14[' + f + ']');
+    }
+
+    // row 14a: flags = -1 -> 8 calls (was 5 on 1.2.3). DECLARED BEHAVIOUR DELTA
+    // (decisions/0003 fork 8, CHANGELOG "Changed"): -1 | 0 === -1 and -1 & 1 === 1,
+    // so the ellipsis now fires. MEASURED before 5 / after 8. Killed by reverting
+    // the mask.
+    wrap(Float32Array.of(0, 5, 60, -1), 1);
+    check(rec.calls === 8, () => 'T2/14a: flags -1 drew ' + rec.calls + ' != 8 (declared delta, ellipsis fires)');
+    check(rec.dx[5] === 60 && rec.dx[6] === 72 && rec.dx[7] === 84,
+        () => 'T2/14a: dots at ' + rec.dx[5] + ',' + rec.dx[6] + ',' + rec.dx[7] + ' != 60,72,84');
+    invariants('14a');
+
+    // row 14b: the checked lane. A { checked: true } font THROWS on an unknown
+    // flag bit (2), naming the mask and the value; the same font with flags 1 does
+    // not (the twin). Unknown flags stop being silent under checked (decisions/0003
+    // fork 8). Killed by deleting the checked mask test in drawWrapped.
+    {
+        let msg = null;
+        try {
+            resetRec(ATLAS);
+            FONT_ASCII_CHECKED.drawWrapped(rec, TEXT, Float32Array.of(0, 5, 60, 2), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        } catch (e) { msg = e instanceof RangeError ? e.message : String(e); }
+        check(msg !== null && msg.includes('2') && msg.includes('mask'),
+            () => 'T2/14b: checked flags 2 did not throw naming the mask and value, got ' + msg);
+        let threw = false;
+        try {
+            resetRec(ATLAS);
+            FONT_ASCII_CHECKED.drawWrapped(rec, TEXT, Float32Array.of(0, 5, 60, 1), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        } catch { threw = true; }
+        check(!threw, () => 'T2/14b-twin: checked flags 1 threw');
+        check(rec.calls === 8, () => 'T2/14b-twin: checked flags 1 drew ' + rec.calls + ' != 8');
+        invariants('14b-twin');
     }
 
     // row 15: lineCount = 0.5 -> floor to 0, draw NOTHING. Killed by deleting Math.floor.

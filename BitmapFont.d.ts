@@ -34,6 +34,36 @@ export interface BMFontJson {
     kernings?: BMFontKerning[];
 }
 
+/** Options bag for the `BitmapFont` constructor (F-28: unknown keys throw). */
+export interface BitmapFontOptions {
+    /**
+     * The xadvance written into every uncovered glyph id (default `0`,
+     * byte-identical to 1.2.x). Finite in `[0, 32767]` or the constructor throws.
+     */
+    missingAdvance?: number;
+    /**
+     * Open the LOSSY validation lane (default `false`, must be a boolean). When
+     * `true`, an atlas coordinate past Int16, a fractional `xadvance` or `amount`,
+     * and an id or kerning key outside `[0, 256)` throw a `BitmapFontError`
+     * naming the exact drift, instead of being truncated/skipped silently
+     * (F-08 detection). Inputs with no correct reading throw in both lanes.
+     */
+    checked?: boolean;
+}
+
+/**
+ * The one error the constructor throws (F-10). Extends `RangeError`, so a
+ * `catch (e) { if (e instanceof RangeError) }` around `new BitmapFont(...)` still
+ * fires. `field` is the caller-facing field name (e.g. `'chars[0].id'`,
+ * `'opts.checked'`); `value` is the received value; `message` starts
+ * `lite-bmfont: ` and contains both. 2.0.0 may re-parent this type.
+ */
+export class BitmapFontError extends RangeError {
+    readonly name: 'BitmapFontError';
+    readonly field: string;
+    readonly value: unknown;
+}
+
 export class BitmapFont {
     /** Distance between baselines, in source pixels. */
     readonly lineHeight: number;
@@ -56,17 +86,18 @@ export class BitmapFont {
     readonly kerning: Int16Array;
 
     /**
-     * @param opts Optional policy. `missingAdvance` (default 0, byte-identical to
-     *   1.2.x) is the xadvance written into every glyph id the descriptor did not
-     *   cover, so an absent glyph leaves a gap instead of overprinting the next
-     *   (F-12). Must be a finite number in `[0, 32767]` or the constructor throws
-     *   `RangeError`. Id 10 (`\n`) is never given a missing advance -- its
-     *   descriptor entry is discarded. Use `hasGlyph` to detect gaps at load time.
+     * The descriptor is validated at construction (F-10): `imageAtlas`, `common`,
+     * `common.lineHeight`, `common.base`, `chars` and (when present) `kernings`
+     * are checked, and a malformed one throws a `BitmapFontError` naming the
+     * field -- no raw `TypeError` escapes. `chars: []` is LEGAL (a coherent
+     * zero-glyph font). See {@link BitmapFontOptions} for `missingAdvance` (F-12)
+     * and `checked` (F-08 detection). Id 10 (`\n`) is never given a missing
+     * advance -- its descriptor entry is discarded. Use `hasGlyph` to detect gaps.
      */
     constructor(
         imageAtlas: HTMLImageElement | HTMLCanvasElement,
         fontJson: BMFontJson,
-        opts?: { missingAdvance?: number }
+        opts?: BitmapFontOptions
     );
 
     /** Pixel width of `text` at `scale`, kerning-aware. */
@@ -83,6 +114,10 @@ export class BitmapFont {
     /**
      * Render a (possibly multi-line) string. Newlines (`\n`) advance by `lineHeight`.
      * `x`/`y` is the baseline anchor of the first line.
+     *
+     * A `scale` outside `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity` --
+     * draws NOTHING and returns (F-11). An `align` outside `{0, 1, 2}` -- including
+     * `NaN`, negatives and fractionals -- renders LEFT.
      */
     draw(
         ctx: CanvasRenderingContext2D,
@@ -100,7 +135,8 @@ export class BitmapFont {
      *
      * Above 2^53 (9007199254740992) the rendered integer digits are approximate --
      * the value is scaled through a double before digit extraction. Exact below
-     * that. Values outside [-DRAWFAST_MAX, DRAWFAST_MAX] draw nothing.
+     * that. Values outside [-DRAWFAST_MAX, DRAWFAST_MAX] draw nothing. A `scale`
+     * outside `(0, Infinity)` draws NOTHING and returns (F-11), same as `draw`.
      */
     drawFast(
         ctx: CanvasRenderingContext2D,
@@ -117,9 +153,14 @@ export class BitmapFont {
      *
      * `layoutBuffer` is a Float32Array of `lineCount * 4` floats, packed as:
      *   `[startIdx, endIdx, lineWidth (at scale=1), flags]` per line.
-     * `flags === 1` appends an `"..."` ellipsis after the line content.
+     * The `flags` word is read as a bitfield: bit 0 appends an `"..."` ellipsis.
+     * It is ToInt32'd first, so `1.0000001` (a Float32 rounding artifact) still
+     * fires (F-13). A bit outside the known mask throws under `{ checked: true }`
+     * and is ignored otherwise.
      *
-     * `x`/`y` are the container's top-left corner.
+     * `x`/`y` are the container's top-left corner. A `scale` outside `(0, Infinity)`
+     * draws NOTHING and returns (F-11). An `align` outside `{0, 1, 2}` renders LEFT
+     * and a `vAlign` outside `{0, 1, 2}` renders TOP.
      *
      * Contract, enforced (1.2.3):
      * - `lineCount` is floored to an integer and clamped at 0. `NaN`, a negative,

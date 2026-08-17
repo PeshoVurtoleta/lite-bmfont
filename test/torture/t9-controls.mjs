@@ -25,6 +25,7 @@ import {
     rec, resetRec, nanScan, runOpsGate, runAllocGate, die,
     oracleAdvance, FONT_ASCII, JSON_ASCII, ATLAS,
 } from './harness.mjs';
+import { BitmapFont, BitmapFontError } from '../../BitmapFont.js';
 import { createLeakTracker } from '@zakkster/lite-leak';
 import { spawnSync } from 'node:child_process';
 
@@ -167,6 +168,29 @@ export function run() {
         }
         if (door.stdout.trim() !== 'calls=0') {
             die('T9 control 9: shipped drawFast(MAX_VALUE) drew ' + door.stdout.trim() + ', expected calls=0');
+        }
+    }
+
+    // Control 10 -- the descriptor door (T3, M3). The door must bite BOTH ways:
+    // a non-array `chars` throws a BitmapFontError (the door is live), and an
+    // empty-array `chars` constructs (the door is not always-throwing). Deleting
+    // the chars pre-pass makes `chars: 7` construct a 0-glyph font -> the first
+    // check dies; an always-throwing pre-pass makes `chars: []` throw -> the
+    // second dies. T3 rows 13 and 17 are the gated form; this is the control that
+    // proves the descriptor gate can fail at all. Verified out of process at
+    // M3-T25: deleting the pre-pass reddens T3 (row 13/A1), restoring returns ok.
+    {
+        let threw = null;
+        try { new BitmapFont(ATLAS, { common: { lineHeight: 20, base: 16 }, chars: 7 }); }
+        catch (e) { threw = e; }
+        if (!(threw instanceof BitmapFontError)) {
+            die('T9 control 10: chars 7 did not throw a BitmapFontError -- the descriptor door is dead (T3 would pass vacuously)');
+        }
+        let constructed = true;
+        try { new BitmapFont(ATLAS, { common: { lineHeight: 20, base: 16 }, chars: [] }); }
+        catch { constructed = false; }
+        if (!constructed) {
+            die('T9 control 10: chars [] threw -- the descriptor door is always-throwing (T3 non-vacuity twin would fail)');
         }
     }
 }

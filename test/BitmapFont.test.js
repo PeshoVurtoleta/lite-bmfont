@@ -1,9 +1,9 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BitmapFont, DRAWFAST_MAX } from '../BitmapFont.js';
+import { BitmapFont, BitmapFontError, DRAWFAST_MAX } from '../BitmapFont.js';
 import {
     rec, resetRec, ATLAS,
-    FONT_ASCII, FONT_GAP, FONT_NL, JSON_ASCII, JSON_GAP, oracleAdvance,
+    FONT_ASCII, FONT_NUM, FONT_GAP, FONT_NL, JSON_ASCII, JSON_GAP, oracleAdvance,
 } from './torture/harness.mjs';
 
 // The next representable double above v (v >= 0). 1e21's ulp is 2^17 = 131072.
@@ -874,5 +874,210 @@ describe('BitmapFont M2: cursor conservation', () => {
         assert.deepEqual(Array.from(rec.dx.slice(0, 3)), [0, 12, 24]);
         assert.equal(rec.dropped, 0);
         assert.equal(rec.imgMismatch, 0);
+    });
+});
+
+// M3: the descriptor door (F-08 detection / F-09 / F-10 / F-11 / F-13 / F-28 /
+// F-29 / F-30). Fourteen blocks per SESSION-M3.md section 6.5. The starting
+// numbers -- 3 of 5 construct, 4 throw raw TypeErrors -- are annotated so a
+// reader sees what 1.2.3 did. Every block ends by asserting the shared ctx is
+// clean (dropped/imgMismatch 0). Design record: decisions/0003-descriptor-door.md.
+describe('BitmapFont M3: the descriptor door', () => {
+    const mkChar = (o) => Object.assign(
+        { id: 65, x: 0, y: 0, width: 10, height: 14, xoffset: 0, yoffset: 2, xadvance: 12 }, o);
+    const mkFont = (o) => Object.assign({ common: { lineHeight: 20, base: 16 }, chars: [mkChar()] }, o);
+    const clean = () => { assert.equal(rec.dropped, 0); assert.equal(rec.imgMismatch, 0); };
+    const ASCII_CHECKED = new BitmapFont(ATLAS, JSON_ASCII, { checked: true });
+
+    test('F-10: chars 7, "AB", {length:-1}, {length:3} and missing each throw a BitmapFontError naming chars', () => {
+        // 3 of 5 construct on 1.2.3 (7, "AB", {length:-1} -> 0-glyph fonts).
+        resetRec(ATLAS);
+        for (const chars of [7, 'AB', { length: -1 }, { length: 3 }]) {
+            assert.throws(() => new BitmapFont(ATLAS, { common: { lineHeight: 20, base: 16 }, chars }),
+                (e) => e instanceof BitmapFontError && e.field.includes('chars'), 'chars ' + JSON.stringify(chars));
+        }
+        assert.throws(() => new BitmapFont(ATLAS, { common: { lineHeight: 20, base: 16 } }),
+            (e) => e instanceof BitmapFontError && e.field.includes('chars'));
+        clean();
+    });
+
+    test('F-10: chars [] is legal and constructs a coherent zero-glyph font', () => {
+        resetRec(ATLAS);
+        const f = new BitmapFont(ATLAS, { common: { lineHeight: 20, base: 16 }, chars: [] });
+        assert.equal(f.measure('A'), 0);
+        assert.equal(f.hasGlyph(65), false);
+        clean();
+    });
+
+    test('F-10: atlas null/undefined, fontJson null/{}, common null, lineHeight NaN, base NaN each throw naming the field', () => {
+        // 3 construct on 1.2.3 (atlas null, lineHeight NaN, base NaN); 4 throw raw TypeErrors.
+        resetRec(ATLAS);
+        const cases = [
+            [() => new BitmapFont(null, mkFont()), 'imageAtlas'],
+            [() => new BitmapFont(undefined, mkFont()), 'imageAtlas'],
+            [() => new BitmapFont(ATLAS, null), 'fontJson'],
+            [() => new BitmapFont(ATLAS, {}), 'common'],
+            [() => new BitmapFont(ATLAS, { common: null, chars: [mkChar()] }), 'common'],
+            [() => new BitmapFont(ATLAS, { common: { lineHeight: NaN, base: 16 }, chars: [mkChar()] }), 'common.lineHeight'],
+            [() => new BitmapFont(ATLAS, { common: { lineHeight: 20, base: NaN }, chars: [mkChar()] }), 'common.base'],
+        ];
+        for (const [fn, field] of cases) {
+            assert.throws(fn, (e) => e instanceof BitmapFontError && e.field.includes(field), field);
+        }
+        clean();
+    });
+
+    test('F-10: no raw TypeError escapes the constructor', () => {
+        resetRec(ATLAS);
+        const bad = [
+            () => new BitmapFont(null, mkFont()),
+            () => new BitmapFont(ATLAS, null),
+            () => new BitmapFont(ATLAS, {}),
+            () => new BitmapFont(ATLAS, { common: { lineHeight: 20, base: 16 } }),
+            () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: '65' })] })),
+            () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: NaN })] })),
+            () => new BitmapFont(ATLAS, mkFont({ kernings: [{ first: '65', second: 66, amount: 1 }] })),
+            () => new BitmapFont(ATLAS, mkFont(), { missingAdvanc: 6 }),
+        ];
+        for (const fn of bad) {
+            assert.throws(fn, (e) => {
+                assert.equal(e.constructor.name, 'BitmapFontError', 'raw ' + e.constructor.name + ': ' + e.message);
+                assert.ok(!(e.constructor === TypeError));
+                return true;
+            });
+        }
+        clean();
+    });
+
+    test('F-28: an unknown opts key throws and names the allowlist', () => {
+        resetRec(ATLAS);
+        assert.throws(() => new BitmapFont(ATLAS, mkFont(), { missingAdvanc: 6 }),
+            (e) => e instanceof BitmapFontError && e.message.includes('missingAdvanc') &&
+                e.message.includes('missingAdvance') && e.message.includes('checked'));
+        clean();
+    });
+
+    test('F-28: opts must be an object; checked must be a boolean', () => {
+        resetRec(ATLAS);
+        assert.throws(() => new BitmapFont(ATLAS, mkFont(), 7),
+            (e) => e instanceof BitmapFontError && e.field.includes('opts'));
+        assert.throws(() => new BitmapFont(ATLAS, mkFont(), { checked: 1 }),
+            (e) => e instanceof BitmapFontError && e.field.includes('opts.checked'));
+        // twins: these all construct.
+        for (const opts of [{}, undefined, null, { missingAdvance: 6 }, { checked: true }, { checked: false }]) {
+            assert.doesNotThrow(() => new BitmapFont(ATLAS, mkFont(), opts), 'opts ' + JSON.stringify(opts));
+        }
+        clean();
+    });
+
+    test('F-29: a non-number or non-integer char.id throws instead of writing an unnamed glyph', () => {
+        // On 1.2.3 id '65' wrote 4 slots but hasGlyph(65) stayed false (the lie).
+        resetRec(ATLAS);
+        for (const id of ['65', null, true, 65.5, NaN, Infinity]) {
+            assert.throws(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id })] })),
+                (e) => e instanceof BitmapFontError && e.field === 'chars[0].id', 'id ' + String(id));
+        }
+        // finite out of range is CHECKED, not always-throw.
+        assert.doesNotThrow(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: 3000 })] })));
+        clean();
+    });
+
+    test('F-30: a non-finite glyph field throws in BOTH lanes', () => {
+        // On 1.2.3 x NaN stored 0 and hasGlyph(65) reported true.
+        resetRec(ATLAS);
+        for (const x of [NaN, Infinity, -Infinity]) {
+            assert.throws(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x })] })),
+                (e) => e instanceof BitmapFontError && e.field === 'chars[0].x', 'unchecked x ' + x);
+            assert.throws(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x })] }), { checked: true }),
+                (e) => e instanceof BitmapFontError && e.field === 'chars[0].x', 'checked x ' + x);
+        }
+        clean();
+    });
+
+    test('F-08: unchecked, x 40000 stores -25536 and xadvance 8.6 gives measure(AA) === 16 against an exact 17.2', () => {
+        // The semver guarantee in test form: unchecked storage is byte-identical to 1.2.x.
+        resetRec(ATLAS);
+        const fx = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: 40000 })] }));
+        assert.equal(fx.glyphs[65 * 7], -25536);
+        const fa = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 8.6 })] }));
+        assert.equal(fa.measure('AA'), 16);
+        assert.equal(8.6 * 2, 17.2);            // exact double the store loses
+        // F-33: the checked-lane message says "truncates toward zero" (block below);
+        // pin the BEHAVIOUR that wording describes, or the message could lie if the
+        // store ever floored. -8.6 stores -8 (toward zero), never -9 (floor).
+        const fn = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: -8.6 })] }));
+        assert.equal(fn.glyphs[65 * 7 + 6], -8);
+        clean();
+    });
+
+    test('F-08: checked, the same two throw naming the exact stored value and the drift', () => {
+        // Not constructible on 1.2.3 (no checked mode).
+        resetRec(ATLAS);
+        assert.throws(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: 40000 })] }), { checked: true }),
+            (e) => e instanceof BitmapFontError && e.message.includes('40000') && e.message.includes('-25536'));
+        assert.throws(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: -8.6 })] }), { checked: true }),
+            (e) => e instanceof BitmapFontError && e.message.includes('toward zero') && !e.message.includes('floor'));
+        clean();
+    });
+
+    test('F-09: a kerning key that is negative, fractional, a string or a boolean does not write a pair the descriptor never named', () => {
+        // On 1.2.3 first '65' wrote slot 16706, first true wrote 322.
+        resetRec(ATLAS);
+        for (const first of ['65', 65.5, true]) {
+            assert.throws(() => new BitmapFont(ATLAS, mkFont({ kernings: [{ first, second: 66, amount: 1 }] })),
+                (e) => e instanceof BitmapFontError && e.field === 'kernings[0].first', 'first ' + String(first));
+        }
+        // negative finite key: skipped unchecked (writes nowhere), throws checked.
+        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: -1, second: 65, amount: -2 }] }));
+        assert.equal(f.kerning[(255 << 8) | 65], 0);
+        assert.throws(() => new BitmapFont(ATLAS, mkFont({ kernings: [{ first: -1, second: 65, amount: -2 }] }), { checked: true }),
+            (e) => e instanceof BitmapFontError && e.field === 'kernings[0].first');
+        clean();
+    });
+
+    test('F-11: scale NaN, 0, -1 and Infinity draw nothing on draw, drawFast and drawWrapped', () => {
+        // 12 cases; all drew on 1.2.3 (draw 4, drawFast 6, drawWrapped 5 apiece).
+        for (const s of [NaN, 0, -1, Infinity]) {
+            resetRec(ATLAS); FONT_ASCII.draw(rec, 'AAAA', 0, 0, s, 0);
+            assert.equal(rec.calls, 0, 'draw scale ' + s);
+            resetRec(ATLAS); FONT_NUM.drawFast(rec, 1234, 0, 0, s, 0);
+            assert.equal(rec.calls, 0, 'drawFast scale ' + s);
+            resetRec(ATLAS); FONT_ASCII.drawWrapped(rec, 'AAAA', Float32Array.of(0, 4, 48, 0), 1, 100, 100, 0, 0, s, 0, 0);
+            assert.equal(rec.calls, 0, 'drawWrapped scale ' + s);
+        }
+        clean();
+    });
+
+    test('F-11: align and vAlign outside {0,1,2} render left and top, as documented', () => {
+        resetRec(ATLAS); FONT_ASCII.draw(rec, 'ABC', 0, 0, 1, 0);
+        const ref = Array.from(rec.dx.slice(0, rec.calls)); const refCalls = rec.calls;
+        for (const a of [3, -1, 1.5, NaN]) {
+            resetRec(ATLAS); FONT_ASCII.draw(rec, 'ABC', 0, 0, 1, a);
+            assert.equal(rec.calls, refCalls, 'align ' + a);
+            assert.deepEqual(Array.from(rec.dx.slice(0, rec.calls)), ref, 'align ' + a + ' column');
+        }
+        resetRec(ATLAS); FONT_ASCII.drawWrapped(rec, 'ABC', Float32Array.of(0, 3, 36, 0), 1, 100, 100, 0, 0, 1, 0, 0);
+        const vref = Array.from(rec.dy.slice(0, rec.calls));
+        assert.equal(vref[0], 2);
+        for (const va of [3, -1, NaN]) {
+            resetRec(ATLAS); FONT_ASCII.drawWrapped(rec, 'ABC', Float32Array.of(0, 3, 36, 0), 1, 100, 100, 0, 0, 1, 0, va);
+            assert.deepEqual(Array.from(rec.dy.slice(0, rec.calls)), vref, 'vAlign ' + va + ' column');
+        }
+        clean();
+    });
+
+    test('F-13: flags 1.0000001 fires the ellipsis; an unknown bit throws under checked', () => {
+        // On 1.2.3 flags 1.0000001 was silently ignored (5 calls, no ellipsis).
+        resetRec(ATLAS);
+        FONT_ASCII.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 1.0000001), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.equal(rec.calls, 8);
+        assert.deepEqual([rec.dx[5], rec.dx[6], rec.dx[7]], [60, 72, 84]);
+        // unknown bit (2) under checked throws; the twin (flags 1) does not.
+        assert.throws(() => { resetRec(ATLAS); ASCII_CHECKED.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 2), 1, 1000, 1000, 0, 0, 1, 0, 0); },
+            (e) => e instanceof BitmapFontError && e.message.includes('mask') && e.message.includes('2'));
+        resetRec(ATLAS);
+        assert.doesNotThrow(() => ASCII_CHECKED.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 1), 1, 1000, 1000, 0, 0, 1, 0, 0));
+        assert.equal(rec.calls, 8);
+        clean();
     });
 });

@@ -14,6 +14,113 @@
  */
 export const DRAWFAST_MAX = 1e21;
 
+/**
+ * The one error type the descriptor door throws (F-10). It EXTENDS `RangeError`
+ * so that M2's two existing `RangeError` throws are not made uncatchable: a
+ * caller who wrote `catch (e) { if (e instanceof RangeError) ... }` still catches
+ * every M3 throw. The two M2 throws are NOT handled uniformly, though. The
+ * `missingAdvance` range door widens to `BitmapFontError` (its message gains the
+ * `opts.` prefix); the `drawWrapped` short-buffer door deliberately stays a bare
+ * `RangeError` (M3-T14, so its pinned "4 / 12" message assertions do not move) --
+ * see the "Error type" section of `decisions/0003-descriptor-door.md`. `name` is
+ * set explicitly (a subclass otherwise inherits `'RangeError'`), and
+ * `field`/`value` are own properties so a caller can branch on the field without
+ * parsing English. The message always starts `lite-bmfont: ` and contains both.
+ * 2.0.0 may re-parent this type; 1.x may not.
+ */
+export class BitmapFontError extends RangeError {
+    constructor(message, field, value) {
+        super(message);
+        this.name = 'BitmapFontError';
+        this.field = field;
+        this.value = value;
+    }
+}
+
+// ---- descriptor-door constants and predicates (F-08/09/10/13/28/29/30) -------
+// COLD. Every line below runs at construction only (ROADMAP law 7); no measured
+// window builds a font. FLAG_ELLIPSIS/FLAG_MASK are the ONE per-line cost in
+// drawWrapped (fork 8).
+
+/** Bit 0 of the layout flags word: append "..." (F-13). */
+const FLAG_ELLIPSIS = 1;
+/** Every known layout-flags bit. A bit outside this is a caller error. */
+const FLAG_MASK = 1;
+/** The only own keys `opts` may carry. Frozen so a caller cannot mutate it. */
+const OPTS_ALLOWED = Object.freeze(['missingAdvance', 'checked']);
+/** The seven Int16 glyph fields, in slot order, walked by the field door. */
+const GLYPH_FIELDS = ['x', 'y', 'width', 'height', 'xoffset', 'yoffset', 'xadvance'];
+
+/** Throw the one library error, naming the caller-facing field and value. */
+function _throwField(field, value, detail) {
+    throw new BitmapFontError(
+        'lite-bmfont: ' + field + ' ' + detail + ', got ' + String(value), field, value);
+}
+
+/**
+ * The SHARED integer-key predicate (fork 1 amendment 2). One function serves
+ * `char.id` and both kerning keys, so their always-throw messages differ only
+ * in the field name. `typeof === 'number' && v === (v | 0)` rejects every
+ * non-number (a string that coerces is invisible to hasGlyph -- F-29) and every
+ * non-finite by construction (`NaN|0 === 0`, `Infinity|0 === 0`), so `NaN` is an
+ * always-throw, never a checked-lane case (matrix row 20 vs 21).
+ */
+function _requireIntKey(value, field) {
+    if (typeof value !== 'number' || value !== (value | 0)) {
+        _throwField(field, value, 'must be an integer');
+    }
+}
+
+/**
+ * Validate one Int16 glyph/amount field. Non-number and non-finite ALWAYS throw
+ * (F-30 amendment 1: no reading of `x: NaN` renders the intended glyph). A finite
+ * value outside Int16 range, or a non-integer, is LOSSY-but-interpretable, so it
+ * throws only under `checked` and otherwise stores exactly as v1.2.x did (F-08 is
+ * detection only; storage is M9). Range is tested before integrality so a huge
+ * value reports the wrap, not the truncation.
+ */
+function _requireNumField(value, field, checked) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+        _throwField(field, value, 'must be a finite number');
+    }
+    if (checked) {
+        if (value < -32768 || value > 32767) {
+            _throwField(field, value,
+                'is outside Int16 range [-32768, 32767] and stores as ' + Int16Array.of(value)[0]);
+        }
+        if (value !== (value | 0)) {
+            _throwField(field, value,
+                'is not an integer; the Int16 store truncates it toward zero to ' + (value | 0));
+        }
+    }
+}
+
+/**
+ * The `chars`/`kernings` array-shape pre-pass (fork 4). NOT a length test: a
+ * string has a numeric length and yields a zero-glyph font (0.1a). Valid iff not
+ * a string, integer length in [0, 2^32), and every index yields a non-null
+ * object. Runs BEFORE the store loop so a throw leaves no half-built font
+ * (atomicity, fork 4 reason i).
+ */
+function _requireArrayField(arr, field) {
+    if (typeof arr === 'string') {
+        _throwField(field, arr, 'must be an array, not a string');
+    }
+    if (arr === null || typeof arr !== 'object') {
+        _throwField(field, arr, 'must be an array, not a ' + typeof arr);
+    }
+    const len = arr.length;
+    if (typeof len !== 'number' || len !== (len >>> 0)) {
+        _throwField(field + '.length', len, 'must be an integer in [0, 2^32)');
+    }
+    for (let i = 0; i < len; i++) {
+        const el = arr[i];
+        if (el === null || typeof el !== 'object') {
+            _throwField(field + '[' + i + ']', el, 'must be an object');
+        }
+    }
+}
+
 export class BitmapFont {
     /**
      * @param {HTMLImageElement | HTMLCanvasElement} imageAtlas
@@ -22,18 +129,50 @@ export class BitmapFont {
      *   common: { lineHeight: number, base: number },
      *   chars: Array<{ id: number, x: number, y: number, width: number, height: number, xoffset: number, yoffset: number, xadvance: number }>,
      *   kernings?: Array<{ first: number, second: number, amount: number }>
-     * }} fontJson  Standard BMFont JSON descriptor.
-     * @param {{ missingAdvance?: number }} [opts]
-     *   Optional policy. `missingAdvance` (default **0**, which is v1.2.x
-     *   behaviour byte-for-byte) is the xadvance written into every glyph id
-     *   the descriptor did not cover, so an absent glyph leaves a gap instead
-     *   of letting the next glyph overprint it (F-12). Must be a finite number
-     *   in [0, 32767] or the constructor throws; it is truncated to an integer
-     *   by the Int16 store, exactly as a descriptor xadvance is (F-08).
-     *   Id 10 (`\n`) is NEVER given a missing advance -- see the id-10 policy
-     *   below. Use `hasGlyph(id)` to detect coverage gaps at load time.
+     * }} fontJson  Standard BMFont JSON descriptor. Validated at construction
+     *   (F-10): `imageAtlas`, `common`, `common.lineHeight`, `common.base`,
+     *   `chars` and (when present) `kernings` are checked, and a malformed one
+     *   throws a `BitmapFontError` naming the field -- no raw `TypeError`
+     *   escapes. `chars: []` is LEGAL: it builds a coherent zero-glyph font
+     *   whose `measure` is 0 and whose `hasGlyph` is false for every id.
+     * @param {{ missingAdvance?: number, checked?: boolean }} [opts]
+     *   Optional policy. Must be a plain object or `undefined`/`null`; an
+     *   unknown own key throws (F-28), so `{ missingAdvanc: 6 }` -- one dropped
+     *   letter -- is an error, not a silent default.
+     *   - `missingAdvance` (default **0**, v1.2.x byte-for-byte) is the xadvance
+     *     written into every uncovered glyph id, so an absent glyph leaves a gap
+     *     instead of letting the next glyph overprint it (F-12). Finite in
+     *     [0, 32767] or the constructor throws. Id 10 (`\n`) is never given one.
+     *   - `checked` (default **false**, must be a boolean) opens the LOSSY lane.
+     *     Two lanes: inputs with no correct reading (a null atlas, a NaN metric,
+     *     a non-number id) ALWAYS throw; lossy-but-interpretable inputs (an atlas
+     *     coord past Int16, a fractional `xadvance`, an id outside [0, 256)) are
+     *     skipped/truncated silently by default and throw only under
+     *     `{ checked: true }`, which reports the exact drift (F-08 detection).
+     *   Use `hasGlyph(id)` to detect coverage gaps at load time.
      */
     constructor(imageAtlas, fontJson, opts) {
+        // ---- descriptor door (F-10), matrix rows 1-11. COLD, fail closed. ---
+        // `null is not zero`: no raw TypeError naming an internal property may
+        // escape. Runs BEFORE the three assignments, which read the fields it
+        // has just proven present and finite.
+        if (imageAtlas === null || typeof imageAtlas !== 'object') {
+            _throwField('imageAtlas', imageAtlas, 'must be an image or canvas element');
+        }
+        if (fontJson === null || typeof fontJson !== 'object') {
+            _throwField('fontJson', fontJson, 'must be a BMFont descriptor object');
+        }
+        const _common = fontJson.common;
+        if (_common === null || typeof _common !== 'object') {
+            _throwField('common', _common, 'must be an object with lineHeight and base');
+        }
+        if (typeof _common.lineHeight !== 'number' || !Number.isFinite(_common.lineHeight)) {
+            _throwField('common.lineHeight', _common.lineHeight, 'must be a finite number');
+        }
+        if (typeof _common.base !== 'number' || !Number.isFinite(_common.base)) {
+            _throwField('common.base', _common.base, 'must be a finite number');
+        }
+
         this.atlas = imageAtlas;
         this.lineHeight = fontJson.common.lineHeight;
         this.base = fontJson.common.base;
@@ -54,24 +193,76 @@ export class BitmapFont {
         // which a byte-per-id map would have got for free -- see hasGlyph.
         this._mapped = new Uint32Array(8);
 
-        // Cold path, fail closed. `null is not zero`: an explicitly-passed NaN,
-        // null or Infinity is a caller error and throws here, at construction,
-        // rather than becoming a silently-truncated 0 in the glyph table. The
-        // `!(a && b)` form rejects NaN on both bounds (ROADMAP law 4 idiom).
+        // ---- F-28: the opts bag fails closed (fork 2). COLD. ----------------
+        // A default-off validator behind a typo-swallowing bag is unturnable-on,
+        // so `checked` is C's precondition and settled first. `opts` must be a
+        // plain object or undefined/null; every own key must be in the frozen
+        // allowlist (an inherited or misspelled key is unknown and throws); and
+        // `checked` must be an exact boolean -- no truthiness on a validator's
+        // own switch. The `!(a && b)` missingAdvance test rejects NaN on both
+        // bounds (ROADMAP law 4 idiom). M2's behaviour is preserved (same range,
+        // same NaN rejection) and the error widens to BitmapFontError (row 40);
+        // the message text gains the `opts.` prefix (`opts.missingAdvance`) so
+        // it names the field a caller can branch on and so `e.message` contains
+        // `e.field` -- a change to the shipped 1.2.x message, noted in CHANGELOG.
         let missingAdvance = 0;
-        if (opts !== undefined && opts !== null && opts.missingAdvance !== undefined) {
-            const m = opts.missingAdvance;
-            if (!(m >= 0 && m <= 32767)) {
-                throw new RangeError('lite-bmfont: missingAdvance must be a finite number in [0, 32767], got ' + m);
+        let checked = false;
+        if (opts !== undefined && opts !== null) {
+            if (typeof opts !== 'object') {
+                _throwField('opts', opts, 'must be an object');
             }
-            missingAdvance = m;
+            for (const key in opts) {
+                if (!Object.prototype.hasOwnProperty.call(opts, key) || OPTS_ALLOWED.indexOf(key) === -1) {
+                    _throwField('opts.' + key, opts[key],
+                        'is not a known option (allowed: ' + OPTS_ALLOWED.join(', ') + ')');
+                }
+            }
+            if (Object.prototype.hasOwnProperty.call(opts, 'checked')) {
+                if (opts.checked !== true && opts.checked !== false) {
+                    _throwField('opts.checked', opts.checked, 'must be a boolean');
+                }
+                checked = opts.checked;
+            }
+            if (Object.prototype.hasOwnProperty.call(opts, 'missingAdvance')) {
+                const m = opts.missingAdvance;
+                if (!(m >= 0 && m <= 32767)) {
+                    throw new BitmapFontError(
+                        'lite-bmfont: opts.missingAdvance must be a finite number in [0, 32767], got ' + m,
+                        'opts.missingAdvance', m);
+                }
+                missingAdvance = m;
+            }
+        }
+        this.checked = checked;
+
+        // ---- chars/kernings array-shape pre-pass (fork 4), rows 12-18, 27-29.
+        // Throws before the store loop and the kernings loop run -- atomicity:
+        // a constructor that throws leaves no half-built font.
+        _requireArrayField(fontJson.chars, 'chars');
+        if (fontJson.kernings !== undefined && fontJson.kernings !== null) {
+            _requireArrayField(fontJson.kernings, 'kernings');
         }
 
         for (let i = 0; i < fontJson.chars.length; i++) {
             const char = fontJson.chars[i];
             const id = char.id;
 
+            // F-29: id must be a real integer (the shared key predicate). A
+            // string that coerces, or true/null, writes a glyph the descriptor
+            // never named and lies to hasGlyph; NaN/Infinity name no glyph at
+            // all. Always-throw in both lanes (matrix row 20 -- NaN is HERE,
+            // never the checked lane).
+            _requireIntKey(id, 'chars[' + i + '].id');
+
             if (id >= 0 && id < 256) {
+                // F-30 / F-08 detection: validate the seven Int16 fields above
+                // the byte-for-byte-M2 stores. Non-finite always throws (no
+                // reading of x: NaN renders the glyph); a field past Int16 or a
+                // fractional field throws only under checked, else stores as it
+                // always did.
+                for (let n = 0; n < 7; n++) {
+                    _requireNumField(char[GLYPH_FIELDS[n]], 'chars[' + i + '].' + GLYPH_FIELDS[n], checked);
+                }
                 const ptr = id * 7;
                 this.glyphs[ptr]     = char.x;
                 this.glyphs[ptr + 1] = char.y;
@@ -87,6 +278,11 @@ export class BitmapFont {
                 // validation proper is M3's (F-10); this only keeps the two
                 // structures consistent with each other.
                 if (id === (id | 0)) this._mapped[id >>> 5] |= 1 << (id & 31);
+            } else if (checked) {
+                // F-29 row 21: a FINITE integer id outside the 8-bit range is a
+                // legitimate Unicode descriptor this font cannot hold. Skipped
+                // (and reported by hasGlyph) by default; named under checked.
+                _throwField('chars[' + i + '].id', id, 'is outside the 8-bit range [0, 256)');
             }
         }
 
@@ -133,14 +329,31 @@ export class BitmapFont {
         if (fontJson.kernings) {
             for (let i = 0; i < fontJson.kernings.length; i++) {
                 const k = fontJson.kernings[i];
-                // The id-10 half of the F-25 policy: a newline is not a glyph,
-                // so it cannot be a kerning partner. Dropping these two cases
-                // here is what lets `_measureRange` reproduce `draw`'s chain
-                // reset with no per-glyph test. (The negative-key hole this
-                // condition still has is F-09 and belongs to M3; do not widen
-                // the scope of this hunk.)
-                if (k.first < 256 && k.second < 256 && k.first !== 10 && k.second !== 10) {
-                    this.kerning[(k.first << 8) | k.second] = k.amount;
+                const f = k.first;
+                const s = k.second;
+                // F-09: both keys use the SAME integer predicate as char.id
+                // (fork 1 amendment 2), so their messages differ only in the
+                // field name. '65', 65.5, true and 255.9 each wrote a pair the
+                // descriptor never named (16706 / 322 / ...) -- always-throw now.
+                _requireIntKey(f, 'kernings[' + i + '].first');
+                _requireIntKey(s, 'kernings[' + i + '].second');
+                // amount rides the F-08 lane: non-finite always throws, a lossy
+                // amount throws only under checked, else truncates as it did.
+                _requireNumField(k.amount, 'kernings[' + i + '].amount', checked);
+                // The id-10 half of the F-25 policy stays: a newline is not a
+                // glyph, so it cannot be a kerning partner (H7). M2 left the
+                // negative-key hole open and named it F-09; M3 closes it by
+                // testing BOTH bounds here. A FINITE key outside [0, 256) is
+                // skipped by default and named under checked (row 21's twin --
+                // the two must not diverge).
+                if (f >= 0 && f < 256 && s >= 0 && s < 256) {
+                    if (f !== 10 && s !== 10) {
+                        this.kerning[(f << 8) | s] = k.amount;
+                    }
+                } else if (checked) {
+                    const bad = (f < 0 || f >= 256) ? 'first' : 'second';
+                    _throwField('kernings[' + i + '].' + bad, bad === 'first' ? f : s,
+                        'is outside the 8-bit range [0, 256)');
                 }
             }
         }
@@ -213,10 +426,15 @@ export class BitmapFont {
      * @param {string} text
      * @param {number} x      Baseline X (left/center/right anchor point per `align`)
      * @param {number} y      Baseline Y of the first line
-     * @param {number} [scale=1.0]
-     * @param {0|1|2} [align=0]  0 = left, 1 = center, 2 = right
+     * @param {number} [scale=1.0]  A `scale` outside `(0, Infinity)` -- `NaN`,
+     *   `0`, a negative, or `Infinity` -- draws NOTHING and returns (F-11): a bad
+     *   scale has one correct silent answer, unlike a short layout buffer.
+     * @param {0|1|2} [align=0]  0 = left, 1 = center, 2 = right. Any value
+     *   outside `{0, 1, 2}` -- including `NaN`, negatives and fractionals --
+     *   renders LEFT (decisions/0003 fork 6).
      */
     draw(ctx, text, x, y, scale = 1.0, align = 0) {
+        if (!(scale > 0 && scale < Infinity)) return;
         const len = text.length;
         if (len === 0) return;
 
@@ -297,8 +515,10 @@ export class BitmapFont {
      * @param {number} value
      * @param {number} x      Baseline X
      * @param {number} y      Baseline Y
-     * @param {number} [scale=1.0]
-     * @param {0|1|2} [align=0]  0 = left, 1 = center, 2 = right
+     * @param {number} [scale=1.0]  A `scale` outside `(0, Infinity)` draws
+     *   NOTHING and returns (F-11), same as `draw`.
+     * @param {0|1|2} [align=0]  0 = left, 1 = center, 2 = right. Any value
+     *   outside `{0, 1, 2}` renders LEFT (decisions/0003 fork 6).
      */
     drawFast(ctx, value, x, y, scale = 1.0, align = 0) {
         // One NaN-safe range test replaces three equality tests and adds the
@@ -309,6 +529,11 @@ export class BitmapFont {
         // survive exactly. Large negatives now no-draw instead of clamping to
         // "0.0"; -DRAWFAST_MAX itself is inside the door.
         if (!(value >= -DRAWFAST_MAX && value <= DRAWFAST_MAX)) return;
+        // F-11 (fork 5): the scale door goes AFTER the magnitude door so
+        // decisions/0001's pinned magnitude behaviour keeps first-guard position.
+        // Range test, not a NaN test: 0 and -1 are finite and draw zero/negative
+        // quads, which a `scale !== scale` check cannot see. Draw nothing, return.
+        if (!(scale > 0 && scale < Infinity)) return;
         if (value < 0) value = 0;
 
         // Multiply once on the original value to avoid float-subtraction error
@@ -419,11 +644,16 @@ export class BitmapFont {
      * @param {number} boxHeight    Container height (px at the rendered scale). Used for V-align.
      * @param {number} x            Container top-left X.
      * @param {number} y            Container top-left Y.
-     * @param {number} [scale=1.0]
-     * @param {0|1|2} [align=0]   0 = left, 1 = center, 2 = right
-     * @param {0|1|2} [vAlign=0]  0 = top,  1 = middle, 2 = bottom
+     * @param {number} [scale=1.0]  A `scale` outside `(0, Infinity)` draws
+     *   NOTHING and returns (F-11).
+     * @param {0|1|2} [align=0]   0 = left, 1 = center, 2 = right. Any value
+     *   outside `{0, 1, 2}` renders LEFT (decisions/0003 fork 6).
+     * @param {0|1|2} [vAlign=0]  0 = top,  1 = middle, 2 = bottom. Any value
+     *   outside `{0, 1, 2}` -- including `NaN`, negatives and fractionals --
+     *   renders TOP (decisions/0003 fork 7).
      */
     drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale = 1.0, align = 0, vAlign = 0) {
+        if (!(scale > 0 && scale < Infinity)) return;
         // F-05 / the lineCount degenerates. Fork (1): CLAMP the index-like
         // value, THROW on the buffer length. Both are per CALL, zero per glyph.
         // `!(lineCount >= 1)` rejects NaN, negatives and everything below one
@@ -454,6 +684,9 @@ export class BitmapFont {
         }
 
         let ptr = 0;
+        // F-13 checked-lane flag: read the per-font boolean ONCE here (per call),
+        // not per line, so the per-line `else if (checked && ...)` reads a local.
+        const checked = this.checked;
 
         for (let l = 0; l < n; l++) {
             // F-04: per-LINE index normalization -- two comparisons per line,
@@ -510,8 +743,14 @@ export class BitmapFont {
                 prevId = id;
             }
 
-            // Draw ellipsis if layout flagged it
-            if (flags === 1) {
+            // Draw ellipsis if layout flagged it. F-13 (fork 8): the flags word
+            // arrives through a Float32Array, so ToInt32 first -- (flags|0) reads
+            // 1.0000001192092896 as 1 and the ellipsis fires. Do NOT simplify
+            // back to a strict compare against 1: that miss IS the finding. Bit 0
+            // (FLAG_ELLIPSIS) appends "..."; a bit outside FLAG_MASK is a caller
+            // error routed to the checked lane.
+            const f = flags | 0;
+            if (f & FLAG_ELLIPSIS) {
                 const dotPtr = 46 * 7;
                 const gw = this.glyphs[dotPtr + 2];
                 const gh = this.glyphs[dotPtr + 3];
@@ -533,6 +772,15 @@ export class BitmapFont {
                         cursorX += xadv;
                     }
                 }
+            } else if (checked && (f & ~FLAG_MASK)) {
+                // F-13 (fork 8): unknown flag bits stop being silent under
+                // checked. This costs, on a default font, one per-line test of
+                // the hoisted `checked` local (false -> short-circuits before the
+                // mask). Flags are per-line runtime data, so the unknown-bit
+                // throw cannot hoist to construction; only the `this.checked`
+                // READ is hoisted (above the loop). An opt-in checked font also
+                // pays the `f & ~FLAG_MASK`.
+                _throwField('flags', flags, 'has bits outside the known mask ' + FLAG_MASK);
             }
 
             cursorY += this.lineHeight * scale;
@@ -547,4 +795,4 @@ export class BitmapFont {
 }
 export default BitmapFont;
 
-export const VERSION = '1.2.3';
+export const VERSION = '1.3.0';

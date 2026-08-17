@@ -19,10 +19,12 @@
  *     quads (F-02). Both are excluded here and deferred to M1's T4, which ships
  *     the magnitude door + a 2s watchdog. DO NOT "complete" this column.
  *   - scale === Infinity and scale === NaN poison a draw's dx/dy/dw/dh
- *     (xoffset*Infinity = NaN, Inf-Inf = NaN). scale===NaN is the enumerated
- *     F-11 finding; scale===Infinity is kept out of DRAW bodies (routed to
- *     measure(), which returns a number and never writes rec) so the CLEAN lane
- *     stays genuinely NaN-free.
+ *     (xoffset*Infinity = NaN, Inf-Inf = NaN). As of M3 (F-11, decisions/0003
+ *     fork 5) the three draw bodies carry a per-call range door
+ *     `if (!(scale > 0 && scale < Infinity)) return;`, so a NaN, 0, negative or
+ *     Infinity scale now draws NOTHING and the F-11 pin below is INVERTED to
+ *     0 calls / nanScan 0. measure()/_measureRange keep NO door (five pins
+ *     below), so scale===Infinity there still returns a non-finite number.
  *
  * The value arrays are module-level typed arrays; the layout buffers are
  * pre-built Float32Arrays. T1 makes no profiler call.
@@ -69,11 +71,21 @@ export function run() {
     }
 
     // --- CLEAN lane: draw() scale sweep -----------------------------------------
+    // M3 (F-11, decisions/0003 fork 5): CLEAN_SCALE is [0, -1, 0.5, 1e-45, 1e10].
+    // With the scale door, 0 and -1 now draw 0 calls (were 3 each on 1.2.3) and
+    // 0.5 / 1e-45 / 1e10 still draw 3. clean() only asserts NaN-freedom, which
+    // holds either way, so this row does not redden -- but the count changed, and
+    // that shift is pinned with equalities in T3 rows 41-43 and 43b, not here.
     for (let i = 0; i < CLEAN_SCALE.length; i++) {
         resetRec(ATLAS); FONT_ASCII.draw(rec, 'ABC', 0, 0, CLEAN_SCALE[i], 0); clean('scale[' + i + ']');
     }
 
-    // --- CLEAN lane: draw() align sweep -- all render LEFT (F-11), all NaN-free --
+    // --- CLEAN lane: draw() align sweep -- all render LEFT, all NaN-free ---------
+    // M3 (decisions/0003 fork 6): out-of-range align is the DOCUMENTED CONTRACT,
+    // not a defect. `align` 3, -1, 1.5 and NaN all fall through to the left branch
+    // (NaN !== 1 and NaN !== 2), render 3 glyphs at dx[0] === 0, and produce no
+    // NaN. This row is now the pin OF THAT CONTRACT: choosing "throw" for
+    // out-of-range align reddens it, which is fork 6's cheapest evidence.
     for (let i = 0; i < ALIGN_VALS.length; i++) {
         resetRec(ATLAS);
         FONT_ASCII.draw(rec, 'ABC', 0, 0, 1, ALIGN_VALS[i]);
@@ -156,12 +168,16 @@ export function run() {
     check(rec.dx[0] === 0 && rec.dx[1] === 12 && rec.dx[2] === 24 && rec.dx[3] === 36 && rec.dx[4] === 48,
         () => 'T1/F-04: clamped dx != 0,12,24,36,48');
 
-    // F-11 (M3): scale===NaN is unvalidated and reaches drawImage. 4 draws, and
-    // dx/dy/dw/dh all NaN -> nanScan 16.
+    // F-11 (FIXED in M3, contract now): scale===NaN fails the per-call range door
+    // `if (!(scale > 0 && scale < Infinity)) return;`, so draw() emits ZERO
+    // drawImage calls and no NaN reaches any column. This block used to pin the
+    // DEFECT (4 draws, nanScan 16); it now pins the CONTRACT (0 draws, nanScan 0).
+    // INVERTED, not deleted, per decisions/0003 fork 5. Killed by deleting the
+    // scale door from draw -> the four NaN quads return and calls goes back to 4.
     resetRec(ATLAS);
     FONT_ASCII.draw(rec, 'AAAA', 100, 0, NaN, 0);
-    check(rec.calls === 4, () => 'T1/F-11: expected 4 draws, got ' + rec.calls);
-    check(nanScan() === 16, () => 'T1/F-11: expected nanScan 16 (4 calls x 4 cols), got ' + nanScan());
+    check(rec.calls === 0, () => 'T1/F-11: expected 0 draws (scale door), got ' + rec.calls);
+    check(nanScan() === 0, () => 'T1/F-11: expected nanScan 0 (scale door), got ' + nanScan());
 
     // F-05 (FIXED in M2, contract now): drawWrapped now bounds-checks the buffer
     // against lineCount*4 and THROWS a RangeError naming both numbers (H11).
