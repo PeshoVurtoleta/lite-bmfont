@@ -26,6 +26,7 @@ import {
     oracleAdvance, FONT_ASCII, JSON_ASCII, ATLAS,
 } from './harness.mjs';
 import { createLeakTracker } from '@zakkster/lite-leak';
+import { spawnSync } from 'node:child_process';
 
 const NOOP = function () {};
 
@@ -144,5 +145,28 @@ export function run() {
         const twin = (i) => { const tmp = new Float64Array(8); tmp[0] = i; };
         const { report: r8good } = runAllocGate(twin, { iterations: 2000, batches: 6 });
         if (r8good.verdict !== 'pass') die('T9 control 8: the zero-retention twin did not pass the retained-bytes gate');
+    }
+
+    // Control 9 -- the magnitude door (ROADMAP section 3 control 6). Runs OUT OF
+    // PROCESS: with the door removed this body never returns, and no in-process
+    // watchdog, throw or timeout can stop it. spawnSync's timeout is the only
+    // mechanism; its default kill signal is SIGTERM. timeout(1) is not on this host.
+    {
+        const child = new URL('./t9-hang-child.mjs', import.meta.url).pathname;
+        const hang = spawnSync(process.execPath, [child, 'hang', 'Number.MAX_VALUE'],
+            { timeout: 2000, encoding: 'utf8' });
+        if (hang.status === 3) die('T9 control 9: could not reconstruct the pre-door body -- the markers moved; update t9-hang-child.mjs');
+        if (hang.signal !== 'SIGTERM') {
+            die('T9 control 9: the door-removed body returned (signal=' + hang.signal +
+                ' status=' + hang.status + ') -- the hang control is vacuous');
+        }
+        const door = spawnSync(process.execPath, [child, 'door', 'Number.MAX_VALUE'],
+            { timeout: 2000, encoding: 'utf8' });
+        if (door.status !== 0 || door.signal !== null) {
+            die('T9 control 9: the SHIPPED body did not return on Number.MAX_VALUE -- the door is broken');
+        }
+        if (door.stdout.trim() !== 'calls=0') {
+            die('T9 control 9: shipped drawFast(MAX_VALUE) drew ' + door.stdout.trim() + ', expected calls=0');
+        }
     }
 }

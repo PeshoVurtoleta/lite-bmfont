@@ -103,6 +103,10 @@ positions line 1's visual top edge at `boxY` when `vAlign=0`.
 
 Here is a tiny greedy word-break helper you can drop into your own code — keep one buffer alive and reuse it:
 
+`font.glyphs` (Int16Array, stride 7) and `font.kerning` (Int16Array, 64K flat LUT)
+are part of the public surface and are declared in `BitmapFont.d.ts`. The stride is
+a cross-package contract; changing it is a major.
+
 ```javascript
 // Greedy word-wrap. Returns the number of lines written into `out`.
 // `out` must hold at least Math.ceil(text.length / 4) * 4 floats (worst case: every char a line).
@@ -208,9 +212,20 @@ Multi-line `\n`-aware renderer. `align`: `0` = left, `1` = center, `2` = right.
 Zero-alloc number renderer with one decimal place.
 
 - `NaN`, `+Infinity`, `-Infinity` → silently skipped (returns).
-- Negative values → clamped to `0`.
+- `|value| > DRAWFAST_MAX` (`1e21`) → silently skipped (returns); draws nothing.
+- Negative values inside the door → clamped to `0` (so `-5` renders `"0.0"`).
 - Decimal → rounded to nearest tenth (`33.49 → "33.5"`).
 - Requires `'0'`–`'9'` (codes 48–57) and `'.'` (code 46) in the atlas.
+
+Above 2^53 (9007199254740992) the rendered integer digits are approximate -- the
+value is scaled through a double before digit extraction. Exact below that. Values
+outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` draw nothing.
+
+### Constants
+
+| Name | Value | Meaning |
+|------|-------|---------|
+| `DRAWFAST_MAX` | `1e21` | largest magnitude `drawFast` renders; outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` it draws nothing (both endpoints inclusive) |
 
 ### `drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale?, align?, vAlign?) → void`
 Renders a pre-laid-out `Float32Array` of lines into a box. See the **Wrapped Text** section above for buffer format and a layout helper recipe.

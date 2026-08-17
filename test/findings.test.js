@@ -1,8 +1,9 @@
 /**
  * QA-M0 findings probe -- session M0 final gate.
  *
- * Reproduces F-01 through F-18 against the CURRENT tree and pins today's
- * ANSWER (the defect), not a fix. M0's NON-GOALS forbid fixing anything in
+ * Reproduces F-03 through F-18 against the CURRENT tree and pins today's
+ * ANSWER (the defect), not a fix (F-01/F-02 were fixed in 1.2.2 -- see the note
+ * below). M0's NON-GOALS forbid fixing anything in
  * `BitmapFont.js` (zero diff except the appended `VERSION` export), and the
  * CHANGELOG ledger claims every one of these survives unfixed except the
  * process/tooling half of F-14/F-15/F-16/F-17. This file is the independent
@@ -15,16 +16,19 @@
  * goes red here on purpose; that session owns updating or removing it, this
  * file does not.
  *
- * F-01 and F-02 are NOT reproduced here, by session law (SESSION-M0.md
- * section 7(a) and the hard constraints of this QA pass):
- *   - F-01 is an UNKILLABLE infinite loop above ~1.797e307 in `drawFast`
- *     (value*10 overflows to Infinity, the digit loop's `while (temp > 0)`
- *     never ends). No in-process timeout, no stack overflow, saves it.
- *   - F-02 (>=1e22) does not hang but emits 24 NaN-coordinate drawImage calls.
- * `drawFast` is NEVER called above 1e21 in this file. Both findings were
- * verified out-of-process via `child_process.spawnSync(..., {timeout})` and
- * a `signal === 'SIGTERM'` check on a scratch-only probe script -- see the
- * QA session report. That probe is intentionally not committed to `test/`.
+ * F-01 and F-02 were FIXED in 1.2.2 (M1 -- the magnitude door). They are no
+ * longer watched here: the door made them safe to call in process, so their
+ * regression tests live as real assertions, not todos.
+ *   - F-01 (the unkillable infinite loop above ~1.797e307) and F-02 (the silent
+ *     24-byte scratch overrun from 1e22 up) are now regression-tested by the six
+ *     named `drawFast` blocks in `test/BitmapFont.test.js`
+ *     (`describe('BitmapFont.drawFast')`, the "M1: the magnitude door" group).
+ *   - The hang itself -- which no in-process assertion can catch, since a hung
+ *     tier never returns -- is proven both directions out of process by T9
+ *     control 9 (`test/torture/t9-controls.mjs` + `t9-hang-child.mjs`): the
+ *     door-removed body is killed by SIGTERM, the shipped body returns drawing
+ *     nothing. This QA header's former claim that session law forbade
+ *     reproducing them no longer holds; the door is the session that changed it.
  *
  * F-04, F-05, F-06, F-11, F-12 already have exact-count pins in the
  * committed torture tiers (`test/torture/t0-laws.mjs`, `t1-degenerate.mjs`)

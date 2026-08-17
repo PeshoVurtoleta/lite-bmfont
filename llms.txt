@@ -15,7 +15,14 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0–255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.2.1'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.2.2'.
+
+## Export: DRAWFAST_MAX (number)
+1e21 -- the largest magnitude drawFast can render. The "d.d" form of 1e21 is
+exactly 24 bytes (22 integer digits + '.' + 1 decimal), the whole internal
+scratch buffer. Outside [-DRAWFAST_MAX, DRAWFAST_MAX] drawFast draws nothing.
+BOTH endpoints are inclusive: 1e21 renders, the next double above it does not,
+so Math.max(-DRAWFAST_MAX, Math.min(DRAWFAST_MAX, v)) is always renderable.
 
 ## Export: BitmapFont (class)
 
@@ -36,10 +43,14 @@ draw(ctx, text, x, y, scale = 1, align = 0) -> void
 drawFast(ctx, value, x, y, scale = 1, align = 0) -> void
   Zero-alloc number renderer with one decimal place (e.g. 33.4).
   - NaN / +Infinity / -Infinity -> returns silently
-  - Negative values -> clamped to 0
+  - |value| > DRAWFAST_MAX (1e21) -> returns silently, draws nothing
+  - Negative values inside the door -> clamped to 0 (so -5 renders "0.0")
   - Decimal rounded to nearest tenth (33.49 -> "33.5")
+  - Above 2^53 (9007199254740992) the rendered integer digits are approximate --
+    the value is scaled through a double before digit extraction. Exact below
+    that. Values outside [-DRAWFAST_MAX, DRAWFAST_MAX] draw nothing.
   - Atlas must contain glyphs for '0'-'9' (48-57) and '.' (46)
-  - Built for per-frame HUDs (FPS, score, timer) — does NOT allocate a string
+  - Built for per-frame HUDs (FPS, score, timer) -- does NOT allocate a string
 
 drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale = 1, align = 0, vAlign = 0) -> void
   Renders pre-laid-out wrapped text into a bounding box, with horizontal and vertical
@@ -62,6 +73,10 @@ destroy() -> void
 
 The package does not ship a layout function — strategy is application-specific. A minimal
 greedy word-wrap fits in ~30 lines and uses the same Int16 arrays the renderer reads:
+
+`font.glyphs` (Int16Array, stride 7) and `font.kerning` (Int16Array, 64K flat
+LUT) are part of the public surface and are declared in BitmapFont.d.ts. The
+stride is a cross-package contract; changing it is a major.
 
 ```js
 function layoutWrap(font, text, maxWidth, out) {
@@ -105,8 +120,9 @@ font.drawWrapped(ctx, 'Hello world…', layout, n, 200, 100, 10, 10, 1, 1, 1); /
 See source file BitmapFont.js for full JSDoc API documentation.
 
 ## Testing
-- npm test -> node --expose-gc --test test/*.test.js (41 blocks, node:test): 40 in
-  BitmapFont.test.js + 1 version-sync block in packaging.test.js.
+- npm test -> node --expose-gc --test test/*.test.js: 72 tests, 64 pass, 0 fail,
+  8 todo -- 46 in BitmapFont.test.js, 1 version-sync block in packaging.test.js,
+  17 in boundary.test.js, 8 finding-watch todos in findings.test.js.
 - npm run torture -> node --expose-gc test/torture.mjs: prints exactly "ok", exit 0.
   Zero-allocation is measured, not just claimed -- draw / drawFast / drawWrapped /
   measure each pass maxMajor:0, maxPauseMs:4, maxArrayBuffersGrowth:0 and

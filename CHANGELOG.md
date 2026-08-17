@@ -2,6 +2,66 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.2.2 -- 2026-08-17
+
+The `drawFast` magnitude door. Fixes an unkillable infinite loop and a silent
+24-byte scratch overrun, both reachable from the package's advertised use case
+(a per-frame HUD counter fed by caller arithmetic).
+
+### Added
+- `DRAWFAST_MAX` export (`1e21`) -- the largest magnitude `drawFast` renders.
+  BOTH endpoints of `[-DRAWFAST_MAX, DRAWFAST_MAX]` are inclusive, so
+  `Math.max(-DRAWFAST_MAX, Math.min(DRAWFAST_MAX, v))` always produces a value
+  the method draws. Declared in `BitmapFont.d.ts`.
+- Torture tier T4 (the drawFast digit oracle and magnitude sweep) is now wired: a
+  fixed table, a rejection table, seeded magnitudes against a bit-exact oracle
+  (`oracleExact`, with `toFixed(1)` as an independent witness below 1e21), and a
+  5-second tier budget.
+- T9 control 9: the door-removed body driven with `Number.MAX_VALUE` under a
+  2-second `spawnSync` watchdog, asserted killed by `SIGTERM`, with the shipped
+  body asserted to return with zero draws on the same input. Out of process,
+  because an in-process watchdog cannot interrupt the loop it is watching. It
+  adds about 2.2 s to `npm run torture` -- the cost of the only gate in the suite
+  that can see an infinite loop.
+- Six named `drawFast` boundary tests in `test/BitmapFont.test.js`. Four fail on
+  1.2.1; one hangs 1.2.1 forever.
+
+### Fixed
+
+| ID | Sev | Finding | Reproduction | Fixed in |
+| --- | --- | --- | --- | --- |
+| **F-01** | S1 | `drawFast` hung forever on any finite value above ~1.797e307: the top guard rejected Infinity, then `value * 10` overflowed to Infinity and `while (temp > 0)` never ended. | `drawFast(ctx, Number.MAX_VALUE, 0, 0)` -> never returned; child killed by SIGTERM | 1.2.2 |
+| **F-02** | S1 | `_charScratch` is 24 bytes and `drawFast` overran it silently from 1e22 up, emitting 24 `drawImage` calls at `NaN` coordinates. Just above the ceiling the failure was quieter still: `nextUp(1e21)` drew 24 finite glyphs spelling a confidently wrong number. | `drawFast(ctx, 1e22, 0, 0)` -> 24 calls, every dst x `NaN`; `nextUp(1e21)` -> 24 calls spelling `1000000000000000424684.0` | 1.2.2 |
+
+### Changed
+- `drawFast` now draws nothing for `|value| > 1e21`, joining the three silent
+  returns it already documented for `NaN`, `+Infinity` and `-Infinity`. The
+  three-comparison door became a two-comparison NaN-safe range test.
+- **Behaviour change worth reading twice:** large negative magnitudes used to
+  clamp to 0 and render "0.0" (they never hung -- the clamp preceded the
+  multiply). `-1e21` still renders "0.0" because it is inside the door; `-1e22`
+  and `-Number.MAX_VALUE` now draw nothing.
+- The digit loop carries an unconditional `len < buf.length` bound. The door
+  makes it unreachable today; it stays because "unreachable" is a claim about
+  today's code.
+- `_charScratch` is still exactly 24 bytes, pinned by T6 and T4. Growing it was
+  the rejected fix.
+- Corrected the 1.2.1 rationale for the dev-time Node >= 20 floor: it cited
+  `FinalizationRegistry`, which has shipped since Node 14.6 and cannot justify a
+  Node-20 floor. The true reason is `@zakkster/lite-leak@1.8.1`'s own
+  `engines: { node: ">=20.0.0" }`. Only that false causal clause was changed; the
+  1.2.1 reproductions and finding rows are untouched.
+
+### Known issues (delta since 1.2.1)
+
+The 1.2.1 table remains authoritative for every finding not listed here. F-01 and
+F-02 are fixed above. Two findings are new:
+
+| ID | Sev | Finding | Reproduction | Fixed in |
+| --- | --- | --- | --- | --- |
+| **F-22** | S3 | The word-wrap recipe shipped in `README.md` and `llms.txt` reads `font.glyphs[id * 7 + 6]` and `font.kerning[(prevId << 8) \| id]`. Both are real `Int16Array` members at runtime; neither was declared in `BitmapFont.d.ts`, so a TypeScript consumer copying the package's own documented recipe could not compile it. | `tsc` on the README recipe -> `Property 'glyphs' does not exist on type 'BitmapFont'` | 1.2.2 |
+| **F-23** | S2 | `drawFast`'s digit loop is inexact in two bands. Band 1 (`\|value\| < 2^53`): off-by-one-tenth on near-ties, because `Math.round(value * 10)` rounds the float product rather than the real value -- breaking the documented "rounded to nearest tenth" guarantee. Band 2 (`2^53 < \|value\| <= 1e21`): the integer digits themselves are wrong and silent, because the value is scaled through a double before digit extraction. Measured 15,858 of 191,255 in-door samples (1,738 band 1, 14,120 band 2). Documented in `llms.txt`, `README.md` and the `.d.ts`; the 1e21 ceiling was chosen on the buffer boundary knowing 2^53 is the correctness boundary (see `decisions/0001`). | `drawFast(ctx, 8.45, 0, 0)` -> `"8.5"` (exact `8.4`); `drawFast(ctx, 762638538843020900000, 0, 0)` -> `"762638538843020800088.0"` (exact `762638538843020853248.0`) | M8 |
+
 ## 1.2.1 -- 2026-08-17
 
 No behaviour change. This release makes the test suite runnable and the zero-GC
@@ -14,8 +74,8 @@ claim falsifiable.
   lived inline in `README.md`; that section is now a link.
 - `engines: { node: ">=18" }` (F-16). `node --test` does not exist below it.
   Note: the dev-time torture gate additionally needs Node >= 20, because
-  `@zakkster/lite-leak` requires `FinalizationRegistry`. That is a devDependency
-  and does not constrain consumers.
+  `@zakkster/lite-leak@1.8.1` declares `engines: { node: ">=20.0.0" }` in its own
+  package.json. That is a devDependency and does not constrain consumers.
 - Torture gate: `npm run torture` -> `node --expose-gc test/torture.mjs`, prints
   exactly `ok` and exits 0. Ten tiers registered; T0, T1, T6, T7 and T9 are
   wired in this release. T2, T3, T4, T5 and T8 are registered and empty.
@@ -68,7 +128,7 @@ guarantee, `S3` = hygiene or contract gap.
 | **F-16** | S3 | Packaging gaps against the suite Law: no `CHANGELOG.md`, no `LICENSE`, no `engines`, no torture gate, and a `prepublishOnly` whose first half exited 127. | `cat package.json`; `ls` | M0 |
 | **F-17** | S2 | Every "zero allocation" claim in `README.md` and `llms.txt` was unproven -- asserted in seven places, measured in none. | `grep -n "allocat" README.md llms.txt`; `devDependencies` was `{vitest}` | M0 |
 | **F-18** | S3 | `generateAtlas` is duplicated: the demo defines a 40-line copy and calls it four times, and downstream consumers need the same function. | `demo/demo-lite-bmfont.html:261,309,313,317,321` | M7 |
-| **F-19** | S3 | Four shipped `files[]` carry non-ASCII bytes, violating the Law's ASCII-only rule (U+00D7 and U+00B5 excepted): `BitmapFont.js` and `BitmapFont.d.ts` (U+2014 em dashes), `README.md` (emoji, U+2192, U+2014, U+2026, en dash) and `llms.txt` (en dash, em dash). `README.md` and `llms.txt` are docs and may be de-Unicoded in any session. No single behaviour fix touches all the affected source lines (the file header at line 1, and the `drawWrapped` doc block at 242-275), so the source de-Unicoding rides M9's hardening pass alongside the F-14 prototype freeze rather than being smeared across the behaviour sessions. | `grep -c -P '[^\x00-\x7F]' BitmapFont.js BitmapFont.d.ts README.md llms.txt` -> `10 / 3 / 46 / 11` | M9 (source); README/llms.txt any session |
+| **F-19** | S3 | Shipped `files[]` carry non-ASCII bytes, violating the Law's ASCII-only rule (U+00D7 and U+00B5 excepted). `BitmapFont.d.ts` is now CLEAN (de-Unicoded by M1: em dash, plus-minus, en dash in comments). Remaining debt: `BitmapFont.js` (10 lines, U+2014 em dashes), `README.md` (47: emoji, U+2192, U+2014, U+2026, en dash) and `llms.txt` (10). `README.md` and `llms.txt` are docs and may be de-Unicoded in any session. No single behaviour fix touches all the affected source lines (the file header at line 1, and the `drawWrapped` doc block at 242-275), so the source de-Unicoding rides M9's hardening pass alongside the F-14 prototype freeze rather than being smeared across the behaviour sessions. | `grep -c -P '[^\x00-\x7F]' BitmapFont.js BitmapFont.d.ts README.md llms.txt` -> `10 / 0 / 47 / 10` | M9 (source); README/llms.txt any session |
 | **F-20** | S3 | `draw()` and `drawFast()` center/right-align math is asserted only by directional inequality (`rec.dx[0] < 100`, true for any positive divisor), so an off-by-constant regression in the divisor is invisible to `npm test` AND to every wired torture tier. `drawWrapped()`'s align tests, by contrast, assert exact pixels (44, 88, 38) and are load-bearing. | scratch-edit `draw()`'s `... / 2` to `... / 3` -> `npm test` still passes and `npm run torture` prints `ok`, exit 0 (both gates blind). Closed prospectively by the exact-value assertions in `test/boundary.test.js`; the ported `BitmapFont.test.js` still carries the weak `assert.ok(... < 100)` assertions. | session that next revises `BitmapFont.test.js` |
 | **F-21** | S3 | T0 law 4 (the seam-kerning equation) is vacuous, and it is the only kerning check in the torture gate. `FONT_KERN` defines kerning for only 3 pairs (A-B, B-A, A-A) while the corpus draws ASCII 33..126, so a random seam boundary is 3 of 94x94 = 8836 (0.034% per string). Under both seeds this session ships, ZERO eligible seams carry non-zero kerning, so the check degenerates to `left + right === full` and never once tests kerning -- the AR-02 pattern (a check named for a hazard it never touches) in the harness M0 just built. | default seed 2654435769 -> eligible 246, non-zero-kern seams 0; replay seed 12345 -> eligible 247, seams 0. Mutation: deleting the kerning term from `_measureRange` passes `npm run torture` clean (caught only by `npm test`'s "maps kerning pairs" block). | M2 (with F-06's T0 update) |
 

@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-bmfont — Zero-GC Bitmap Font Renderer
+ * @zakkster/lite-bmfont -- Zero-GC Bitmap Font Renderer
  * TypeScript declarations.
  */
 
@@ -40,6 +40,21 @@ export class BitmapFont {
     /** Distance from a line's top to its baseline, in source pixels. */
     readonly base: number;
 
+    /**
+     * Glyph table. 7 Int16 slots per glyph id (0..255):
+     * [0]=x [1]=y [2]=width [3]=height [4]=xoffset [5]=yoffset [6]=xadvance.
+     * Public: the documented word-wrap recipe reads `glyphs[id * 7 + 6]`.
+     * The stride is a cross-package contract -- changing it is a MAJOR, and
+     * that binds M5 (glyph quads) and M7 (atlas subpath).
+     */
+    readonly glyphs: Int16Array;
+
+    /**
+     * Flat 64K kerning LUT keyed by `(first << 8) | second`. Public for the same
+     * reason as `glyphs`; the 8-bit key is structural, not a limitation.
+     */
+    readonly kerning: Int16Array;
+
     constructor(imageAtlas: HTMLImageElement | HTMLCanvasElement, fontJson: BMFontJson);
 
     /** Pixel width of `text` at `scale`, kerning-aware. */
@@ -60,8 +75,12 @@ export class BitmapFont {
 
     /**
      * Zero-allocation number renderer. Renders `value` with one decimal place
-     * (`33.4`). NaN/±Infinity return; negatives clamp to 0; decimal rounds to
-     * nearest tenth. Atlas must contain glyphs for `'0'`–`'9'` and `'.'`.
+     * (`33.4`). NaN/+/-Infinity return; negatives clamp to 0; decimal rounds to
+     * nearest tenth. Atlas must contain glyphs for `'0'`-`'9'` and `'.'`.
+     *
+     * Above 2^53 (9007199254740992) the rendered integer digits are approximate --
+     * the value is scaled through a double before digit extraction. Exact below
+     * that. Values outside [-DRAWFAST_MAX, DRAWFAST_MAX] draw nothing.
      */
     drawFast(
         ctx: CanvasRenderingContext2D,
@@ -103,3 +122,6 @@ export class BitmapFont {
 export default BitmapFont;
 
 export const VERSION: string;
+
+/** Largest magnitude drawFast renders (1e21). Both endpoints inclusive. */
+export const DRAWFAST_MAX: number;

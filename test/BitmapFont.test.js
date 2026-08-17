@@ -1,7 +1,15 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BitmapFont } from '../BitmapFont.js';
+import { BitmapFont, DRAWFAST_MAX } from '../BitmapFont.js';
 import { rec, resetRec } from './torture/harness.mjs';
+
+// The next representable double above v (v >= 0). 1e21's ulp is 2^17 = 131072.
+const DF_NEXT = new DataView(new ArrayBuffer(8));
+function dfNextUp(v) { DF_NEXT.setFloat64(0, v); DF_NEXT.setBigUint64(0, DF_NEXT.getBigUint64(0) + 1n); return DF_NEXT.getFloat64(0); }
+// Decode the shared recording ctx into the rendered string. makeNumericFont puts
+// '.' at sx 0 width 4 and digit N at sx N*10 width 8, so '0' and '.' collide on
+// sx -- width (sw) disambiguates: sw === 4 is '.'.
+function numSpell() { let s = ''; for (let i = 0; i < rec.calls; i++) s += String.fromCharCode(rec.sw[i] === 4 ? 46 : 48 + rec.sx[i] / 10); return s; }
 
 const mockFontJson = {
     common: { lineHeight: 20, base: 16 },
@@ -336,6 +344,86 @@ describe('BitmapFont.drawFast', () => {
         font.drawFast(ctx, 999.9, 0, 20);
         font.drawFast(ctx, 0.1, 0, 20);
         assert.equal(font._charScratch, bufBefore); // same reference
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    // ---- M1: the magnitude door (F-01, F-02) -------------------------------
+    // These six are the failing-before / passing-after tests for the door.
+
+    test('drawFast: DRAWFAST_MAX is exported and equals 1e21', () => {
+        // v1.2.1 has no such export -- the module property is undefined there.
+        assert.equal(DRAWFAST_MAX, 1e21);
+    });
+
+    test('drawFast: 1e21 renders 24 glyphs spelling 1000000000000000000000.0', () => {
+        const atlas = {};
+        resetRec(atlas);
+        const font = new BitmapFont(atlas, makeNumericFont());
+        font.drawFast(rec, 1e21, 0, 20);
+        assert.equal(rec.calls, 24);
+        assert.equal(numSpell(), '1000000000000000000000.0');
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('drawFast: the next double above 1e21 draws nothing', () => {
+        // FAILS on v1.2.1: it draws 24 glyphs of a silently wrong number (F-02).
+        // 1e21's ulp is 131072, so this value is > DRAWFAST_MAX and the door rejects it.
+        const atlas = {};
+        resetRec(atlas);
+        const font = new BitmapFont(atlas, makeNumericFont());
+        assert.equal(1e21 + 1, 1e21);            // the ulp identity, pinned
+        font.drawFast(rec, dfNextUp(1e21), 0, 20);
+        assert.equal(rec.calls, 0);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('drawFast: 1e22, 1e100 and Number.MAX_VALUE each draw nothing', () => {
+        // Number.MAX_VALUE HANGS v1.2.1 FOREVER (F-01): value*10 overflows to
+        // Infinity and `while (temp > 0)` never ends. Safe in process ONLY because
+        // the shipped door now returns before the multiply -- proven out of process
+        // by T9 control 9 before this call was ever authorised.
+        const atlas = {};
+        resetRec(atlas);
+        const font = new BitmapFont(atlas, makeNumericFont());
+        for (const v of [1e22, 1e100, Number.MAX_VALUE]) {
+            resetRec(atlas);
+            font.drawFast(rec, v, 0, 20);
+            assert.equal(rec.calls, 0, 'drawFast(' + v + ') drew ' + rec.calls);
+        }
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('drawFast: -DRAWFAST_MAX clamps to 0.0; below it draws nothing', () => {
+        const atlas = {};
+        const font = new BitmapFont(atlas, makeNumericFont());
+        // -1e21 is inside the door -> negative clamp -> "0.0", 3 glyphs.
+        resetRec(atlas);
+        font.drawFast(rec, -DRAWFAST_MAX, 0, 20);
+        assert.equal(rec.calls, 3);
+        assert.equal(numSpell(), '0.0');
+        // Just below -1e21 (more negative) is outside the door -> draws nothing.
+        resetRec(atlas);
+        font.drawFast(rec, -dfNextUp(1e21), 0, 20);
+        assert.equal(rec.calls, 0);
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    });
+
+    test('drawFast: Number.MAX_VALUE returns in under 1 ms with zero draw calls', () => {
+        // The direct F-01 regression test: it must RETURN (the assertion after the
+        // call is only reachable if it does) and draw nothing.
+        const atlas = {};
+        resetRec(atlas);
+        const font = new BitmapFont(atlas, makeNumericFont());
+        const t0 = process.hrtime.bigint();
+        font.drawFast(rec, Number.MAX_VALUE, 0, 20);
+        const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+        assert.ok(ms < 1, 'drawFast(MAX_VALUE) took ' + ms + ' ms');
+        assert.equal(rec.calls, 0);
         assert.equal(rec.dropped, 0);
         assert.equal(rec.imgMismatch, 0);
     });

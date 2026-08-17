@@ -1,4 +1,19 @@
 /** @zakkster/lite-bmfont — Zero-GC Bitmap Font Renderer */
+
+/**
+ * Largest magnitude `drawFast` can render. The "d.d" form of 1e21 is exactly
+ * 24 bytes -- 22 integer digits + '.' + 1 decimal -- which is the whole
+ * `_charScratch` buffer. Outside [-DRAWFAST_MAX, DRAWFAST_MAX], and for NaN
+ * and +/-Infinity, `drawFast` draws nothing and returns.
+ *
+ * BOTH ENDPOINTS ARE INCLUSIVE. 1e21 renders; the next representable double
+ * above it (1e21 + 131072) does not. That means the obvious pre-clamp
+ * `Math.max(-DRAWFAST_MAX, Math.min(DRAWFAST_MAX, v))` always produces a value
+ * this method will draw -- which is the whole reason the constant is exported.
+ * `>` vs `>=` in the guard is a one-character mutation; T4 pins both sides.
+ */
+export const DRAWFAST_MAX = 1e21;
+
 export class BitmapFont {
     /**
      * @param {HTMLImageElement | HTMLCanvasElement} imageAtlas
@@ -159,7 +174,11 @@ export class BitmapFont {
      * (e.g. 33.4) directly from char codes — no string allocation on the hot path.
      *
      * - NaN, +Infinity, -Infinity: silently skipped (returns).
-     * - Negative values: clamped to 0.
+     * - |value| > DRAWFAST_MAX (1e21): silently skipped (returns). 1e21 is the
+     *   largest magnitude whose "d.d" form fits the 24-byte scratch buffer, and
+     *   it IS renderable -- the door is inclusive at both ends. Pre-clamp with
+     *   Math.max(-DRAWFAST_MAX, Math.min(DRAWFAST_MAX, v)).
+     * - Negative values inside the door: clamped to 0 (so -5 renders "0.0").
      * - Decimal: rounded to nearest tenth (33.49 -> 33.5).
      *
      * Requires the font atlas to contain glyphs for ASCII '0'-'9' (48-57) and '.' (46).
@@ -172,7 +191,14 @@ export class BitmapFont {
      * @param {0|1|2} [align=0]  0 = left, 1 = center, 2 = right
      */
     drawFast(ctx, value, x, y, scale = 1.0, align = 0) {
-        if (value !== value || value === Infinity || value === -Infinity) return;
+        // One NaN-safe range test replaces three equality tests and adds the
+        // ceiling (F-01, F-02). NaN fails BOTH comparisons, so the negation
+        // returns -- the `!(x <= max)` idiom of ROADMAP law 4, whose polarity
+        // cannot be written backwards by accident. +Infinity fails the upper
+        // bound, -Infinity the lower, so all three documented early returns
+        // survive exactly. Large negatives now no-draw instead of clamping to
+        // "0.0"; -DRAWFAST_MAX itself is inside the door.
+        if (!(value >= -DRAWFAST_MAX && value <= DRAWFAST_MAX)) return;
         if (value < 0) value = 0;
 
         // Multiply once on the original value to avoid float-subtraction error
@@ -193,7 +219,11 @@ export class BitmapFont {
         do {
             buf[len++] = 48 + (temp % 10);
             temp = Math.floor(temp / 10);
-        } while (temp > 0);
+            // Unconditional structural backstop. The door makes this unreachable
+            // TODAY; "unreachable" is a claim about today's code, and a silent
+            // 24-call NaN storm is what happens when the claim expires. Stays a
+            // do..while: a plain while renders ".0" for value 0.
+        } while (temp > 0 && len < buf.length);
 
         // Measure (iterating backwards through the scratch = forwards through the number)
         let width = 0;
@@ -364,4 +394,4 @@ export class BitmapFont {
 }
 export default BitmapFont;
 
-export const VERSION = '1.2.1';
+export const VERSION = '1.2.2';
