@@ -205,3 +205,23 @@ blank is not obviously better than one showing an approximate number. The consta
 is exported public API a caller is told to pre-clamp against; it is NOT provisional
 and must not be moved without a major. This is a decision made with band 2 known,
 not a boundary chosen in ignorance of it.
+
+## Amendment (M8, 2026-08-18)
+
+The routing sentence above (":190", "routed to M8, which already reopens
+`drawFast` for `drawFastInt`") assumed M8 would reopen `drawFast`. **It does
+not.** The M8 PRECONDITION PROBE (P-4) proved that `drawFastInt` shares zero
+arithmetic with `drawFast` -- only the 24-byte `_charScratch` buffer. Band 1 is
+`Math.round` applied to `value * 10`; band 2 is `value * 10` overflowing the
+53-bit significand. `drawFastInt` computes no product: it extracts digits from
+`Math.trunc(value)` with `temp % 10` / `Math.floor(temp / 10)`, which is exact by
+construction for every value the door admits (|n| <= 2^53 - 1). The premise of
+the routing failed, so the routing does not bind.
+
+**F-23 is therefore RE-ROUTED to a new session `M8b -- drawFast's digit
+extraction (F-23)`** (`decisions/0005-drawfastint.md` fork 1, ratified;
+`ROADMAP.md` M8b brief, `status: next`, `depends_on: [M8]`, `blocks: [M9]`).
+`drawFast` ships in 1.5.0 **byte-identical to 1.4.1** -- proven by body sha
+(M8 assertion A7) -- and both F-23 bands ship unchanged. The T4 band pins stay,
+unchanged in value, and now name M8b as their owner. The original sentence above
+is left intact; this block annotates it, it does not rewrite it.

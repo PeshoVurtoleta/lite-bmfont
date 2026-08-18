@@ -33,6 +33,30 @@ import {
 /** Retained sink for the BREAK control -- survives GC so arrayBuffers grows. */
 const leak = [];
 
+/**
+ * Window G cycles (M8). Both built ONCE at module scope.
+ *
+ * INT5_CYCLE: 256 integers 10000..10255 -- ALL exactly 5 digits, so GLYPHS = 5
+ * is a clean integer for the rec.total equality and the window measures a BODY,
+ * not a distribution. Matched to window B (drawFast, GLYPHS = 5) on purpose:
+ * G and B are directly comparable ONLY because both are pinned at 5 glyphs.
+ *
+ * INT16_CYCLE: 256 integers 1e15..1e15+255 -- ALL exactly 16 digits, drawFastInt's
+ * WORST case, which DRAWFASTINT_MAX (Number.MAX_SAFE_INTEGER) puts inside the
+ * super-linear regime (0.4b, knee at 11 digits). Its throughput is RECORDED, never
+ * gated -- a slower worst case is an observation, not a reason to move the ceiling.
+ */
+const INT5_CYCLE = (() => {
+    const a = new Float64Array(256);
+    for (let i = 0; i < 256; i++) a[i] = 10000 + i;   // 5 digits, no '.'
+    return a;
+})();
+const INT16_CYCLE = (() => {
+    const a = new Float64Array(256);
+    for (let i = 0; i < 256; i++) a[i] = 1e15 + i;    // 16 digits, <= MAX_SAFE
+    return a;
+})();
+
 /** DCE guard for windows D, E and F (no drawImage side effect to anchor them). */
 let sink = 0;
 
@@ -73,6 +97,21 @@ let sink = 0;
 const VOL_OPS = 200000;
 const VOL_WARMUP = 20000;
 const VOL_MAX = 1000000;
+// Window G ONLY (C-4b). The 5-digit VOL_MAX cannot gate drawFastInt: at 5 digits
+// the String(value)+charCodeAt mutant allocates only ~84 KB (under VOL_MAX) and
+// SURVIVES, indistinguishable from the ~76 KB correct-body floor. The mutant is
+// separable only on the 16-DIGIT cycle -- but there, correct code is NOT 0
+// either: every double above 2^31 is a boxed HeapNumber (the Smi cliff, 0.4b),
+// so `temp % 10` / `Math.floor(temp / 10)` allocate genuine, collectable
+// transient garbage the language forces. Measured, deterministic across runs on
+// this host (5 reps each, 20,000-iteration warmup):
+//   correct 16-digit body:                 3,192,568 B
+//   String(value)+charCodeAt mutant:       6,314,312 B
+// The correct floor is a real 3.2 MB, so VOL_MAX (1 MB) would false-positive the
+// shipped body. VOL16_MAX sits at the midpoint: 49% above the correct floor and
+// 25% below the mutant. This is NOT VOL_MAX widened -- it is a SEPARATE lane
+// whose correct-code floor is 3.2 MB, not 76 KB, because the arithmetic boxes.
+const VOL16_MAX = 4750000;
 
 function allocVolume(fn) {
     for (let i = 0; i < VOL_WARMUP; i++) fn(i);
@@ -88,6 +127,15 @@ function allocVolume(fn) {
         }
     }
     return sum;
+}
+
+/** RECORDED-only wall-clock, ns/call. Not a gate: no threshold, no die(). */
+function timeNs(fn, ops, warmup) {
+    for (let i = 0; i < warmup; i++) fn(i);
+    const a = performance.now();
+    for (let i = 0; i < ops; i++) fn(i);
+    const b = performance.now();
+    return (b - a) * 1e6 / ops;
 }
 
 function structural(font, label) {
@@ -272,5 +320,75 @@ export function run() {
             () => 'T6/F: measureLine allocated ' + volF + ' bytes over ' + VOL_OPS +
                 ' calls (limit ' + VOL_MAX + ') -- a per-call allocation shipped' +
                 ' in the range door');
+    }
+
+    // --- Window G (M8): drawFastInt() on a FIXED 5-digit cycle, 5 glyphs --------
+    // A NEW hot body. Gated exactly like window B (its digit-matched sibling):
+    // maxBytesPerCall:0, maxMajor:0, maxPauseMs:4, maxArrayBuffersGrowth:0, an
+    // exact rec.total, and structural() (which pins _charScratch at 24 -- KILLS a
+    // scratch grown to hold 24 digits).
+    //
+    // allocVolume() runs here too, and it is JUSTIFIED, not reflexive: drawFastInt
+    // is a new body whose most plausible wrong implementation -- String(value)
+    // then a charCodeAt walk -- is EXACTLY the transient-allocation class F-37
+    // proves the two profiler lanes cannot see (M4 measured a 28 MB split()
+    // mutant passing every lane). This is NOT a partial F-37 fix; the general fix,
+    // all six existing windows plus the vacuous maxBytesPerOp rule, stays M9's.
+    //
+    // C-4b: the gated allocVolume runs on the 16-DIGIT cycle against VOL16_MAX,
+    // NOT the 5-digit `hot` against VOL_MAX. Measured on a full sandbox copy, a
+    // String(value)+charCodeAt mutant on 5-char strings allocates only ~84 KB
+    // (under VOL_MAX) and SURVIVES -- too small and short-lived to accumulate
+    // between the strided heapUsed samples. On 16-char strings it piles up
+    // 6.31 MB. But correct 16-digit code is NOT 0 either: 1e15+i is a boxed
+    // HeapNumber and every `% 10` / `Math.floor(/10)` above 2^31 allocates a
+    // fresh box (the Smi cliff, 0.4b), so the shipped body itself measures a
+    // deterministic 3.19 MB of forced, collectable garbage. VOL_MAX (1 MB) would
+    // false-positive it; VOL16_MAX (4.75 MB) sits between 3.19 and 6.31 and kills
+    // the mutant while passing the shipped body. The OpsGate / rec.total /
+    // structural / runAllocGate lanes keep the fixed 5-glyph `hot` -- they need
+    // GLYPHS = 5 and window-B comparability, and at 5 digits the loop stays in
+    // Smi range so those lanes see a true zero-alloc body.
+    {
+        const OPS = 200000, WARMUP = 5000, GLYPHS = 5;
+        resetRec(ATLAS); resetTotals();
+        const hot = (i) => {
+            rec.calls = 0;
+            FONT_NUM.drawFastInt(rec, INT5_CYCLE[i & 255], 0, 0);
+        };
+        const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+        check(rec.total === (OPS + WARMUP) * GLYPHS,
+            () => 'T6/G: rec.total ' + rec.total + ' != ' + ((OPS + WARMUP) * GLYPHS));
+        structural(FONT_NUM, 'G');
+        gateOps(report, summary, 'G');
+        const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
+        gateAlloc(aReport, result, 'G');
+        const hotVol16 = (i) => { rec.calls = 0; FONT_NUM.drawFastInt(rec, INT16_CYCLE[i & 255], 0, 0); };
+        const volG = allocVolume(hotVol16);
+        check(volG <= VOL16_MAX,
+            () => 'T6/G: drawFastInt allocated ' + volG + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOL16_MAX + ') on the 16-digit cycle -- a per-call' +
+                ' allocation shipped, most likely String(value) + charCodeAt' +
+                ' instead of the digit loop (C-4b)');
+
+        // --- RECORDED, NOT GATED (A11, 0.4b). A slower number here is an
+        // observation and does NOT move the ceiling. Timed in-process, so read
+        // against the coordinator's 9.91% self-noise spread (drawFast vs itself,
+        // 18 runs) -- a difference smaller than that is noise, not signal.
+        const nsFastInt5 = timeNs(hot, VOL_OPS, VOL_WARMUP);
+        const hot16 = (i) => { rec.calls = 0; FONT_NUM.drawFastInt(rec, INT16_CYCLE[i & 255], 0, 0); };
+        const nsFastInt16 = timeNs(hot16, VOL_OPS, VOL_WARMUP);
+        // Digit-matched pair: the SAME displayed integer through both faces.
+        // drawFastInt(1234) -> 4 glyphs; drawFast(123.4) -> 5 glyphs (4 + '.').
+        const hotInt4 = (i) => { rec.calls = 0; FONT_NUM.drawFastInt(rec, 1234, 0, 0); };
+        const hotFast5 = (i) => { rec.calls = 0; FONT_NUM.drawFast(rec, 123.4, 0, 0); };
+        const nsInt4 = timeNs(hotInt4, VOL_OPS, VOL_WARMUP);
+        const nsFast5 = timeNs(hotFast5, VOL_OPS, VOL_WARMUP);
+        process.stderr.write(
+            'torture: RECORDED (A11, not gated; self-noise spread ~9.91%) -- ' +
+            'drawFastInt 5-digit ' + nsFastInt5.toFixed(2) + ' ns/call; ' +
+            'drawFastInt 16-digit (worst case) ' + nsFastInt16.toFixed(2) + ' ns/call; ' +
+            'digit-matched: drawFastInt(1234)=' + nsInt4.toFixed(2) + ' ns/4glyphs vs ' +
+            'drawFast(123.4)=' + nsFast5.toFixed(2) + ' ns/5glyphs\n');
     }
 }

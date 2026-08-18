@@ -2,6 +2,38 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.5.0 -- 2026-08-18
+
+`drawFastInt`, a second zero-alloc number renderer for integer COUNTS -- coins,
+kills, score, seconds -- where `drawFast`'s decimal point is noise and a `.`
+glyph may not even be in the atlas. It is a NEW hot body, exact by construction
+at its own ceiling. Nothing existing moves: `drawFast` is byte-identical to
+1.4.1, proven by body sha, and F-23 is re-routed (not fixed) to M8b. Decision
+record: `decisions/0005-drawfastint.md`.
+
+### Added
+- `drawFastInt(ctx, value, x, y, scale, align)` -- integer-only zero-alloc
+  number renderer. No decimal point, no `.` glyph required in the atlas.
+  TRUNCATES toward zero (1.9 -> "1"), unlike `drawFast` which rounds to the
+  nearest tenth: `drawFast` renders a measurement, `drawFastInt` renders a count,
+  and a count must never display a threshold it has not crossed.
+- `DRAWFASTINT_MAX` -- `Number.MAX_SAFE_INTEGER`. Both endpoints inclusive.
+  The CORRECTNESS boundary, not the buffer boundary: above 2^53 a double is
+  not integer-exact and `v % 10` returns noise. `drawFastInt` is exact by
+  construction for every value it admits (`decisions/0005`).
+
+### Changed (behaviour)
+- **None.** `drawFast` is byte-identical to 1.4.1, proven by body sha. F-23
+  (`drawFast`'s inexact digit extraction, both bands) is NOT fixed here; it is
+  re-routed to M8b by `decisions/0005` fork (1), which amends `decisions/0001`'s
+  routing. Both T4 band pins are unchanged in value and now name M8b.
+
+### Contract
+- `ctx.drawImage` MUST NOT re-enter the font. `drawFast` and `drawFastInt`
+  share one 24-byte scratch buffer; a re-entrant ctx corrupts the outer call's
+  digits. True for `CanvasRenderingContext2D`, not true for an arbitrary object
+  with a `drawImage` method. Proven violable by T9 control 16.
+
 ## 1.4.1 -- 2026-08-18
 
 The renderer text door. `draw` and `drawWrapped` carried the two `text.length`

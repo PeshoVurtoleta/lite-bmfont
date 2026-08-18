@@ -211,6 +211,20 @@ export const JSON_NUM = (() => {
 })();
 
 /**
+ * BMFont JSON for digits '0'..'9' ONLY -- NO '.' (id 46). Proves drawFastInt
+ * renders correctly through a digits-only atlas where drawFast cannot, which is
+ * the atlas-requirement difference documented in decisions/0005 and exercised by
+ * A9. Same digit geometry as JSON_NUM so a decoded "120" is directly comparable.
+ */
+export const JSON_DIGITS = (() => {
+    const chars = [];
+    for (let i = 0; i < 10; i++) {
+        chars.push({ id: 48 + i, x: i * 10, y: 0, width: 8, height: 14, xoffset: 0, yoffset: 2, xadvance: 10 });
+    }
+    return { common: { lineHeight: 20, base: 16 }, chars, kernings: [] };
+})();
+
+/**
  * JSON_ASCII plus a DENSE kerning table so T0 law 4 is not vacuous (F-21).
  *
  * The three original pairs are preserved verbatim -- node:test blocks assert
@@ -371,6 +385,7 @@ export const JSON_NLK = { common: JSON_NL.common, chars: JSON_NL.chars,
 /** Fonts constructed once at module scope; never inside a loop. */
 export const FONT_ASCII = new BitmapFont(ATLAS, JSON_ASCII);
 export const FONT_NUM = new BitmapFont(ATLAS, JSON_NUM);
+export const FONT_DIGITS = new BitmapFont(ATLAS, JSON_DIGITS);   // A9: digits only, no '.'
 export const FONT_KERN = new BitmapFont(ATLAS, JSON_KERN);
 export const FONT_GAP = new BitmapFont(ATLAS, JSON_GAP);
 export const FONT_GAP6 = new BitmapFont(ATLAS, JSON_GAP6, { missingAdvance: 6 });
@@ -405,6 +420,26 @@ export const WRAP_LAYOUT = (() => {
 export const NUM_CYCLE = (() => {
     const a = new Float64Array(256);
     for (let i = 0; i < 256; i++) a[i] = 100 + i;
+    return a;
+})();
+
+/**
+ * INT_CYCLE[i] -- 256 integers spanning 1..16 digits, for drawFastInt's
+ * interleave (A5, the shared-scratch exercise). Built ONCE at module scope.
+ * The digit width cycles 1..16 so the interleave sees many buffer lengths, which
+ * is what makes a hoisted-`len` corruption (a stale digit count carried across
+ * two methods) visible. Every value is <= Number.MAX_SAFE_INTEGER and integer.
+ */
+export const INT_CYCLE = (() => {
+    const a = new Float64Array(256);
+    for (let i = 0; i < 256; i++) {
+        const w = (i % 16) + 1;                 // 1..16 digits
+        const base = Math.pow(10, w - 1);       // smallest w-digit integer
+        const span = base * 9;                  // count of w-digit integers
+        let v = base + ((i * 2654435761) % span);
+        if (v > Number.MAX_SAFE_INTEGER) v = Number.MAX_SAFE_INTEGER;
+        a[i] = Math.trunc(v);
+    }
     return a;
 })();
 

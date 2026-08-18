@@ -66,6 +66,15 @@ const DRAWFAST_VALS = Float64Array.of(0, -0, -1, -5, 0.5, 1.4, 33.49, 1e6, 1e15,
 // drawFast values that RETURN EARLY (0 calls).
 const DRAWFAST_EARLY = Float64Array.of(NaN, Infinity, -Infinity);
 
+// drawFastInt (M8) values that RETURN EARLY (0 calls). Unlike drawFast, 1e22 and
+// MAX_VALUE are OUT for drawFastInt too -- its ceiling is Number.MAX_SAFE_INTEGER,
+// not 1e21 -- so reaching the reject IS the assertion (A13): the door must
+// return, not run Math.floor(temp / 10) on a value it must never admit (F-01's
+// shape one method over).
+const DRAWFASTINT_EARLY = Float64Array.of(
+    NaN, Infinity, -Infinity, Number.MAX_VALUE, -Number.MAX_VALUE, 1e22,
+);
+
 // Pre-built layout buffers.
 const LAYOUT_OK = Float32Array.of(0, 3, 36, 0);           // one line, 'ABC'
 const LAYOUT_F04 = Float32Array.of(-1, 5, 40, 0);         // startIdx < 0 (F-04)
@@ -147,6 +156,41 @@ export function run() {
     // _charScratch never grew: 1e21 is the exact-fit boundary (24 chars into 24 bytes).
     check(FONT_NUM._charScratch.byteLength === 24,
         () => 'T1: _charScratch grew to ' + FONT_NUM._charScratch.byteLength + ' (F-02 door)');
+
+    // --- CLEAN lane: drawFastInt degenerate values (M8, A13) --------------------
+    // drawFastInt takes a NUMBER, exactly like drawFast, and is DELIBERATELY
+    // ABSENT from the six-face NOT_A_STRING text-door sweep below: adding it there
+    // would assert a `typeof text` door the method must not have (decisions/0005
+    // fork 5) and would break t9-measure-hang-child's marker budget. This extends
+    // the deliberate-omission note (M4a section 7 row 6) to the sixth
+    // number-taking face.
+    for (let i = 0; i < DRAWFASTINT_EARLY.length; i++) {
+        resetRec(ATLAS);
+        // Scratch canary: rec.calls === 0 is BLIND to a fail-open `||` door
+        // (decisions/0005 C-4a). NaN passes such a door, NaN%10 coerces to 0, the
+        // unmapped glyph 0 fires no drawImage and calls stays 0 -- so a plain
+        // reject check is vacuous on NaN. 255 is a byte the digit loop (46,
+        // 48..57) can never write; an untouched scratch is the only witness.
+        FONT_NUM._charScratch.fill(255);
+        FONT_NUM.drawFastInt(rec, DRAWFASTINT_EARLY[i], 0, 0);
+        check(rec.calls === 0, () => 'T1/clean drawFastIntEarly[' + i + ']: drew ' + rec.calls + ', expected 0');
+        let touched = -1;
+        for (let k = 0; k < FONT_NUM._charScratch.length; k++) if (FONT_NUM._charScratch[k] !== 255) { touched = k; break; }
+        check(touched === -1, () => 'T1/clean drawFastIntEarly[' + i + ']: TOUCHED _charScratch[' + touched + '] -- a fail-open door wrote a coerced digit (decisions/0005 C-4a)');
+        clean('drawFastIntEarly[' + i + ']');
+    }
+    // Non-vacuity twin: a door that rejected everything would pass every row
+    // above, and the canary itself must be falsifiable. 42 -> "42", two glyphs,
+    // and an ACCEPTED value MUST write the scratch.
+    resetRec(ATLAS);
+    FONT_NUM._charScratch.fill(255);
+    FONT_NUM.drawFastInt(rec, 42, 0, 0);
+    check(rec.calls === 2, () => 'T1/clean drawFastInt(42): drew ' + rec.calls + ', expected 2');
+    check(FONT_NUM._charScratch[0] !== 255 || FONT_NUM._charScratch[1] !== 255,
+        () => 'T1/clean drawFastInt(42): _charScratch untouched -- the canary can never fire');
+    clean('drawFastInt(42)');
+    check(FONT_NUM._charScratch.byteLength === 24,
+        () => 'T1: drawFastInt did not grow _charScratch (now ' + FONT_NUM._charScratch.byteLength + ', F-02 door)');
 
     // --- CLEAN lane: drawWrapped align / vAlign sweeps on a valid layout --------
     for (let i = 0; i < ALIGN_VALS.length; i++) {

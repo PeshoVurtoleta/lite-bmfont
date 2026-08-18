@@ -1,6 +1,18 @@
 /**
- * T4 -- the drawFast digit oracle and magnitude-door tier (M1). Every assertion
- * names the mutation it kills; that column is the deliverable, not a courtesy.
+ * T4 -- the digit-oracle and magnitude-door tier for BOTH number renderers:
+ * `drawFast` (M1, ceiling DRAWFAST_MAX = 1e21, the BUFFER boundary) and
+ * `drawFastInt` (M8, ceiling DRAWFASTINT_MAX = Number.MAX_SAFE_INTEGER, the
+ * CORRECTNESS boundary). Every assertion names the mutation it kills; that
+ * column is the deliverable, not a courtesy.
+ *
+ * THE TWO BODIES ARE NOT THE SAME KIND OF EXACT, and this tier must not blur it:
+ * `drawFast` multiplies by 10 and is NOT exact above 2^53 (F-23, both bands,
+ * re-routed to M8b) -- so its seeded sweep tolerates a float-drift bound.
+ * `drawFastInt` extracts digits from `Math.trunc(value)` with `temp % 10` /
+ * `Math.floor(temp / 10)` and is EXACT BY CONSTRUCTION for every value its door
+ * admits (|n| <= 2^53 - 1) -- so its seeded sweep demands EXACT equality with NO
+ * drift tolerance (7.2). A tier whose docstring contradicts the code below it is
+ * how F-24 started; this paragraph is the antidote.
  *
  * FOUR THINGS THE READER MUST KNOW:
  *
@@ -27,14 +39,17 @@
  *    '.' at sx = 60 with sw 4 -- so '6' (id 54, sx 60) and '.' COLLIDE on sx
  *    alone. sw is load-bearing: a decoder reading sx only maps every '.' to '6'.
  *
- * F-23 (routed to M8) is PINNED here as current measured behaviour, both bands,
- * so M8's arithmetic fix forces this tier red rather than passing either way.
+ * F-23 (re-routed by decisions/0005 fork 1, NOT fixed here -- see the M8
+ * amendment to decisions/0001) is PINNED here as current measured behaviour,
+ * both bands, so the eventual arithmetic fix forces this tier red rather than
+ * passing either way. These pins are the freeze on drawFast's arithmetic that M8
+ * needs, since M8 is the session that must NOT move it.
  */
 import {
     rec, resetRec, resetTotals, nanScan, check, makePrng, SEED,
-    FONT_NUM, ATLAS,
+    FONT_NUM, FONT_DIGITS, ATLAS, NUM_CYCLE, INT_CYCLE,
 } from './harness.mjs';
-import { DRAWFAST_MAX } from '../../BitmapFont.js';
+import { DRAWFAST_MAX, DRAWFASTINT_MAX } from '../../BitmapFont.js';
 
 // ---- oracles and bit walkers, built ONCE at module scope --------------------
 
@@ -78,10 +93,16 @@ function decode() {
 const inDoor = (v) => v >= -DRAWFAST_MAX && v <= DRAWFAST_MAX;
 const tenths = (s) => BigInt(s.replace('.', ''));   // "8.5" -> 85n
 
+// The three helpers are PARAMETERISED BY METHOD (drawName), not duplicated:
+// they are cold test helpers, and the DO-NOT-EXTRACT rule of decisions/0005 is
+// about BitmapFont.js's hot bodies, not about this file. Default is 'drawFast'
+// so every M1 call site below is untouched; M8's rows pass 'drawFastInt'.
+// A `font` arg lets A9 run the same call through the digits-only FONT_DIGITS.
+
 /** Draw v and assert it spells `expected` exactly, glyph by glyph. */
-function spell(v, expected, label) {
+function spell(v, expected, label, drawName = 'drawFast', font = FONT_NUM) {
     resetRec(ATLAS); resetTotals();
-    FONT_NUM.drawFast(rec, v, 0, 0);
+    font[drawName](rec, v, 0, 0);
     check(rec.calls === expected.length, () => 'T4 ' + label + ': ' + v + ' drew ' + rec.calls + ' glyphs "' + decode() + '", expected ' + expected.length + ' "' + expected + '"');
     check(rec.total === rec.calls, () => 'T4 ' + label + ': total ' + rec.total + ' != calls ' + rec.calls + ' on ' + v);
     for (let k = 0; k < expected.length; k++) {
@@ -90,19 +111,44 @@ function spell(v, expected, label) {
     check(nanScan() === 0, () => 'T4 ' + label + ': NaN in a drawImage column on ' + v);
 }
 /** Draw v and assert nothing is drawn -- the door rejected it. */
-function reject(v, label) {
+function reject(v, label, drawName = 'drawFast', font = FONT_NUM) {
     resetRec(ATLAS); resetTotals();
-    FONT_NUM.drawFast(rec, v, 0, 0);
+    font[drawName](rec, v, 0, 0);
     check(rec.calls === 0 && rec.total === 0, () => 'T4 ' + label + ': ' + v + ' drew ' + rec.calls + '/' + rec.total + ' glyphs "' + decode() + '", expected 0 (door reject)');
 }
-/** Draw v and return its rendered string (+ NaN/total invariants). */
-function libSpell(v) {
+/** Draw a REJECTED value and prove the door is a TRUE no-op, not merely a
+ *  no-draw. Plain reject() is BLIND to a fail-open `||` door (decisions/0005
+ *  C-4a): rewriting the magnitude guard as
+ *  `if (value > DRAWFASTINT_MAX || value < -DRAWFASTINT_MAX) return;` lets NaN
+ *  through, `48 + (NaN % 10)` is NaN, the Uint8Array coerces it to 0, glyph 0 is
+ *  unmapped and `gw > 0 && gh > 0` skips every drawImage -- so rec.calls,
+ *  rec.total and nanScan() all stay 0, indistinguishable from a correct reject.
+ *  drawFastInt has no unconditional non-digit write (drawFast's `buf[len++]=46`
+ *  is what catches the same mutant there), so the detector is a SCRATCH CANARY:
+ *  fill _charScratch with 255 -- a byte the digit loop (46, 48..57) can never
+ *  write -- and assert it is untouched. Model: test/boundary.test.js:364. */
+function rejectCanary(v, label, drawName = 'drawFastInt', font = FONT_NUM) {
+    const buf = font._charScratch;
+    buf.fill(255);
     resetRec(ATLAS); resetTotals();
-    FONT_NUM.drawFast(rec, v, 0, 0);
+    font[drawName](rec, v, 0, 0);
+    check(rec.calls === 0 && rec.total === 0, () => 'T4 ' + label + ': ' + v + ' drew ' + rec.calls + '/' + rec.total + ' glyphs "' + decode() + '", expected 0 (door reject)');
+    for (let k = 0; k < buf.length; k++) {
+        if (buf[k] !== 255) { check(false, () => 'T4 ' + label + ': ' + v + ' TOUCHED _charScratch[' + k + ']=' + buf[k] + ' -- a fail-open door wrote a coerced digit ahead of the guard (decisions/0005 C-4a)'); break; }
+    }
+}
+/** Draw v and return its rendered string (+ NaN/total invariants). */
+function libSpell(v, drawName = 'drawFast', font = FONT_NUM) {
+    resetRec(ATLAS); resetTotals();
+    font[drawName](rec, v, 0, 0);
     check(nanScan() === 0, () => 'T4 sweep: NaN in a drawImage column on ' + v);
     check(rec.total === rec.calls, () => 'T4 sweep: total ' + rec.total + ' != calls ' + rec.calls + ' on ' + v);
     return decode();
 }
+/** The drawFastInt oracle (decisions/0005 fork 3): TRUNCATE toward zero, then
+ *  clamp negatives to 0. NOT the brief's bare String(Math.trunc(v)) -- that
+ *  reddens the -1 row against correct code, because negatives clamp. */
+function truncOracle(v) { return String(Math.trunc(v < 0 ? 0 : v)); }
 
 export function run() {
     const t0 = Date.now();
@@ -173,18 +219,18 @@ export function run() {
     for (const [v, today] of [[8.45, '8.5'], [999999.95, '1000000.0']]) {
         const s = libSpell(v);
         const ex = oracleExact(v);
-        check(s === today, () => 'T4 F-23 band1: ' + v + ' now renders "' + s + '", pinned "' + today + '" (M8 will change this)');
+        check(s === today, () => 'T4 F-23 band1: ' + v + ' now renders "' + s + '", pinned "' + today + '" (M8b will change this -- re-routed by decisions/0005 fork 1)');
         check(oracleFixed(v) === ex, () => 'T4 F-23 band1: toFixed and exact disagree on ' + v + ' -- an oracle is wrong');
-        check(s !== ex, () => 'T4 F-23 band1: ' + v + ' unexpectedly renders the exact "' + ex + '" -- F-23 band 1 fixed? re-open the pin');
+        check(s !== ex, () => 'T4 F-23 band1: ' + v + ' unexpectedly renders the exact "' + ex + '" -- re-routed fix (decisions/0005 fork 1) landed early? re-open the pin');
     }
 
     // -- F-23 band 2 (2^53 < |v| <= 1e21): wrong integer digits, silent ------
     for (const [v, today] of [[762638538843020900000, '762638538843020800088.0'], [4858154237736017000, '4858154237736017846.0']]) {
         const s = libSpell(v);
         const ex = oracleExact(v);
-        check(s === today, () => 'T4 F-23 band2: ' + v + ' now renders "' + s + '", pinned "' + today + '" (M8 will change this)');
+        check(s === today, () => 'T4 F-23 band2: ' + v + ' now renders "' + s + '", pinned "' + today + '" (M8b will change this -- re-routed by decisions/0005 fork 1)');
         check(oracleFixed(v) === ex, () => 'T4 F-23 band2: toFixed and exact disagree on ' + v + ' -- an oracle is wrong');
-        check(s !== ex, () => 'T4 F-23 band2: ' + v + ' unexpectedly renders the exact "' + ex + '" -- F-23 band 2 fixed? re-open the pin');
+        check(s !== ex, () => 'T4 F-23 band2: ' + v + ' unexpectedly renders the exact "' + ex + '" -- re-routed fix (decisions/0005 fork 1) landed early? re-open the pin');
     }
 
     // -- Rows 16-18: the 10,000 seeded sweep ---------------------------------
@@ -232,6 +278,155 @@ export function run() {
             check(oracleFixed(v) === ex, () => 'T4 row 17 (sweep): SEED=' + SEED + ' i=' + i + ' v=' + v + ' toFixed "' + oracleFixed(v) + '" != exact "' + ex + '"');
         }
     }
+
+    // ====================================================================
+    // drawFastInt (M8). A SECOND hot body, exact by construction at its own
+    // ceiling. Oracle: truncOracle = String(Math.trunc(v < 0 ? 0 : v)).
+    // ====================================================================
+
+    // -- The constant, and the ceiling arithmetic self-checks ----------------
+    // KILLS: DRAWFASTINT_MAX retuned off Number.MAX_SAFE_INTEGER.
+    check(DRAWFASTINT_MAX === Number.MAX_SAFE_INTEGER, () => 'T4 drawFastInt: DRAWFASTINT_MAX is ' + DRAWFASTINT_MAX + ', expected Number.MAX_SAFE_INTEGER');
+    // Unlike 1e21 + 1 === 1e21, MAX_SAFE_INTEGER + 1 is EXACT and genuinely
+    // outside the door -- so the reject rows below are real, not identities.
+    check(Number.MAX_SAFE_INTEGER + 1 === 9007199254740992, () => 'T4 drawFastInt: MAX_SAFE_INTEGER + 1 is not the exact 9007199254740992');
+
+    // -- The 19-row fixed sweep (section 7.1). 19 rows, not 20: 2^53 - 1 and
+    // Number.MAX_SAFE_INTEGER are the SAME number, so there is no separate row.
+    const dfi = 'drawFastInt';
+    // 0 must render "0" (one glyph) -- KILLS do..while converted to while.
+    spell(0, truncOracle(0), 'drawFastInt row 0', dfi);
+    // -0: MEASURED, not assumed. -0 < 0 is false so the clamp does not fire;
+    // Math.trunc(-0) is -0; -0 % 10 is -0; 48 + -0 is 48 = '0'. Renders "0".
+    spell(-0, truncOracle(-0), 'drawFastInt row -0', dfi);
+    spell(1, truncOracle(1), 'drawFastInt row 1', dfi);
+    spell(9, truncOracle(9), 'drawFastInt row 9', dfi);
+    spell(10, truncOracle(10), 'drawFastInt row 10', dfi);
+    spell(99, truncOracle(99), 'drawFastInt row 99', dfi);
+    spell(100, truncOracle(100), 'drawFastInt row 100', dfi);
+    // 2^31: the Smi boundary (0.4b). 10 glyphs.
+    spell(2 ** 31, truncOracle(2 ** 31), 'drawFastInt row 2^31', dfi);
+    // The widest accepted output: 16 glyphs. KILLS >= mutated to > on the upper
+    // bound (A4): MAX_SAFE_INTEGER must render, not reject.
+    spell(Number.MAX_SAFE_INTEGER, truncOracle(Number.MAX_SAFE_INTEGER), 'drawFastInt row MAX_SAFE', dfi);
+    // -1 clamps to "0" -- KILLS the brief's bare String(Math.trunc(v)) oracle,
+    // which would demand "-1" against correct (clamping) code.
+    spell(-1, truncOracle(-1), 'drawFastInt row -1 clamp', dfi);
+    // A4 negative endpoint: -MAX_SAFE_INTEGER is INSIDE the door (then clamps to
+    // "0"). The only detector for a door written with an upper bound only.
+    spell(-Number.MAX_SAFE_INTEGER, truncOracle(-Number.MAX_SAFE_INTEGER), 'drawFastInt row -MAX_SAFE endpoint', dfi);
+    // Fork (3) A vs B (A3): TRUNCATE, do not round. 0.4->"0", 0.5->"0", 1.9->"1".
+    // KILLS Math.round(value) in place of Math.trunc (0.5->"1", 1.9->"2").
+    spell(0.4, truncOracle(0.4), 'drawFastInt row 0.4 trunc', dfi);
+    spell(0.5, truncOracle(0.5), 'drawFastInt row 0.5 trunc', dfi);
+    spell(1.9, truncOracle(1.9), 'drawFastInt row 1.9 trunc', dfi);
+    // Rejected set. 0 calls each.
+    // MAX_SAFE_INTEGER + 1 -- the inclusive-ceiling step-over (A4).
+    reject(Number.MAX_SAFE_INTEGER + 1, 'drawFastInt reject MAX_SAFE+1', dfi);
+    // -(MAX_SAFE_INTEGER + 1) -- the negative step-over (A4).
+    reject(-(Number.MAX_SAFE_INTEGER + 1), 'drawFastInt reject -(MAX_SAFE+1)', dfi);
+    // 1e21 -- IN-door for drawFast, OUT for drawFastInt: the row that proves the
+    // two ceilings are different numbers.
+    reject(1e21, 'drawFastInt reject 1e21', dfi);
+    // Number.MAX_VALUE -- F-01's shape one method over. Reaching the next line IS
+    // part of the assertion: the door must return, not loop on Math.floor(v/10).
+    reject(Number.MAX_VALUE, 'drawFastInt reject MAX_VALUE', dfi);
+    // NaN -- KILLS a door written with || (NaN passes >). Plain reject() is
+    // BLIND to this (C-4a): NaN's coerced-to-0 digit never reaches drawImage, so
+    // only the scratch canary sees the write. rejectCanary pins the NaN-safety.
+    rejectCanary(NaN, 'drawFastInt reject NaN', dfi);
+    // +/-Infinity -- KILLS a one-sided door, both sides. Canary here too so the
+    // door's NaN-safety is pinned by the same instrument across all three.
+    rejectCanary(Infinity, 'drawFastInt reject +Infinity', dfi);
+    rejectCanary(-Infinity, 'drawFastInt reject -Infinity', dfi);
+    // Canary non-vacuity twin: the untouched-scratch checks above could never
+    // fire unless an ACCEPTED value DOES write the scratch. Prove it can.
+    {
+        const buf = FONT_NUM._charScratch;
+        buf.fill(255);
+        resetRec(ATLAS); resetTotals();
+        FONT_NUM.drawFastInt(rec, 120, 0, 0);
+        let touched = false;
+        for (let k = 0; k < buf.length; k++) if (buf[k] !== 255) { touched = true; break; }
+        check(touched, () => 'T4 canary non-vacuity: drawFastInt(120) left _charScratch untouched -- the rejectCanary can never fire');
+    }
+
+    // -- A9: drawFastInt needs NO '.' glyph. FONT_DIGITS has ids 48-57, no 46.
+    // KILLS: drawFastInt emitting a 46 -> on FONT_NUM this is A1, here it proves
+    // the atlas-requirement difference (decisions/0005).
+    spell(120, '120', 'A9 drawFastInt on digits-only font', dfi, FONT_DIGITS);
+    // Non-vacuity twin: drawFast on the SAME digits-only font. The '.' (id 46) is
+    // unmapped, so its zeroed slot (gw=0,gh=0) is skipped by `gw > 0 && gh > 0`
+    // -- 4 quads reach drawImage with a gap where the '.' would be. That drawFast
+    // LOSES the point on a digits-only atlas while drawFastInt does not is the
+    // whole reason to choose drawFastInt.
+    resetRec(ATLAS); resetTotals();
+    FONT_DIGITS.drawFast(rec, 120, 0, 0);
+    check(rec.calls === 4, () => 'T4 A9: drawFast on the digits-only font drew ' + rec.calls + ' quads, expected 4 (the . is unmapped and skipped)');
+
+    // -- The seeded drawFastInt sweep (section 7.2): 10,000 values, EXACT
+    // equality against the oracle, NO drift tolerance -- the asymmetry with
+    // drawFast's tolerant row 16 IS the point: drawFast needs a tolerance because
+    // `value * 10` genuinely drifts (F-23); drawFastInt is exact by construction,
+    // so ANY divergence is a defect. Copying drawFast's tolerant compare in here
+    // would hide the bug this sweep exists to find.
+    const nextI = makePrng((SEED ^ 0x1b873593) >>> 0);
+    const inDoorInt = (v) => v >= -DRAWFASTINT_MAX && v <= DRAWFASTINT_MAX;
+    for (let i = 0; i < 10000; i++) {
+        const exp = (nextI() % 44) - 21;
+        const mant = (nextI() / 2 ** 32) * 10;
+        let v = mant * 10 ** exp;
+        if ((nextI() & 3) === 0) v = -v;
+        if (!inDoorInt(v)) {
+            reject(v, 'drawFastInt seeded reject', dfi);
+            continue;
+        }
+        const s = libSpell(v, dfi);
+        const ex = truncOracle(v);
+        check(s === ex, () => 'T4 drawFastInt seeded: SEED=' + SEED + ' i=' + i + ' v=' + v + ' drew "' + s + '", exact "' + ex + '" -- EXACT equality required, no drift (replay: TORTURE_SEED=' + SEED + ' npm run torture)');
+    }
+
+    // -- The interleave (A5): the shared 24-byte _charScratch is safe by
+    // exercise. 100,000 iterations alternating drawFast and drawFastInt produce,
+    // per call, byte-identical recorded columns to the same call made in
+    // isolation. KILLS: hoisting `len`/`temp` to an instance field, reading buf
+    // before writing it, or forgetting `len = 0` -- any of which makes an
+    // interleaved call differ from an isolated one.
+    function callHash(seed) {
+        let h = (seed ^ 0x9e3779b9) | 0;
+        for (let k = 0; k < rec.calls; k++) {
+            h = Math.imul(h ^ (rec.sx[k] | 0), 0x85ebca6b) | 0;
+            h = Math.imul(h ^ (rec.sw[k] | 0), 0xc2b2ae35) | 0;
+            h = Math.imul(h ^ (rec.dx[k] | 0), 0x27d4eb2f) | 0;
+            h = Math.imul(h ^ (rec.dy[k] | 0), 0x165667b1) | 0;
+        }
+        h = Math.imul(h ^ rec.calls, 0x85ebca6b) | 0;
+        return h >>> 0;
+    }
+    // Pass 1: interleaved. Even i -> drawFast, odd i -> drawFastInt.
+    let s1 = 0;
+    for (let i = 0; i < 100000; i++) {
+        resetRec(ATLAS); resetTotals();
+        if (i & 1) FONT_NUM.drawFastInt(rec, INT_CYCLE[i & 255], 0, 0);
+        else FONT_NUM.drawFast(rec, NUM_CYCLE[i & 255], 0, 0);
+        s1 = (s1 + callHash(i)) >>> 0;
+    }
+    // Pass 2: isolated. All the drawFast calls, THEN all the drawFastInt calls,
+    // each grouped so no call is preceded by the other method. The per-i hash is
+    // summed order-independently, so equal sums mean every i produced identical
+    // columns interleaved and isolated.
+    let s2 = 0;
+    for (let i = 0; i < 100000; i += 2) {
+        resetRec(ATLAS); resetTotals();
+        FONT_NUM.drawFast(rec, NUM_CYCLE[i & 255], 0, 0);
+        s2 = (s2 + callHash(i)) >>> 0;
+    }
+    for (let i = 1; i < 100000; i += 2) {
+        resetRec(ATLAS); resetTotals();
+        FONT_NUM.drawFastInt(rec, INT_CYCLE[i & 255], 0, 0);
+        s2 = (s2 + callHash(i)) >>> 0;
+    }
+    check(s1 === s2, () => 'T4 A5 interleave: interleaved checksum ' + s1 + ' != isolated ' + s2 + ' -- the shared _charScratch corrupts across drawFast/drawFastInt calls (a hoisted len/temp, or a missing len = 0)');
 
     // -- Rows 19-21: tier-wide invariants ------------------------------------
     // KILLS row 19: any NaN reaching drawImage -- there is no input for which a NaN coord is right.

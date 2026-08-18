@@ -50,7 +50,12 @@ if (mode === 'door') {
 if (mode === 'hang') {
     // The two markers whose removal reconstructs the pre-door v1.2.1 body.
     const DOOR = 'if (!(value >= -DRAWFAST_MAX && value <= DRAWFAST_MAX)) return;';
-    const BOUND = '} while (temp > 0 && len < buf.length);';
+    // BOUND is multi-line since M8: drawFastInt duplicates the bare while
+    // line, so anchor on drawFast's UNIQUE preceding comment to select only
+    // its loop (drawFastInt's while carries a different comment).
+    const BOUND =
+        '            // do..while: a plain while renders ".0" for value 0.\n' +
+        '        } while (temp > 0 && len < buf.length);';
 
     let src = readFileSync(SRC, 'utf8');
 
@@ -60,7 +65,9 @@ if (mode === 'hang') {
     if (boundCount !== 1) { process.stderr.write('marker BOUND matched ' + boundCount + ' times\n'); process.exit(3); }
 
     src = src.replace(DOOR, '// door removed by t9-hang-child (control 9)');
-    src = src.replace(BOUND, '} while (temp > 0);');
+    src = src.replace(BOUND,
+        '            // do..while: a plain while renders ".0" for value 0.\n' +
+        '        } while (temp > 0);');
 
     const tmp = join(tmpdir(), 'bmfont-nodoor-' + process.pid + '.mjs');
     try {

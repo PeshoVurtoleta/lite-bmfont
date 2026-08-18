@@ -1,6 +1,16 @@
 /** @zakkster/lite-bmfont — Zero-GC Bitmap Font Renderer */
 
 /**
+ * SHARED-SCRATCH CONTRACT (decisions/0005 fork 2). `ctx.drawImage` must not
+ * re-enter the font. `drawFast` and `drawFastInt` share one 24-byte scratch
+ * buffer (`_charScratch`); a re-entrant ctx corrupts the outer call's digits.
+ * This is true for a real CanvasRenderingContext2D, which cannot call back into
+ * user code, and false for an arbitrary object with a `drawImage` method. T9
+ * control 16 violates the contract deliberately and asserts the corruption is
+ * real, so the contract is exercised rather than merely believed.
+ */
+
+/**
  * Largest magnitude `drawFast` can render. The "d.d" form of 1e21 is exactly
  * 24 bytes -- 22 integer digits + '.' + 1 decimal -- which is the whole
  * `_charScratch` buffer. Outside [-DRAWFAST_MAX, DRAWFAST_MAX], and for NaN
@@ -13,6 +23,23 @@
  * `>` vs `>=` in the guard is a one-character mutation; T4 pins both sides.
  */
 export const DRAWFAST_MAX = 1e21;
+
+/**
+ * Largest magnitude `drawFastInt` can render: Number.MAX_SAFE_INTEGER
+ * (9007199254740991, 16 digits). This is the CORRECTNESS boundary, not the
+ * buffer boundary -- 24 bytes would hold 24 digits, but above 2^53 a double
+ * is not integer-exact and `v % 10` returns arithmetic noise. Rendering 18
+ * confident digits of a number that only has 16 is a lie. Contrast
+ * DRAWFAST_MAX, which IS the buffer boundary and ships F-23 band 2 as a
+ * documented approximation; the two constants answer the same principle
+ * applied to different facts (decisions/0005, decisions/0001).
+ * This ceiling admits the boxing regime: zero-allocation holds only below 2^31,
+ * and larger admitted values box one HeapNumber per call in the digit loop
+ * (F-44, shared with drawFast, routed to M8b).
+ * Both endpoints INCLUSIVE, so
+ * Math.max(-DRAWFASTINT_MAX, Math.min(DRAWFASTINT_MAX, v)) always renders.
+ */
+export const DRAWFASTINT_MAX = Number.MAX_SAFE_INTEGER;
 
 /**
  * The one error type the descriptor door throws (F-10). It EXTENDS `RangeError`
@@ -723,6 +750,12 @@ export class BitmapFont {
         }
     }
 
+    // CROSS-REFERENCE (decisions/0005 fork 1). `drawFast`'s digit loop and
+    // `drawFastInt`'s (below, after this method's closing brace) are DELIBERATE
+    // DUPLICATES and MUST NOT be merged: this one is NOT exact at DRAWFAST_MAX
+    // (F-23 band 2, re-routed to M8b), the other IS exact by construction at
+    // DRAWFASTINT_MAX. This method is byte-frozen at 1.4.1 until M8b; do not edit
+    // inside it. (Comment sits above the JSDoc, outside the body-sha range A7.)
     /**
      * Zero-GC number renderer. Draws a non-negative number with one decimal place
      * (e.g. 33.4) directly from char codes — no string allocation on the hot path.
@@ -784,6 +817,123 @@ export class BitmapFont {
             // TODAY; "unreachable" is a claim about today's code, and a silent
             // 24-call NaN storm is what happens when the claim expires. Stays a
             // do..while: a plain while renders ".0" for value 0.
+        } while (temp > 0 && len < buf.length);
+
+        // Measure (iterating backwards through the scratch = forwards through the number)
+        let width = 0;
+        let prevId = -1;
+        for (let i = len - 1; i >= 0; i--) {
+            const id = buf[i];
+            if (prevId !== -1) width += this.kerning[(prevId << 8) | id] * scale;
+            width += this.glyphs[id * 7 + 6] * scale;
+            prevId = id;
+        }
+
+        let cursorX = x;
+        if (align === 1) cursorX -= width / 2;
+        else if (align === 2) cursorX -= width;
+        cursorX = Math.round(cursorX);
+        const cursorY = Math.round(y);
+
+        prevId = -1;
+        for (let i = len - 1; i >= 0; i--) {
+            const id = buf[i];
+            if (prevId !== -1) {
+                cursorX += this.kerning[(prevId << 8) | id] * scale;
+            }
+            const ptr = id * 7;
+            const gw = this.glyphs[ptr + 2];
+            const gh = this.glyphs[ptr + 3];
+
+            if (gw > 0 && gh > 0) {
+                ctx.drawImage(
+                    this.atlas,
+                    this.glyphs[ptr], this.glyphs[ptr + 1], gw, gh,
+                    cursorX + this.glyphs[ptr + 4] * scale,
+                    cursorY + this.glyphs[ptr + 5] * scale - (this.base * scale),
+                    gw * scale, gh * scale
+                );
+            }
+
+            cursorX += this.glyphs[ptr + 6] * scale;
+            prevId = id;
+        }
+    }
+
+    /**
+     * Zero-GC integer renderer. Draws a non-negative INTEGER directly from char
+     * codes -- no string allocation and no '.' glyph.
+     *
+     * Differences from `drawFast`, each deliberate (decisions/0005):
+     * - TRUNCATES toward zero: 1.9 renders "1", not "2". `drawFast` ROUNDS to
+     *   the nearest tenth. This is deliberate -- `drawFast` renders a
+     *   measurement, `drawFastInt` renders a count, and a count must never
+     *   display a threshold it has not crossed.
+     * - No decimal point. Requires the font atlas to contain glyphs for ASCII
+     *   '0'-'9' (48-57) ONLY; it does NOT require '.' (46) that `drawFast`
+     *   requires, so a digits-only atlas can use this method.
+     * - Ceiling is DRAWFASTINT_MAX (Number.MAX_SAFE_INTEGER), the CORRECTNESS
+     *   boundary: exact by construction for every admitted value, where
+     *   `drawFast`'s DRAWFAST_MAX is the buffer boundary.
+     *
+     * NaN, +/-Infinity and |value| > DRAWFASTINT_MAX draw nothing and return.
+     * Negative values inside the door clamp to 0 (-5 renders "0"). A `scale`
+     * outside `(0, Infinity)` draws nothing and returns.
+     *
+     * `ctx.drawImage` MUST NOT re-enter the font (shared-scratch contract, see
+     * the file header and decisions/0005 fork 2).
+     *
+     * Zero-allocation holds only for values below 2^31; larger values box one
+     * HeapNumber per call in the digit loop (F-44).
+     *
+     * @param {CanvasRenderingContext2D} ctx
+     * @param {number} value
+     * @param {number} x      Baseline X
+     * @param {number} y      Baseline Y
+     * @param {number} [scale=1.0]  A `scale` outside `(0, Infinity)` draws
+     *   NOTHING and returns (F-11), same as `drawFast`.
+     * @param {0|1|2} [align=0]  0 = left, 1 = center, 2 = right. Any value
+     *   outside `{0, 1, 2}` renders LEFT (decisions/0003 fork 6).
+     */
+    drawFastInt(ctx, value, x, y, scale = 1.0, align = 0) {
+        // Magnitude door FIRST (F-11 fork 5 keeps decisions/0001's pinned
+        // magnitude behaviour in first-guard position). One NaN-safe range test:
+        // NaN fails both comparisons, +Infinity fails the upper bound,
+        // -Infinity the lower. ROADMAP law 4's `!(x >= min && x <= max)`.
+        if (!(value >= -DRAWFASTINT_MAX && value <= DRAWFASTINT_MAX)) return;
+        // RANGE test, not a NaN test: 0 and -1 are finite and draw zero/negative
+        // quads, which `scale !== scale` cannot see. Draw nothing, return.
+        if (!(scale > 0 && scale < Infinity)) return;
+        if (value < 0) value = 0;
+
+        // TRUNCATE, do not round (decisions/0005 fork 3): drawFast renders a
+        // MEASUREMENT and rounds to the nearest tenth; this renders a COUNT, and
+        // a count must never display a threshold it has not crossed. 1.9 -> "1".
+        // Rounding would also reintroduce F-23 band 1 here: Math.floor(v + 0.5)
+        // near 2^53 adds a quantity below the ulp. Math.trunc is exact for every
+        // admitted value.
+        let temp = Math.trunc(value);
+
+        // SHARED with drawFast (decisions/0005 fork 2). Safe because neither body
+        // is re-entrant; ctx.drawImage must not call back into the font. T9
+        // control 16 violates that and proves the corruption is real.
+        const buf = this._charScratch;
+        let len = 0;
+
+        // DUPLICATED from drawFast, deliberately. DO NOT extract a shared helper:
+        // a call frame on two hot paths to save twelve source lines is ROADMAP
+        // law 6 inverted. DO NOT harmonise the two loops either -- THIS one is
+        // exact by construction because the door admits only integer-exact
+        // doubles (|n| <= 2^53-1 => n % 10 and Math.floor(n / 10) are both exact,
+        // by induction over the loop). drawFast's is NOT exact above 2^53 (F-23
+        // band 2, routed to M8b). Carrying drawFast's `value * 10` in here would
+        // destroy that property.
+        // The bound is an unconditional structural backstop: the door makes it
+        // unreachable TODAY, and "unreachable" is a claim about today's code.
+        // do..while, not while: value 0 must render "0" (one glyph).
+        do {
+            buf[len++] = 48 + (temp % 10);
+            temp = Math.floor(temp / 10);
         } while (temp > 0 && len < buf.length);
 
         // Measure (iterating backwards through the scratch = forwards through the number)
@@ -1059,4 +1209,4 @@ export class BitmapFont {
 }
 export default BitmapFont;
 
-export const VERSION = '1.4.1';
+export const VERSION = '1.5.0';

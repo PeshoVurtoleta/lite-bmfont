@@ -235,6 +235,42 @@ export class BitmapFont {
     ): void;
 
     /**
+     * Zero-allocation INTEGER renderer for counts -- coins, kills, score,
+     * seconds. Renders `value` with no decimal point.
+     *
+     * TRUNCATES toward zero: `1.9` renders `"1"`, not `"2"`. `drawFast` ROUNDS to
+     * the nearest tenth. This is deliberate -- `drawFast` renders a measurement,
+     * `drawFastInt` renders a count, and a count must never display a threshold it
+     * has not crossed.
+     *
+     * Requires the atlas to contain glyphs for ASCII `'0'`-`'9'` (48-57) ONLY. It
+     * does NOT require the `'.'` (46) glyph that `drawFast` requires, so a
+     * digits-only atlas can use this method.
+     *
+     * The ceiling is `DRAWFASTINT_MAX` (`Number.MAX_SAFE_INTEGER`), the
+     * CORRECTNESS boundary rather than `drawFast`'s buffer boundary: above 2^53 a
+     * double is not integer-exact, so `drawFastInt` refuses the range instead of
+     * rendering approximate digits. It is exact by construction for every value it
+     * admits. NaN, +/-Infinity and out-of-range magnitudes draw nothing and
+     * return; negatives clamp to 0 (`-5` renders `"0"`); a `scale` outside
+     * `(0, Infinity)` draws NOTHING and returns. Zero-allocation holds only below
+     * 2^31; larger values box one HeapNumber per call in the digit loop (F-44).
+     *
+     * `ctx.drawImage` MUST NOT re-enter the font: `drawFast` and `drawFastInt`
+     * share one 24-byte scratch buffer, and a re-entrant ctx corrupts the outer
+     * call's digits. True for `CanvasRenderingContext2D`, not for an arbitrary
+     * object with a `drawImage` method.
+     */
+    drawFastInt(
+        ctx: CanvasRenderingContext2D,
+        value: number,
+        x: number,
+        y: number,
+        scale?: number,
+        align?: Align
+    ): void;
+
+    /**
      * Render pre-laid-out wrapped text into a bounding box, with horizontal
      * and vertical alignment.
      *
@@ -296,3 +332,14 @@ export const VERSION: string;
 
 /** Largest magnitude drawFast renders (1e21). Both endpoints inclusive. */
 export const DRAWFAST_MAX: number;
+
+/**
+ * Largest magnitude drawFastInt renders: Number.MAX_SAFE_INTEGER
+ * (9007199254740991, 16 digits). Both endpoints inclusive. The CORRECTNESS
+ * boundary, not the buffer boundary -- above 2^53 a double is not integer-exact,
+ * so drawFastInt refuses rather than render approximate digits (contrast
+ * DRAWFAST_MAX, which ships those digits as a documented approximation).
+ * Zero-allocation holds only below 2^31; larger admitted values box one
+ * HeapNumber per call in the digit loop (F-44).
+ */
+export const DRAWFASTINT_MAX: number;

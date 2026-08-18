@@ -363,11 +363,47 @@ value is scaled through a double before digit extraction. Exact below that. Valu
 outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` draw nothing. A `scale` outside
 `(0, Infinity)` draws **nothing** and returns (F-11), same as `draw`.
 
+### `drawFastInt(ctx, value, x, y, scale?, align?) -> void`
+Zero-alloc INTEGER renderer for counts -- coins, kills, score, seconds. No
+decimal point.
+
+- `NaN`, `+Infinity`, `-Infinity` -> silently skipped (returns).
+- `|value| > DRAWFASTINT_MAX` (`Number.MAX_SAFE_INTEGER`) -> silently skipped
+  (returns); draws nothing.
+- Negative values inside the door -> clamped to `0` (so `-5` renders `"0"`).
+- Requires `'0'`-`'9'` (codes 48-57) in the atlas ONLY. It does NOT require the
+  `'.'` (code 46) glyph `drawFast` requires, so a digits-only atlas can use it.
+- A `scale` outside `(0, Infinity)` draws **nothing** and returns (F-11), same
+  as `draw`.
+
+`drawFastInt` TRUNCATES toward zero: `1.9` renders `"1"`, not `"2"`. `drawFast`
+ROUNDS to the nearest tenth. This is deliberate -- `drawFast` renders a
+measurement, `drawFastInt` renders a count, and a count must never display a
+threshold it has not crossed.
+
+`DRAWFASTINT_MAX` is `Number.MAX_SAFE_INTEGER`, the **correctness** boundary, not
+`DRAWFAST_MAX`'s buffer boundary: above 2^53 a double is not integer-exact, so
+`drawFastInt` refuses the range instead of rendering approximate digits, and is
+exact by construction for every value it admits.
+
+**Allocation caveat (F-44):** zero-alloc holds only for values below 2^31; larger
+values box one HeapNumber per call in the digit loop (`drawFast` has the same
+property, routed to a follow-up session).
+
+**Which one do I want?** Counts, scores, coins, seconds -> `drawFastInt`. FPS,
+timers, fractional meters -> `drawFast`.
+
+**Contract:** `ctx.drawImage` must not re-enter the font. `drawFast` and
+`drawFastInt` share one 24-byte scratch buffer; a re-entrant ctx corrupts the
+outer call's digits. True for a `CanvasRenderingContext2D`, not for an arbitrary
+object with a `drawImage` method.
+
 ### Constants and options
 
 | Name | Value | Meaning |
 |------|-------|---------|
 | `DRAWFAST_MAX` | `1e21` | largest magnitude `drawFast` renders; outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` it draws nothing (both endpoints inclusive) |
+| `DRAWFASTINT_MAX` | `Number.MAX_SAFE_INTEGER` | largest magnitude `drawFastInt` renders; outside `[-DRAWFASTINT_MAX, DRAWFASTINT_MAX]` it draws nothing (both endpoints inclusive). The correctness boundary, not a buffer boundary |
 | `opts.missingAdvance` | `0` (default) | xadvance written into every glyph id the descriptor did not cover, so an absent glyph leaves a gap instead of overprinting the next. Opt-in; the default is byte-identical to 1.2.x. Must be finite in `[0, 32767]` or the constructor throws `BitmapFontError` (which is a `RangeError`). Id 10 is never given a missing advance |
 | `opts.checked` | `false` (default) | must be a boolean. Opens the lossy validation lane: an atlas coord past Int16, a fractional `xadvance`/`amount`, or an id/kerning key outside `[0, 256)` throws a `BitmapFontError` naming the exact drift instead of being truncated/skipped silently (F-08 detection). Inputs with no correct reading throw in both lanes. Storage is unchanged in 1.3.0; unchecked output is byte-identical |
 

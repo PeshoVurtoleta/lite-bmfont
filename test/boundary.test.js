@@ -364,3 +364,26 @@ test('drawFast(): a rejected out-of-door value leaves rec and _charScratch exact
     assert.equal(rec.total, 0);
     assert.deepEqual(Array.from(probeFont._charScratch), before);
 });
+
+// ---- QA-M8: the drawFastInt headline pin (A1) -----------------------------
+
+test('drawFastInt(120) -> 3 glyphs and NO "." ; drawFast(120) -> 5 glyphs WITH a "." (A1)', () => {
+    // Adjacent, in one block, so the DIFFERENCE is the assertion. FONT_NUM keys
+    // the '.' glyph as sw === 4 (t4-numeric decoder). drawFastInt is integer-only
+    // and must emit no '.'; drawFast renders "120.0" with exactly one.
+    // KILLS: copying drawFast's `buf[len++] = 46;` into drawFastInt -> 4 calls and
+    // a sw===4 glyph -> red.
+    resetRec(ATLAS); resetTotals();
+    FONT_NUM.drawFastInt(rec, 120, 0, 0);
+    assert.equal(rec.calls, 3, 'drawFastInt(120) draws exactly "120"');
+    let dotInt = 0;
+    for (let i = 0; i < rec.calls; i++) if (rec.sw[i] === 4) dotInt++;
+    assert.equal(dotInt, 0, 'drawFastInt must not emit the "." glyph (sw===4)');
+
+    resetRec(ATLAS); resetTotals();
+    FONT_NUM.drawFast(rec, 120, 0, 0);
+    assert.equal(rec.calls, 5, 'drawFast(120) draws "120.0"');
+    let dotFast = 0;
+    for (let i = 0; i < rec.calls; i++) if (rec.sw[i] === 4) dotFast++;
+    assert.equal(dotFast, 1, 'drawFast renders exactly one "." glyph (sw===4)');
+});

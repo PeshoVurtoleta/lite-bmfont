@@ -15,7 +15,7 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0–255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.4.1'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.5.0'.
 
 ## Export: BitmapFontError (class extends RangeError)
 The one error the constructor throws (F-10). Extends RangeError, so a
@@ -30,6 +30,18 @@ exactly 24 bytes (22 integer digits + '.' + 1 decimal), the whole internal
 scratch buffer. Outside [-DRAWFAST_MAX, DRAWFAST_MAX] drawFast draws nothing.
 BOTH endpoints are inclusive: 1e21 renders, the next double above it does not,
 so Math.max(-DRAWFAST_MAX, Math.min(DRAWFAST_MAX, v)) is always renderable.
+
+## Export: DRAWFASTINT_MAX (number)
+Number.MAX_SAFE_INTEGER (9007199254740991, 16 digits) -- the largest magnitude
+drawFastInt can render. This is the CORRECTNESS boundary, NOT the buffer boundary:
+above 2^53 a double is not integer-exact and v % 10 returns noise, so drawFastInt
+refuses the range instead of rendering approximate digits (contrast DRAWFAST_MAX,
+which ships those digits as a documented approximation -- the two constants answer
+the same principle applied to different facts). It is exact by construction for
+every value it admits. Zero-allocation holds only below 2^31; larger admitted
+values box one HeapNumber per call in the digit loop (F-44, shared with drawFast).
+BOTH endpoints inclusive, so
+Math.max(-DRAWFASTINT_MAX, Math.min(DRAWFASTINT_MAX, v)) always renders.
 
 ## Export: BitmapFont (class)
 
@@ -154,6 +166,25 @@ drawFast(ctx, value, x, y, scale = 1, align = 0) -> void
   - A `scale` outside (0, Infinity) draws NOTHING and returns (F-11), same as draw
   - Atlas must contain glyphs for '0'-'9' (48-57) and '.' (46)
   - Built for per-frame HUDs (FPS, score, timer) -- does NOT allocate a string
+
+drawFastInt(ctx, value, x, y, scale = 1, align = 0) -> void
+  Zero-alloc INTEGER renderer for COUNTS (coins, kills, score, seconds). No
+  decimal point.
+  - TRUNCATES toward zero: 1.9 renders "1", not "2". drawFast ROUNDS to the
+    nearest tenth. Deliberate: drawFast renders a measurement, drawFastInt a
+    count, and a count must never display a threshold it has not crossed.
+  - Atlas must contain glyphs for '0'-'9' (48-57) ONLY -- it does NOT require the
+    '.' (46) glyph drawFast requires, so a digits-only atlas can use this method.
+  - Ceiling is DRAWFASTINT_MAX (Number.MAX_SAFE_INTEGER), the CORRECTNESS boundary
+    not the buffer boundary; exact by construction for every admitted value.
+  - Zero-allocation holds only below 2^31; larger values box one HeapNumber per
+    call in the digit loop (F-44, shared with drawFast).
+  - NaN / +/-Infinity / |value| > DRAWFASTINT_MAX -> returns silently, draws nothing
+  - Negative values inside the door -> clamped to 0 (so -5 renders "0")
+  - A `scale` outside (0, Infinity) draws NOTHING and returns (F-11), same as draw
+  - CONTRACT: ctx.drawImage MUST NOT re-enter the font. drawFast and drawFastInt
+    share one 24-byte scratch buffer; a re-entrant ctx corrupts the outer call's
+    digits. True for CanvasRenderingContext2D, not for an arbitrary drawImage object.
 
 drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale = 1, align = 0, vAlign = 0) -> void
   Renders pre-laid-out wrapped text into a bounding box, with horizontal and vertical

@@ -141,7 +141,7 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-20** | S3 | **`draw()`/`drawFast()` center/right-align math is asserted only by directional inequality**, so an off-by-constant regression in the divisor is invisible to `npm test` and every wired torture tier. `drawWrapped()`'s align tests assert exact pixels (44, 88, 38) and are load-bearing; `draw`'s (`rec.dx[0] < 100`) are not. Closed prospectively by qa's `test/boundary.test.js`; the ported `BitmapFont.test.js` still carries the weak assertions. | scratch-edit `draw()`'s `... / 2` to `... / 3` -> `npm test` passes and `npm run torture` prints `ok`, exit 0 |
 | **F-21** | S3 | **T0 law 4 is vacuous -- the only kerning check in the torture gate never tests kerning (AR-02).** `FONT_KERN` kerns 3 pairs (A-B, B-A, A-A); the corpus is ASCII 33..126, so a random seam is 3/8836 = 0.034%. Under both shipped seeds ZERO eligible seams carry non-zero kerning, so law 4 degenerates to `left + right === full`. **Routed to M2**, which revises `t0-laws.mjs` and its corpus and builds the conservation law on top of it; fix by a seeded corpus planting A/B seams or a dense `FONT_KERN`, BEFORE the law leans on it. | default seed -> eligible 246, seams 0; seed 12345 -> eligible 247, seams 0. Deleting the kern term from `_measureRange` passes `npm run torture` clean |
 | **F-22** | S3 | **The documented word-wrap recipe does not type-check.** `README.md:124-125` and `llms.txt:75-76` read `font.glyphs[id * 7 + 6]` and `font.kerning[(prevId << 8) \| id]`; both are real `Int16Array` members at runtime and neither was declared in `BitmapFont.d.ts`. A TypeScript consumer copying the package's own answer to "compute the layoutBuffer yourself" cannot compile the primary integration path. Fixed in 1.2.2 (M1): `readonly glyphs` / `readonly kerning` declared, stride marked a cross-package contract. | `tsc` on the README recipe -> `Property 'glyphs' does not exist on type 'BitmapFont'` |
-| **F-23** | S2 | **`drawFast`'s digit loop is inexact in two bands (routed to M8, which reopens the body).** Band 1 (`\|value\| < 2^53`): off-by-one-tenth on near-ties -- `Math.round(value * 10)` rounds the float product, not the real value, breaking the documented "rounded to nearest tenth" guarantee. Band 2 (`2^53 < \|value\| <= 1e21`): the integer digits themselves are wrong and silent -- the value is scaled through a double before extraction, so it prints digits the value does not have. 15,858/191,255 in-door samples diverge (1,738 band 1, 14,120 band 2). The 1.2.2 door ceiling `DRAWFAST_MAX = 1e21` is the buffer boundary; 2^53 is the correctness boundary, chosen deliberately (see `decisions/0001`). Ground truth is a bit-exact mantissa oracle; `toFixed(1)` is exact below 1e21, the plan's `BigInt(Math.round(v*10))` oracle was rejected because it shares the library's float multiply. | `drawFast(ctx, 8.45, 0, 0)` -> `"8.5"` (exact `8.4`); `drawFast(ctx, 762638538843020900000, 0, 0)` -> `"762638538843020800088.0"` (exact `762638538843020853248.0`) |
+| **F-23** | S2 | **`drawFast`'s digit loop is inexact in two bands (originally routed to M8, which was believed to reopen the body).** **[RE-ROUTED 2026-08-18 to M8b by decisions/0005 fork 1: P-4 proved M8's `drawFastInt` shares NO arithmetic with `drawFast` -- only the 24-byte scratch buffer -- so M8 does not reopen `drawFast`. M8 shipped `drawFastInt` (1.5.0) with `drawFast` byte-frozen; F-23's fix moves to M8b (1.6.0, status next), a MINOR with both bands as declared `### Changed (behaviour)` rows. See the M8 amendment in decisions/0001.]** Band 1 (`\|value\| < 2^53`): off-by-one-tenth on near-ties -- `Math.round(value * 10)` rounds the float product, not the real value, breaking the documented "rounded to nearest tenth" guarantee. Band 2 (`2^53 < \|value\| <= 1e21`): the integer digits themselves are wrong and silent -- the value is scaled through a double before extraction, so it prints digits the value does not have. 15,858/191,255 in-door samples diverge (1,738 band 1, 14,120 band 2). The 1.2.2 door ceiling `DRAWFAST_MAX = 1e21` is the buffer boundary; 2^53 is the correctness boundary, chosen deliberately (see `decisions/0001`). Ground truth is a bit-exact mantissa oracle; `toFixed(1)` is exact below 1e21, the plan's `BigInt(Math.round(v*10))` oracle was rejected because it shares the library's float multiply. | `drawFast(ctx, 8.45, 0, 0)` -> `"8.5"` (exact `8.4`); `drawFast(ctx, 762638538843020900000, 0, 0)` -> `"762638538843020800088.0"` (exact `762638538843020853248.0`) |
 | **F-24** | S3 | **The harness oracle's pinned missing-glyph policy is NOT what the implementation does, and M2's centrepiece law is a three-way equality against that oracle.** `harness.mjs:314` documents "a character with no descriptor entry advances by ZERO **and does not become the kerning `prev`**", claiming it pins "today's implementation behaviour". The second half is false: all three walk sites (`BitmapFont.js:86`, `:168`, `:357`) set `prevId = id` for any id in `[0, 256)` regardless of whether the descriptor covered it, so an unmapped glyph DOES break the kerning chain in the library and does NOT in the oracle. Invisible under every shipped fixture because `JSON_KERN` kerns only mapped ids -- the same vacuity shape as F-21. Wire T0's law as written and it fails on day one for a reason that is not F-03/F-04/F-05/F-12. The underlying question -- does a missing glyph break the kerning chain? -- is a second, independent policy fork that M2's decision (2) does not ask. | font `{65:adv 12, 66:adv 12}`, `kern(65,66) = -5`, text `'A\u00C8B'`: `_measureRange` -> `24`, `oracleAdvance` -> `19` |
 | **F-25** | S2 | **`_measureRange` treats `\n` as a renderable glyph and runs the kerning chain THROUGH it; `draw` skips it and resets the chain.** `draw` special-cases `id === 10` (`BitmapFont.js:135`) and sets `prevId = -1`; `_measureRange` has no newline case at all, so `10` passes the `[0, 256)` guard, contributes `glyphs[10*7+6]` to the width, and stays in the kerning chain across the line break. Distinct from F-06, which is about summing line widths -- this is the newline character itself carrying advance and kerning. Silent under every shipped fixture (id 10 unmapped -> advance 0, kerning 0), so it surfaces only against a descriptor that maps id 10 (some exporters emit one) or kerns against it. M2 owns T0's newline residual assertion and must state which of the two walks is correct before it can assert the residual exactly. **Third face, measured 2026-08-17:** `drawWrapped` has no `id === 10` case at all, so against a descriptor mapping id 10 it RENDERS the newline as a visible glyph mid-line -- 3 draw calls where `draw` makes 2 on separate lines. Section 3's T0 law "drawWrapped with a one-line layout covering `[0, len)` produces the byte-identical `dx` column that `draw` produces" is therefore false for any font mapping id 10, which is a precondition of M2's centrepiece that nobody stated. | descriptor maps `{id: 10, xadvance: 7}`: `measure('A\nA')` -> `31`, `draw` dx -> `[0, 0]`, `drawWrapped` over `[0,3)` dx -> `[0, 12, 19]` |
 | **F-26** | S3 | **The F-03 guard reshape in `draw` and `drawWrapped` is unfalsifiable through the public API, and M2 shipped it anyway -- deliberately.** Revert BOTH reshaped guards to the NaN-accepting `if (id < 0 \|\| id >= 256) continue;` and `npm test` (93 blocks) and `npm run torture` (10 tiers) both stay green. The reason is structural: `draw` has no range parameters, so `charCodeAt` over `[0, len)` can never yield NaN; and after M2's H13 per-line clamp, `drawWrapped`'s indices can no longer reach the guard as NaN either. **The load-bearing F-04 fix is the clamp, not the reshape** -- reverting `if (!(startIdx >= 0)) startIdx = 0;` reddens T2 row 9 instantly. The third site, `_measureRange`, IS falsifiable, because it takes `start`/`end` as parameters: T0 law 11 kills its inversion. So one of three sites is pinned behaviourally and two are pinned only by DONE WHEN rows 7/8, which are a source-text gate a human runs, not something `npm test` or CI can see. **Routed to M6**, which promotes `start`/`end` to the public surface and thereby creates the first NaN-capable call path into `draw`'s guard; M6 must add the behavioural kill and this row closes there. Recorded rather than "fixed" because the honest options today are a synthetic test of a private path or nothing, and F-20/F-21 are both in this ledger because someone preferred a comfortable assertion to an absent one. | revert both guards -> `npm test` exit 0, `npm run torture` -> `ok` exit 0. Invert `_measureRange`'s -> `torture: FAIL -- T0.law11: _measureRange("A",0,2) NaN != 12 (NaN id leaked past the guard)` |
@@ -161,6 +161,7 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-40** | S3 | **The fork (4) amendment claims a constructed font cannot produce a NaN width from valid input; it can, so NaN is not an unambiguous fail signal.** `decisions/0004` and `SESSION-M4.md` 2.6 both record "every advance is a value out of an `Int16Array` multiplied by a finite scale, so a font that constructs cannot produce a NaN width from valid input", which is what makes NaN readable as "you gave me an argument I cannot use". Mixed-sign Int16 advances defeat it: with `xadvance: 32767` and `xadvance: -32768`, `measure('AB', Number.MAX_VALUE)` is **NaN** (`+Infinity + -Infinity`), indistinguishable from the door's fail signal, and `measure('A', Number.MAX_VALUE)` is **Infinity** -- a non-finite width from a scale the door ACCEPTS, since `Number.MAX_VALUE` passes `!(scale > 0 && scale < Infinity)`. Both behaviours are pre-existing (1.3.0 is identical) and neither is a semver delta; what is new in M4 is the record asserting they cannot happen. Recorded rather than fixed: narrowing the scale door to exclude `MAX_VALUE` would need a magnitude bound nobody has derived, and the honest repair is to state the limit. Same class as F-24 -- a record claiming a property the code does not have. Found by qa in M4; the claim is corrected in M4, the behaviour is left to M9 alongside F-08's storage half. | `chars` advances `32767` and `-32768`: `measure('AB', Number.MAX_VALUE)` -> `NaN`; `measure('A', Number.MAX_VALUE)` -> `Infinity` |
 | **F-42** | **S1** | **The F-34 hang is still reachable through `draw` and `drawWrapped`; M4 doored the measure family and left both renderers open.** `measure` (`:432`), `measureWidest` (`:467`) and `measureLine` (`:542`) each open with `typeof text !== 'string'`, and the comment at `:432` names the culprit exactly -- "`{length: Infinity, charCodeAt(){return 65}}` ... is exactly the input that hung 1.3.0 forever (F-34)". Two hundred lines below, `draw:628` and `drawWrapped:892` read `text.length` with no door at all. `draw` hangs in the line scan at `:657` (`while (lineEnd < len && text.charCodeAt(lineEnd) !== 10) lineEnd++`); `drawWrapped` hangs in the glyph walk at `:959`, because `tlen` is `Infinity` and the F-04 clamp leg `if (!(endIdx <= tlen)) endIdx = tlen;` **passes** an `Infinity` `endIdx` -- that clamp is sound only while `text.length` is finite. The 1.4.0 CHANGELOG's F-34 row reads "All three public faces now terminate", which is true of the three it means (the three MEASURE faces) and false of the package: **FIVE** public faces take `text` -- `measure`, `measureWidest`, `measureLine`, `draw`, `drawWrapped` -- two still hang, and the hanging pair is the one a caller reaches first. (`drawFast` is a renderer but takes a number; `_measureRange` is private and deliberately doorless per fork (3) A2. This row said SIX in its first draft, which was the coordinator's miscount and propagated into the M4a plan and four shipped files before M4a's reviewer caught it.) Beyond the hang the two families disagree on every non-string: `draw` RENDERS a boxed `String` and a duck-typed `{length: 2, charCodeAt}` (two glyphs), silently draws nothing for `123`, and throws a raw `TypeError` for `null`, `undefined` and `[65]` -- while all six of those return `NaN` from the measure family. So a caller who gates on `Number.isNaN(measureWidest(t))` is protected and a caller who simply calls `draw` is not. Found in the M5 precondition probe, 2026-08-18, against published 1.4.0. **Fixed in 1.4.1 (M4a)**: `draw` and `drawWrapped` gain the SAME `typeof text !== 'string'` door the measure family has carried since 1.4.0, one per CALL and zero per glyph, immediately above the scale door; both now draw nothing and return on a non-string. Five text-taking faces, one text door, two fail signals by family -- renderers draw nothing, measure faces return `NaN`. Proven out of process by T9 controls 14 and 15, each of which SIGKILLs a door-removed twin so the hang control is not vacuous (decisions/0004 fork 9). The two declared behaviour deltas (boxed `String` 1->0 glyphs; `null`/`undefined` raw `TypeError`->return) ship under CHANGELOG `Changed (behaviour)`. | out-of-process, 6 s SIGKILL: `draw(ctx, {length: Infinity, charCodeAt(){return 65}}, 0, 0)` -> `signal=SIGKILL ms=6004`; `drawWrapped(ctx, SAME, new Float32Array([0, Infinity, 8, 0]), 1, 100, 100, 0, 0)` -> `signal=SIGKILL ms=6003`; the same object through `measure` / `measureWidest` / `measureLine` -> `status=0 ms=22 RETURNED`. `draw(ctx, new String('A'), 0, 0)` -> 1 `drawImage`; `measureWidest(new String('A'))` -> `NaN` |
 | **F-43** | S3 | **Both shipped doc files state a test count that 1.4.0 itself falsified, and no gate can see it.** `llms.txt` Testing says "116 tests, 114 pass, 0 fail, 2 todo -- 85 in BitmapFont.test.js, 1 version-sync block in packaging.test.js, 27 in boundary.test.js, 3 in findings.test.js"; `README.md:418` says "**116 tests** (114 pass, 0 fail, 2 finding-watch todos". `npm test` reports **119 / 117 / 0 / 2**, with **88** in `BitmapFont.test.js` -- M4 added three assertions and rewrote the prose around these two sentences without touching either number, so the release gate passed with both files lying. Adjacent to F-14 (docs drift) but distinct: `packaging.test.js`'s sync block pins the VERSION string, which is why the drift that IS gated stayed correct and the drift that is not shipped. Nothing in `npm test` or the torture run reads either figure; closing this means a doc gate that does, not a careful re-edit. **Fixed in 1.4.1 (M4a)**: the two counts are DELETED from `README.md` and `llms.txt` and replaced with the gated statement -- `npm test` -> 0 failures, `npm run torture` -> exactly `ok`. Ratified in decisions/0004 fork 9: a count no gate can read is a liability, and pinning it behind a test that asserts its own suite's size is circular. The T8 docs-drift guard is deliberately NOT extended to counts. | `npm test` -> `tests 119 pass 117 todo 2`; per file `88 / 27 / 3 / 1`; `grep -n "116 tests" README.md llms.txt` -> two hits |
+| **F-44** | S2 | **The zero-allocation guarantee holds only below 2^31: both number renderers box one HeapNumber per call above the Smi cliff, and no shipped gate could see it.** The Law "zero allocation on any hot path" and the README/llms.txt "zero-GC" headline are the package positioning, and both are true only while the digit-loop variable stays a Smi. Above 2^31 an integer-valued double is a boxed HeapNumber, so `temp % 10` and `Math.floor(temp / 10)` each allocate a fresh box; measured deterministically at ~16 B/call (one box per call). This is the same cliff decisions/0005 section 0.4b documents for THROUGHPUT (the 11-digit knee where `temp` leaves Smi range) -- there it costs time, here it costs allocation, one mechanism. **`drawFastInt` (M8) and `drawFast` (M1) BOTH have it; `drawFast` is PRE-EXISTING, carried since it was written, and no gate ever saw it** -- T6 window B drives a 5-digit cycle (10000+) that never leaves Smi range, the retention lanes cannot see transient garbage (F-37), and the profiler maxBytesPerCall lane is itself a retention lane. M8 window G, pointed at a 16-digit cycle for the first time, is what surfaced it. `DRAWFASTINT_MAX = Number.MAX_SAFE_INTEGER` DELIBERATELY admits the 16-digit regime, so the ceiling and this caveat are linked: the constant that makes drawFastInt exact by construction is the same one that admits the allocating range. Severity **S2, the same shape as F-23**: a DOCUMENTED guarantee -- the headline zero-allocation claim -- is broken across a range the API explicitly admits. Not a crash and not a wrong pixel, but a positioning promise that is false for every value above 2^31 (2,147,483,648). **The boundary is 2^31 exactly, not an approximation** -- measured sharp: 2^31-300 allocates 0.00 B/call, 2^31+1 allocates 15.99. Values in (9e8, 2^31) are still Smi and still zero-alloc. It is not S3 because it contradicts the package lead selling point over a supported input range, not a stale count or an internal record. Found by the coder in M8 while re-calibrating T6 window G for the B2 blocker, 2026-08-19; boundary confirmed sharp by the coordinator. **NOT M8 to fix**: M8 is frozen on `drawFast` by decisions/0005 fork (1) and A7, and any repair here reopens the exact body that freeze exists to keep shut. **Routed to M8b**, which already owns `drawFast` digit extraction (F-23) and must reopen both loops anyway -- a Smi-safe integer path (an int32 fast lane below 2^31, or documenting the boundary as the honest repair if no allocation-free 16-digit algorithm exists) belongs in the one session that rewrites the arithmetic. Recorded, not fixed. | correct code, NO mutation, `allocVolume(fn)` = 20000-call warmup then 200000 calls sampling `process.memoryUsage().heapUsed` every 1024, summing positive deltas. drawFastInt 5-digit (10000+, Smi) 74,984 B / 0.4 B-per-call; 9-digit (1e8+, Smi) 27,128 B / 0.1; 11-digit (1e10+, boxed) 3,190,208 B / 16.0; 16-digit (1e15+, boxed) 3,206,720 B / 16.0; drawFast 5-digit 24,200 B / 0.1; drawFast 16-digit 3,178,544 B / 15.9. Cycle: 256 doubles `base+i`; `hot=(i)=>{rec.calls=0; FONT_NUM.drawFastInt(rec, cyc[i&255], 0, 0)}` |
 
 (The F-12 and F-24 reproduction strings contain one non-ASCII character; it is
 written here as the JS escape `'A\u00C8A'` / `'A\u00C8B'` so this file stays
@@ -565,7 +566,7 @@ M0 --> M1 --> M2 --> M3 --> M4 --> M4a ----------------+
        |      |                     |                  |
        |      +--------------------> M5 --> M6 ------+ |
        |                                             | |
-       +--> M8 --------------------------------------+ |
+       +--> M8 --> M8b --------------------------------+ |
                                                      | |
 M0 --> M7 -------------------------------------------+-+--> M9  (2.0.0)
 ```
@@ -597,6 +598,14 @@ Why each edge exists:
   was queue order and nothing else. Pulled forward to run after M4a
   (2026-08-18); M5/M6/M7 each shift one minor later. Nothing in the graph
   changes, because M8 never depended on them.
+- **M8 blocks M8b, and M8b blocks M9.** `decisions/0005` fork (1) re-routed
+  F-23 out of M8: `drawFastInt` shares no arithmetic with `drawFast`, so M8
+  froze `drawFast` byte-for-byte and left F-23 open. M8b is the session that
+  rewrites `drawFast`'s digit extraction; it depends on M8 (the freeze and the
+  ADR that routes it) and blocks M9 (which must not ship 2.0.0 with the only
+  open S2 still open). This edge is the mitigation the fork rests on -- F-23
+  drifted the first time because its routing lived in a decision doc, not a
+  brief.
 - **M7 depends only on M0.** The atlas subpath touches no hot body and no core
   file. It can be done any time after the gate exists, and it is the best
   session to hand to someone who wants a self-contained win.
@@ -2167,7 +2176,7 @@ DONE WHEN
 ```
 
 ===============================================================================
-# M8 -- lite-bmfont v1.8.0 -- `drawFastInt`
+# M8 -- lite-bmfont v1.5.0 -- `drawFastInt`
 ===============================================================================
 
 ```markdown
@@ -2178,18 +2187,19 @@ version_target: 1.5.0  # was 1.8.0; PULLED FORWARD 2026-08-18 at the user's requ
                        # position in the numbering was queue order, not a
                        # constraint. It now takes the next minor and M5/M6/M7
                        # each shift one later. M9 stays 2.0.0.
-status: next           # after M4a. Needs a precondition probe before the planner
-                       # sees it -- this brief predates M0 and has not been
-                       # re-baselined against the shipped code.
+status: done           # 2026-08-18; drawFastInt + DRAWFASTINT_MAX shipped in 1.5.0.
+                       # drawFast byte-frozen (A7, body sha == 1a962c5). F-23 NOT
+                       # fixed here -- RE-ROUTED to M8b by decisions/0005 fork 1.
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler"]
-findings: []           # CORRECTED 2026-08-18: was [F-01, F-02]; BOTH closed by M1
-                       # in 1.2.2. M8 closes no open finding -- it is a pure
-                       # feature session, and its reviewer should be told so.
-                       # Same staleness M5 carried ([F-03, F-12], also closed).
+findings: [F-23]      # RE-CORRECTED 2026-08-18 by the precondition probe (P-2).
+                       # Was [F-01, F-02] (both closed by M1 in 1.2.2), which I
+                       # then over-corrected to []. Wrong: M1 OPENED F-23 and
+                       # routed it HERE. F-23 is the only open S2 in the package.
+                       # M8 is NOT a pure feature session. See P-1.
 depends_on: [M1]       # satisfied since 1.2.2 -- nothing blocks this session
 blocks: [M9]
 ---
@@ -2235,6 +2245,59 @@ THE DECISION (record it before coding)
   (9007199254740991, 16 digits), exported as `DRAWFASTINT_MAX`, with the same
   silent-no-draw policy as M1. Rendering 18 confident digits of a number that
   only has 16 is a lie the package should not tell.
+
+PRECONDITION PROBE (2026-08-18, run before the planner saw this brief)
+  This brief predates M0 and was written before M1 measured F-23. Five defects
+  in the brief itself, every one verified by command, not by reading:
+
+  P-1 SCOPE CONTRADICTION -- blocker, and the fork the planner must ratify.
+      This brief says "`git diff BitmapFont.js` shows zero change inside
+      `drawFast`" and DONE WHEN says "drawFast diff-clean".
+      `decisions/0001` (RATIFIED) says F-23's "digit-extraction rewrite belongs
+      there [M8] ... which already reopens `drawFast`", and
+      `test/torture/t4-numeric.mjs:176-187` pins BOTH bands with the literal
+      operator message "(M8 will change this)", constructed so M8's arithmetic
+      fix forces the tier RED rather than passing either way. The brief and the
+      ledger cannot both be obeyed. This is fork (1) of `decisions/0005`.
+
+  P-2 `findings: []` was WRONG, and it was my own over-correction. F-01/F-02
+      are closed, but M1 OPENED F-23 and routed it here. F-23 is the only open
+      S2 in the package. Corrected to [F-23] in the front matter above.
+      (F-22, opened by the same session, was fixed in 1.2.2 and is closed.)
+
+  P-3 THE SWEEP'S ORACLE CONTRADICTS THE SWEEP'S OWN CLAMP RULE. ASSERTIONS
+      require every accepted value to match `String(Math.trunc(v))`, and the
+      sweep includes -1. Negatives clamp to 0, so -1 renders "0" while that
+      oracle demands "-1": 1 clash in 20 rows, measured. The oracle is
+      `String(Math.trunc(v < 0 ? 0 : v))`. Separately, the sweep lists both
+      `2^53 - 1` and `MAX_SAFE_INTEGER`; they are the SAME number, so the
+      sweep has 19 distinct rows, not 20.
+
+  P-4 "the same two bugs before it is even written" is FALSE as specified, and
+      this is the probe's most useful result. F-23 band 1 needs the
+      `Math.round(value * 10)` that `drawFastInt` does not have; band 2 needs
+      |v| > 2^53, which the `MAX_SAFE_INTEGER` ceiling excludes by
+      construction. 600,059 samples through the verbatim shape of the shipped
+      loop (every power of ten and its two neighbours, 2^31, 2^32, 2^52,
+      MAX-1, the top decade dense, 300k uniform across the whole admitted
+      range) -- ZERO mismatches against `String(v)`. `drawFastInt` is EXACT BY
+      CONSTRUCTION, and the ceiling is the thing that makes it so. That is the
+      reason for the ceiling, not a side effect of it, and the docs should say
+      so. It also means "duplicate the loop" copies a body that is sound at
+      the new ceiling even while it is defective at drawFast's.
+
+  P-5 The decision doc is `decisions/0005-drawfastint.md`, NOT 0008. Slots
+      0005-0007 were reserved for M5/M6/M7 back when those preceded M8; they
+      now land after it. Existing: 0001-0004.
+
+  CONFIRMED SOUND, so the planner need not re-probe these: `_charScratch` is
+  24 bytes (`BitmapFont.js:187`) with exactly two touch points today
+  (`drawFast` :771, `destroy` :1057), so option A is a 2-way share.
+  `MAX_SAFE_INTEGER` is 16 digits into a 24-byte scratch. The harness
+  recording ctx exposes a plain `drawImage` method
+  (`test/torture/harness.mjs:102`), so the T9 re-entrancy control is writable
+  rather than hypothetical. Baseline suite at 1.4.1: 119 tests, 117 pass,
+  0 fail, 2 todo; torture ok.
 
 TASKS
   - Write decisions/0008-drawfastint.md BEFORE coding.
@@ -2295,6 +2358,80 @@ DONE WHEN
 ```
 
 ===============================================================================
+# M8b -- lite-bmfont v1.6.0 -- drawFast's digit extraction (F-23)
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.6.0
+status: next           # created 2026-08-18 by M8 (decisions/0005 fork 1). F-23
+                       # is the only open S2 in the package; it is re-routed here
+                       # with its own brief rather than left as a sentence in a
+                       # decision doc, which is how it drifted the first time.
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler"]
+findings: [F-23, F-44]  # F-23 RE-ROUTED here from M8 by decisions/0005 fork 1.
+                       # P-4 proved drawFastInt shares no arithmetic with drawFast,
+                       # only the scratch buffer, so M8 did not reopen drawFast.
+                       # F-44 (S2, HeapNumber boxing above 2^31) is routed here by
+                       # M8 too: both loops box, this session reopens both, and
+                       # the boxing is inseparable from the digit arithmetic. It
+                       # forces a reckoning with alloc_bytes_per_op: 0 below --
+                       # that budget holds only in the Smi range and M8b must
+                       # either derive a Smi-safe path or document the boundary.
+depends_on: [M8]       # needs M8's frozen drawFast (the before-side of the fix)
+                       # and decisions/0005 (which routes F-23 here)
+blocks: [M9]           # 2.0.0 must not ship with the only open S2 still open
+---
+
+# lite-bmfont -- drawFast must stop printing digits the value does not have
+
+WHY THIS IS A MINOR, NOT A MAJOR OR A PATCH (decisions/0005 fork 4, ratified)
+  M1 shipped the drawFast magnitude door as a PATCH (1.2.2) even though it
+  removed output a caller could see, because that class of change -- confined to
+  inputs that were already broken -- ships without a major. F-23's two bands sit
+  on opposite sides of that line and both land minor-side:
+    - Band 1 is CONFORMANCE, not a behaviour change: 8.45 renders "8.5" where the
+      exact tenth is "8.4", violating the published "rounded to nearest tenth"
+      guarantee. Making it conform is a fix a caller cannot have pinned.
+    - Band 2 changes digits the docs already declare "approximate" (llms.txt,
+      the .d.ts). A caller cannot pin a value the documentation disowns.
+  Unlike M1's patch, this delta lands on in-door values that render TODAY and
+  will render DIFFERENTLY, so it earns a MINOR. Both bands ship as declared rows
+  under `### Changed (behaviour)` with a before/after value in each row.
+
+THE FIX
+  Replace drawFast's `Math.round(value * 10)` / `Math.floor(scaled / 10)` digit
+  extraction with an exact scheme (the approach drawFastInt already uses for the
+  integer part, extended to the one decimal place). The multiply is the entire
+  defect: band 1 is Math.round on a float PRODUCT rather than the real value;
+  band 2 is `value * 10` overflowing the 53-bit significand. drawFastInt (M8) is
+  the proven-exact reference for the integer digits.
+
+DONE WHEN (the six M8 T4 pins INVERT -- they pin the DEFECT today; M8b flips each)
+  1. drawFast(ctx, 8.45, 0, 0)          -> "8.4"  (today "8.5"; band 1)
+  2. drawFast(ctx, 999999.95, 0, 0)     -> the exact tenth (today "1000000.0")
+  3. drawFast(ctx, 762638538843020900000, 0, 0) -> the exact digits
+                                            (today "762638538843020800088.0"; band 2)
+  4. drawFast(ctx, 4858154237736017000, 0, 0)   -> the exact digits
+                                            (today "4858154237736017846.0"; band 2)
+  5-6. the two T4 `check(s !== ex, ...)` legs (band 1 and band 2) now assert
+     `s === ex` -- the library output EQUALS the bit-exact oracle. Rewrite the
+     pin messages from "re-routed fix ... landed early? re-open the pin" to the
+     positive conformance assertion.
+  Also: t9-controls.mjs control 17's set extends UP to DRAWFAST_MAX (the band-2
+     exclusion comment is removed, since drawFast is exact everywhere after M8b).
+  And: drawFast's body sha is NO LONGER frozen against 1a962c5 -- update the M8
+     A7 freeze list to drop drawFast (the other nine bodies stay frozen).
+  npm test 0 fail; node --expose-gc test/torture.mjs prints "ok"; both bands as
+  `### Changed (behaviour)` rows in CHANGELOG 1.6.0 with before/after values.
+```
+
+===============================================================================
 # M9 -- lite-bmfont v2.0.0 -- the breaking consolidation
 ===============================================================================
 
@@ -2309,7 +2446,7 @@ alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak", "@zakkster/lite-text-layout"]
 findings: [F-06, F-08, F-09, F-13, F-14]
-depends_on: [M4, M6, M7, M8]
+depends_on: [M4, M6, M7, M8, M8b]
 ---
 
 # lite-bmfont -- collect every breaking change into one major

@@ -23,7 +23,7 @@
 
 import {
     rec, resetRec, nanScan, runOpsGate, runAllocGate, die,
-    oracleAdvance, FONT_ASCII, JSON_ASCII, ATLAS,
+    oracleAdvance, FONT_ASCII, FONT_NUM, JSON_ASCII, ATLAS,
 } from './harness.mjs';
 import { BitmapFont, BitmapFontError } from '../../BitmapFont.js';
 import { createLeakTracker } from '@zakkster/lite-leak';
@@ -356,6 +356,84 @@ export function run() {
         if (nw.signal !== 'SIGKILL') {
             die('T9 control 15: the door-removed drawWrapped RETURNED (status=' + nw.status +
                 ' signal=' + nw.signal + ') -- the hang control is vacuous and F-42 is not actually gated');
+        }
+    }
+
+    // ---- M8 control 16 -- the shared-scratch re-entrancy contract (fork 2) ---
+    // A NEW child (no source patch, so no marker budget): it supplies a HOSTILE
+    // ctx, it does not run a broken build. The contract line in the source
+    // header, README, llms.txt and .d.ts says ctx.drawImage must not re-enter the
+    // font; this control violates it and proves the corruption is REAL. A
+    // contract nobody can violate in a test is decorative.
+    const echild = new URL('./t9-reentry-child.mjs', import.meta.url).pathname;
+    const spawnReentry = (mode, ms) => spawnSync(process.execPath, [echild, mode],
+        { timeout: ms, killSignal: 'SIGKILL', encoding: 'utf8' });
+    {
+        // Lane 1: the NON-VACUITY twin. A ctx that records nothing passes every
+        // corruption check trivially, so prove the recording path first.
+        const c = spawnReentry('clean', 4000);
+        if (c.status !== 0 || c.signal !== null) {
+            die('T9 control 16: the clean reentry child did not exit 0 (status=' + c.status +
+                ' signal=' + c.signal + ') stderr: ' + (c.stderr || '').trim());
+        }
+        const cd = JSON.parse(c.stdout.trim());
+        if (!(cd.glyphs === '12345' && cd.calls === 5)) {
+            die('T9 control 16: the clean lane rendered ' + JSON.stringify(cd) +
+                ' -- expected glyphs "12345", calls 5 (the recording path is broken, not the library)');
+        }
+        // Lane 2: the violation. A re-entrant ctx MUST corrupt the outer digits.
+        const r = spawnReentry('reenter', 4000);
+        if (r.status !== 0 || r.signal !== null) {
+            die('T9 control 16: the reentry child did not exit 0 (status=' + r.status +
+                ' signal=' + r.signal + ') stderr: ' + (r.stderr || '').trim());
+        }
+        const rd = JSON.parse(r.stdout.trim());
+        // The inner call must have HAPPENED (risk e): innerGlyphs proves the
+        // nested drawFastInt(99) ran before we judge the outer call corrupt.
+        if (rd.innerGlyphs !== '99') {
+            die('T9 control 16: the nested drawFastInt(99) did not run (innerGlyphs=' +
+                JSON.stringify(rd.innerGlyphs) + ') -- the depth guard skipped the re-entry, so ' +
+                'the corruption test never fired');
+        }
+        if (rd.outerGlyphs === '12345') {
+            die('T9 control 16: a re-entrant ctx did NOT corrupt drawFastInt -- the ' +
+                'shared-scratch contract line in README/llms.txt/the source header is decorative. ' +
+                'Either a second scratch was allocated (decisions/0005 fork 2 was reversed without ' +
+                'amending the ADR) or this control no longer re-enters.');
+        }
+    }
+
+    // ---- M8 control 17 -- the digit-loop divergence detector -----------------
+    // drawFast and drawFastInt DUPLICATE the digit loop (decisions/0005: they may
+    // not be merged -- one is exact above 2^53, the other is not). This control
+    // is BEHAVIOURAL, not a source diff: for integers spanning 1..16 digits,
+    // drawFastInt(n) must decode to drawFast(n) with the trailing ".0" removed.
+    // Reddens on a digit-order inversion, a radix mistake, a dropped digit, or an
+    // off-by-one in EITHER loop's bound -- the strings diverge.
+    //
+    // BAND-2 EXCLUSION (F-23, decisions/0001). The set stops well below where
+    // drawFast's `value * 10` overflows the 53-bit significand. Empirically
+    // drawFast is ALREADY inexact at 2^53 - 1 (it renders "...990", because
+    // 10*(2^53-1) is not representable) -- that is drawFast's KNOWN defect, NOT a
+    // loop divergence, so admitting it would give a failure that is F-23 wearing
+    // control 17's message. When M8b fixes F-23 this set extends to DRAWFAST_MAX
+    // (an M8b DONE-WHEN row). Every value below is verified drawFast-exact.
+    {
+        const SET = [1, 7, 9, 10, 42, 99, 100, 512, 999, 1000, 65535, 12345,
+            100000, 999999, 1000000, 16777216, 2147483647, 2147483648, 4294967296,
+            100000000000, 999999999999, 900000000000000, 1000000000000000, 4503599627370496];
+        let s = '';
+        const cctx = { drawImage(img, sx, sy, sw) { s += String.fromCharCode(sw === 4 ? 46 : 48 + sx / 10); } };
+        for (let i = 0; i < SET.length; i++) {
+            const n = SET[i];
+            s = ''; FONT_NUM.drawFastInt(cctx, n, 0, 0);
+            const viaInt = s;
+            s = ''; FONT_NUM.drawFast(cctx, n, 0, 0);
+            const viaFast = s.slice(0, -2);   // strip the ".0"
+            if (viaInt !== viaFast) {
+                die('T9 control 17: n=' + n + ' drawFastInt -> "' + viaInt + '" but drawFast -> "' +
+                    viaFast + '.0" -- the two duplicated digit loops diverged');
+            }
         }
     }
 }
