@@ -76,7 +76,7 @@ Each line is **4 consecutive Float32 values**:
 |------|---------|
 | `[0]` | `startIdx` — char index in `text` where this line begins (inclusive) |
 | `[1]` | `endIdx` — char index in `text` where this line ends (exclusive) |
-| `[2]` | `lineWidth` — measured pixel width of this line **at `scale=1`** |
+| `[2]` | `lineWidth` -- measured pixel width of this line **at the rendered scale** |
 | `[3]` | `flags` — `0` = normal line; `1` = append `…` ellipsis after content |
 
 The buffer must hold at least `lineCount * 4` floats; surplus capacity is ignored, so you

@@ -580,16 +580,20 @@ describe('BitmapFont.drawWrapped', () => {
         assert.equal(rec.imgMismatch, 0);
     });
 
-    test('scales lineWidth correctly for h-alignment', () => {
-        // scale=2, lineWidth-at-scale-1 = 12 -> effective line width = 24.
-        // Center: cursorX = (100 - 24)/2 = 38.
+    test('does NOT re-scale lineWidth for h-alignment (F-45)', () => {
+        // F-45, 1.6.0: `lineWidth` arrives at the RENDERED scale (the
+        // text-layout producer already baked `scale` in), so `drawWrapped`
+        // compares it DIRECTLY to `boxWidth` and does NOT multiply by `scale`.
+        // scale=2, lineWidth=12 (already rendered px). Center:
+        // cursorX = (100 - 12)/2 = 44. (Before the fix this asserted 38, which
+        // encoded the double-scale defect as intent -- see decisions/0006.)
         const atlas = {};
         resetRec(atlas);
         const ctx = rec;
         const font = new BitmapFont(atlas, makeWrapFont());
         const layout = makeLayout([{ start: 0, end: 1, width: 12 }]);
         font.drawWrapped(ctx, 'A', layout, 1, 100, 100, 0, 0, 2, 1, 0);
-        assert.equal(rec.dx[0], 38);
+        assert.equal(rec.dx[0], 44);
         assert.equal(rec.dropped, 0);
         assert.equal(rec.imgMismatch, 0);
     });

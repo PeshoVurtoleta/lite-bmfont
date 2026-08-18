@@ -15,7 +15,7 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0–255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.5.0'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.6.0'.
 
 ## Export: BitmapFontError (class extends RangeError)
 The one error the constructor throws (F-10). Extends RangeError, so a
@@ -199,7 +199,7 @@ drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale
   - `layoutBuffer`: Float32Array, `lineCount * 4` floats:
         [0] startIdx   — start char index into `text` (inclusive)
         [1] endIdx     — end char index into `text` (exclusive)
-        [2] lineWidth  — pixel width of this line AT scale=1 (used for alignment)
+        [2] lineWidth  - pixel width of this line AT THE RENDERED scale (used for alignment)
         [3] flags      — 0 = normal; 1 = append "..." ellipsis after content
   - Surplus capacity in `layoutBuffer` is ignored — reuse one buffer across renders.
   - Contract, enforced (1.2.3):

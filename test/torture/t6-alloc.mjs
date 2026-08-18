@@ -1,7 +1,8 @@
 /**
  * T6 -- the zero-alloc gate (F-17).
  *
- * SIX windows (A-D from M0/M2, E and F added in M4), run STRICTLY
+ * SEVEN windows (A-D from M0/M2, E and F added in M4, C2 added in M2a for the
+ * F-45 align path), run STRICTLY
  * SEQUENTIALLY (the profiler is one-measurement-at-a-time and throws
  * "already in flight" if nested). Each window is gated on TWO lanes:
  *   - measureOps + checkNoGc (RULES): an allocation RATE gate. maxMajor:0,
@@ -226,6 +227,28 @@ export function run() {
         gateOps(report, summary, 'C');
         const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
         gateAlloc(aReport, result, 'C');
+    }
+
+    // --- Window C2 (M2a): drawWrapped() on the ALIGN path, scale 2, align 1 -----
+    // Window C above runs align 0, so the per-line centring block (F-45) has NO
+    // alloc coverage. Same 8 x 8 = 64-glyph layout, but scale 2 / align 1 /
+    // boxWidth > 0 so `if (align > 0 && boxWidth > 0)` fires every line. The fix
+    // is pure deletion (two fewer multiplies on the per-LINE path, zero per
+    // glyph), so this window must gate at zero bytes exactly as C does.
+    {
+        const OPS = 100000, WARMUP = 2500, GLYPHS = 64;
+        resetRec(ATLAS); resetTotals();
+        const hot = (i) => {
+            rec.calls = 0;
+            FONT_ASCII.drawWrapped(rec, WRAP_TEXT, WRAP_LAYOUT, 8, 200, 200, 0, 0, 2, 1, 0);
+        };
+        const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+        check(rec.total === (OPS + WARMUP) * GLYPHS,
+            () => 'T6/C2: rec.total ' + rec.total + ' != ' + ((OPS + WARMUP) * GLYPHS));
+        structural(FONT_ASCII, 'C2');
+        gateOps(report, summary, 'C2');
+        const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
+        gateAlloc(aReport, result, 'C2');
     }
 
     // --- Window D: measure() -- no drawImage, 0 glyphs --------------------------

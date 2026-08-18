@@ -18,10 +18,14 @@
  */
 
 import {
-    check, nanScan, rec, resetRec, ATLAS,
+    check, nanScan, rec, resetRec, die, ATLAS,
     FONT_ASCII, FONT_NL, JSON_ASCII, WRAP_TEXT, WRAP_LAYOUT,
 } from './harness.mjs';
 import { BitmapFont } from '../../BitmapFont.js';
+import { spawnSync } from 'node:child_process';
+import {
+    PEER_VERSION, PARAGRAPH, BOX_WIDTH, SCALES, ROWS,
+} from './fixtures/wrap-lineWidth.mjs';
 
 const TEXT = 'HELLO';
 const CLEAN_DX = [0, 12, 24, 36, 48];
@@ -42,10 +46,12 @@ function invariants(label) {
     check(rec.dropped === 0 && rec.imgMismatch === 0,
         () => 'T2/' + label + ': dropped ' + rec.dropped + ' imgMismatch ' + rec.imgMismatch);
 }
-/** Run a drawWrapped with the base scalars and a given layout/lineCount. */
-function wrap(layout, lineCount, boxW = 1000, boxH = 1000) {
+/** Run a drawWrapped with the base scalars and a given layout/lineCount.
+ * `scale`/`align` default to 1/0 so every pre-M2a row stays byte-identical --
+ * the align matrix below (F-45) is the only caller that passes anything else. */
+function wrap(layout, lineCount, boxW = 1000, boxH = 1000, scale = 1, align = 0) {
     resetRec(ATLAS);
-    FONT_ASCII.drawWrapped(rec, TEXT, layout, lineCount, boxW, boxH, 0, 0, 1, 0, 0);
+    FONT_ASCII.drawWrapped(rec, TEXT, layout, lineCount, boxW, boxH, 0, 0, scale, align, 0);
 }
 
 export function run() {
@@ -254,6 +260,159 @@ export function run() {
     check(dy75 === rec.dy[0],
         () => 'T2/22: lineCount 7.5 dy[0] ' + dy75 + ' != lineCount 7 dy[0] ' + rec.dy[0] + ' (totalHeight used 7.5?)');
     invariants('22');
+
+    // rows 23a-23i: THE F-45 ALIGN MATRIX -- {scale 0.5, 1, 2} x {align 0, 1, 2}.
+    // Before M2a this whole surface was UNCOVERED: wrap() hardcoded align 0, so
+    // every centre/right line at scale != 1 was double-scaled and unseen. The
+    // oracle is the per-line `draw`: drawWrapped centres a line inside `boxWidth`
+    // at container x, and draw centres a line AROUND its x by subtracting half
+    // its own measured width -- so `draw(TEXT, x + [0, BW/2, BW][align], ...)`
+    // lands the same glyphs iff drawWrapped compares rendered px to rendered px.
+    // `draw` reads NO buffer lineWidth (F-45: 0 occurrences in its body), so
+    // reinstating `lineWidth * scale` moves drawWrapped and NOT the oracle -- the
+    // detector reddens. align 0 is UNCHANGED by the fix at every scale; asserting
+    // it is what lets the matrix tell "alignment fixed" from "all X shifted".
+    const MBOX = 200;                 // rendered-px box for the matrix
+    const MLINE = TEXT.length * 12;   // HELLO: 5 glyphs advance 12, scale-1 width
+    const XOFF = [0, MBOX / 2, MBOX]; // draw-oracle x per align: left/centre/right
+    for (const scale of [0.5, 1, 2]) {
+        const lineWidth = MLINE * scale;   // the RENDERED-scale width the producer emits
+        const buf = Float32Array.of(0, TEXT.length, lineWidth, 0);
+        for (let align = 0; align < 3; align++) {
+            // drawWrapped: one centred/aligned line in the box.
+            resetRec(ATLAS);
+            FONT_ASCII.drawWrapped(rec, TEXT, buf, 1, MBOX, 1000, 0, 0, scale, align, 0);
+            const got = rec.dx.slice(0, rec.calls);
+            const gotCalls = rec.calls;
+            // oracle: the same slice through draw at the matching origin.
+            resetRec(ATLAS);
+            FONT_ASCII.draw(rec, TEXT, XOFF[align], 0, scale, align);
+            const lbl = 'scale ' + scale + ' align ' + align;
+            check(rec.calls === gotCalls,
+                () => 'T2/matrix ' + lbl + ': drawWrapped drew ' + gotCalls +
+                      ' glyphs, draw oracle drew ' + rec.calls);
+            for (let g = 0; g < rec.calls; g++) {
+                check(got[g] === rec.dx[g],
+                    () => 'T2/matrix ' + lbl + ': dx[' + g + '] drawWrapped ' + got[g] +
+                          ' != draw oracle ' + rec.dx[g] +
+                          ' (reinstated lineWidth * scale? see F-45)');
+            }
+            invariants('matrix ' + lbl);
+        }
+    }
+    // The two named detector cells, pinned as literals so a reader sees the
+    // numbers directly (first glyph dst x, xoffset 0; HELLO rendered width at
+    // scale 2 is 120 in a 200-px box). Before the fix the double-scale gave
+    // (200 - 240)/2 = -20 centre and 200 - 240 = -40 right; the fix gives
+    // (200 - 120)/2 = 40 and 200 - 120 = 80, matching the draw oracle.
+    wrap(Float32Array.of(0, TEXT.length, MLINE * 2, 0), 1, MBOX, 1000, 2, 1);
+    check(rec.dx[0] === 40, () => 'T2/matrix scale 2 align 1: first dx ' + rec.dx[0] + ' != 40');
+    wrap(Float32Array.of(0, TEXT.length, MLINE * 2, 0), 1, MBOX, 1000, 2, 2);
+    check(rec.dx[0] === 80, () => 'T2/matrix scale 2 align 2: first dx ' + rec.dx[0] + ' != 80');
+
+    // rows 24: LANE 1 (F-45, decisions/0006 D-3) -- END TO END against the FROZEN
+    // computeWrap fixture. For every committed layout at scale 0.5/1/2, centre and
+    // right, drawWrapped must be glyph-for-glyph identical to the per-line `draw`
+    // oracle. `draw` reads no buffer lineWidth, so a reinstated `* scale` moves
+    // drawWrapped and not the oracle. This lane ALWAYS runs -- no dependency.
+    {
+        // A3 twin: at least one MULTI-line layout at scale != 1, or the per-line
+        // loop is never exercised and the fixture proves nothing about wrapping.
+        check(ROWS[2].length >= 2,
+            () => 'T2/lane1: the scale-2 fixture is single-line (' + ROWS[2].length +
+                  ' rows) -- the multi-line path is uncovered');
+        const OX = [0, BOX_WIDTH / 2, BOX_WIDTH];   // draw-oracle x per align
+        for (const scale of SCALES) {
+            const rows = ROWS[scale];
+            const flat = new Float32Array(rows.length * 4);
+            for (let l = 0; l < rows.length; l++) {
+                flat[l * 4] = rows[l][0]; flat[l * 4 + 1] = rows[l][1];
+                flat[l * 4 + 2] = rows[l][2]; flat[l * 4 + 3] = rows[l][3];
+            }
+            for (const align of [1, 2]) {
+                resetRec(ATLAS);
+                FONT_ASCII.drawWrapped(rec, PARAGRAPH, flat, rows.length, BOX_WIDTH, 1000, 0, 0, scale, align, 0);
+                const wCalls = rec.calls;
+                const wdx = rec.dx.slice(0, wCalls);
+                // Rebuild the oracle: each committed line drawn on its own at the
+                // matching container origin.
+                let k = 0;
+                let ok = true;
+                for (const [s, e] of rows) {
+                    resetRec(ATLAS);
+                    FONT_ASCII.draw(rec, PARAGRAPH.slice(s, e), OX[align], 0, scale, align);
+                    for (let g = 0; g < rec.calls; g++) {
+                        if (k >= wCalls || wdx[k] !== rec.dx[g]) ok = false;
+                        k++;
+                    }
+                }
+                const lbl = 'scale ' + scale + ' align ' + align;
+                check(ok && k === wCalls,
+                    () => 'T2/lane1 ' + lbl + ': drawWrapped disagrees with the per-line ' +
+                          'draw oracle (fixture ' + PEER_VERSION + '; reinstated lineWidth * scale?)');
+                invariants('lane1 ' + lbl);
+            }
+        }
+    }
+
+    // rows 24b: LANE 2 (F-45, decisions/0006 D-3) -- the DRIFT GUARD. Runs the
+    // real computeWrap out of process (run() is sync, the peer is ESM) and asserts
+    // the regenerated buffers are BYTE-IDENTICAL to lane 1's fixture. If the peer
+    // is not locally wired it prints a visible TODO and the run still exits 0 --
+    // never a silent skip (risk rank 3). If a float differs the producer's
+    // contract moved and the fixture is stale: DIE naming both versions.
+    {
+        const child = new URL('./t2-lane2-child.mjs', import.meta.url).pathname;
+        const r = spawnSync(process.execPath, [child], { timeout: 20000, encoding: 'utf8' });
+        if (r.status === 7) {
+            process.stderr.write(
+                'torture: TODO -- T2 lane 2 (F-45 drift guard) did not run: ' +
+                '@zakkster/lite-text-layout is not locally wired. Symlink it into ' +
+                'node_modules/@zakkster/ (or npm link) to enable. Lane 1 ran against ' +
+                'the frozen ' + PEER_VERSION + ' fixture.\n');
+        } else if (r.status === 3) {
+            die('T2 lane 2: the peer resolved but its computeWrap surface moved -- ' +
+                (r.stderr || '').trim());
+        } else if (r.status !== 0 || r.signal !== null) {
+            die('T2 lane 2: peer child exited status=' + r.status + ' signal=' + r.signal +
+                ' -- ' + (r.stderr || '').trim());
+        } else {
+            let live;
+            try { live = JSON.parse(r.stdout); }
+            catch { die('T2 lane 2: peer child stdout was not JSON: ' + r.stdout.slice(0, 200)); }
+            let allSame = true;
+            for (const scale of SCALES) {
+                const want = ROWS[scale];
+                const got = live.rows[String(scale)];
+                let same = Array.isArray(got) && got.length === want.length;
+                if (same) {
+                    for (let l = 0; l < want.length && same; l++) {
+                        for (let j = 0; j < 4; j++) {
+                            if (got[l][j] !== want[l][j]) { same = false; break; }
+                        }
+                    }
+                }
+                if (!same) allSame = false;
+                check(same, () => 'T2 lane 2: DRIFT at scale ' + scale +
+                    ' -- fixture (' + PEER_VERSION + ') ' + JSON.stringify(want) +
+                    ' != live (' + live.version + ') ' + JSON.stringify(got) +
+                    '. The producer contract moved; regenerate the fixture.');
+            }
+            // The rows can be byte-identical while the provenance stamp is stale --
+            // a routine peer version bump that changed nothing observable. That is
+            // NOT drift (the rows already proved that) but the stamp is still wrong,
+            // and D-3 says the stamp is what makes this a fixture instead of a
+            // guess. Visible, non-fatal: name both versions and tell the reader to
+            // re-bless the fixture. Never let a routine bump redden the build.
+            if (allSame && live.version !== PEER_VERSION) {
+                process.stderr.write(
+                    'torture: TODO -- T2 lane 2 fixture stamp is stale: rows are still ' +
+                    'byte-identical, but the fixture is stamped ' + PEER_VERSION +
+                    ' and the locally wired peer is ' + live.version + '. Re-bless the ' +
+                    'provenance stamp in fixtures/wrap-lineWidth.mjs.\n');
+            }
+        }
+    }
 
     // Tier-wide budget (row 25).
     const elapsed = Date.now() - t2start;

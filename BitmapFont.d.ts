@@ -275,7 +275,7 @@ export class BitmapFont {
      * and vertical alignment.
      *
      * `layoutBuffer` is a Float32Array of `lineCount * 4` floats, packed as:
-     *   `[startIdx, endIdx, lineWidth (at scale=1), flags]` per line.
+     *   `[startIdx, endIdx, lineWidth (at the rendered scale), flags]` per line.
      * The `flags` word is read as a bitfield: bit 0 appends an `"..."` ellipsis.
      * It is ToInt32'd first, so `1.0000001` (a Float32 rounding artifact) still
      * fires (F-13). A bit outside the known mask throws under `{ checked: true }`

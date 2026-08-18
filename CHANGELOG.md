@@ -2,6 +2,38 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.6.0 -- 2026-08-19
+
+`drawWrapped` and its canonical producer shipped contradictory contracts for one
+float, and every centre/right-aligned wrapped line was mispositioned at any
+`scale != 1`. `@zakkster/lite-text-layout`'s `computeWrap` emits `lineWidth` at
+the RENDERED scale (its RANGE-CONTRACT says so, drift-guarded across four
+surfaces); bmfont's Law claimed scale=1 and multiplied by `scale` again before
+comparing to the already-rendered-px `boxWidth`. The two operands disagreed by a
+factor of `scale`. F-45. Decision record: `decisions/0006-layout-buffer-scale.md`.
+
+### Changed (behaviour)
+- **`drawWrapped` no longer re-scales the layout buffer's `lineWidth`.** It now
+  compares `lineWidth` DIRECTLY to `boxWidth`, both rendered px, adopting the
+  producer's `lineWidth@render-scale` convention (decision D-1). Centre/right
+  alignment was off by the closed form **`lineWidth * (scale - 1) / 2`** (centre)
+  and **`lineWidth * (scale - 1)`** (right) -- identically zero at `scale = 1`,
+  which is why it shipped through three versions.
+  - Worked example, advance-12 font, one 5-glyph line (rendered width 120) in a
+    200-px box at **scale 2**, centre align: the first glyph's dst x was **-20**
+    (`(200 - 240)/2`, off the LEFT edge of the box) and is now **40**
+    (`(200 - 120)/2`). Right align: **-40** -> **80**.
+  - Who regresses: a caller who hand-rolled a scale-1-width buffer and used
+    centre/right align at `scale != 1` was getting correct pixels under the old
+    documented contract and now shifts. That population is out-of-contract only
+    because the canonical producer is broken today, so this ships MINOR (D-2) with
+    this loud row rather than as a patch. `draw`/`drawFast`/`drawFastInt`/`measure`
+    are UNAFFECTED -- only `drawWrapped` reads the layout buffer.
+
+### Docs
+- All five `lineWidth` sites (`BitmapFont.js`, `BitmapFont.d.ts`, `README.md`,
+  `llms.txt`, `ROADMAP.md`) now state render scale; the old scale=1 claim is gone.
+
 ## 1.5.0 -- 2026-08-18
 
 `drawFastInt`, a second zero-alloc number renderer for integer COUNTS -- coins,

@@ -987,7 +987,8 @@ export class BitmapFont {
      *
      *     [0] startIdx  — start char index into `text` (inclusive)
      *     [1] endIdx    — end char index into `text` (exclusive)
-     *     [2] lineWidth — pixel width of this line **at scale=1** (used for alignment)
+     *     [2] lineWidth  - pixel width of this line **at the RENDERED scale**
+     *                      (compared directly against boxWidth; F-45)
      *     [3] flags     — 0 = normal line; 1 = append "..." ellipsis after content
      *
      * **Contract, enforced (1.2.3):**
@@ -1117,11 +1118,23 @@ export class BitmapFont {
 
             let cursorX = x;
 
-            // Zero-loop horizontal alignment. `lineWidth` is at scale=1 per contract,
-            // so we multiply by `scale` to compare against `boxWidth` (rendered px).
+            // Zero-loop horizontal alignment. `lineWidth` arrives at the
+            // RENDERED scale, per @zakkster/lite-text-layout's RANGE-CONTRACT
+            // (its producer bakes `scale` into the width; TextLayout.js:289 says
+            // so in words, drift-guarded across four surfaces). `boxWidth` is
+            // rendered px (see :1027). Both operands are rendered px -- compare
+            // them DIRECTLY (F-45, decisions/0006, 1.6.0).
+            //
+            // DO NOT REINTRODUCE `lineWidth * scale`. It reads like the
+            // obviously-correct line next to `boxWidth`, and it is exactly the
+            // defect: at scale != 1 it double-scaled the width and pushed every
+            // centre/right line off by `lineWidth * (scale - 1)` (2x centre put
+            // the first glyph off the left edge of the box). Zero at scale 1,
+            // which is why it shipped for three versions. "Restoring symmetry"
+            // here re-opens F-45.
             if (align > 0 && boxWidth > 0) {
-                if (align === 1) cursorX += (boxWidth - lineWidth * scale) / 2;
-                else if (align === 2) cursorX += boxWidth - lineWidth * scale;
+                if (align === 1) cursorX += (boxWidth - lineWidth) / 2;
+                else if (align === 2) cursorX += boxWidth - lineWidth;
             }
 
             // Pixel-snap once per line (matches draw()'s behavior).
@@ -1209,4 +1222,4 @@ export class BitmapFont {
 }
 export default BitmapFont;
 
-export const VERSION = '1.5.0';
+export const VERSION = '1.6.0';
