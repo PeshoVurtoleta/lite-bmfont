@@ -100,8 +100,78 @@ export class BitmapFont {
         opts?: BitmapFontOptions
     );
 
-    /** Pixel width of `text` at `scale`, kerning-aware. */
+    /**
+     * TOTAL advance of `text` at `scale`, kerning-aware.
+     *
+     * **It sums across newlines.** `measure('AA\nAA')` on an advance-8 font is
+     * `32`, not `16`: this is a total advance, NOT a layout width.
+     *
+     * Which width do I want:
+     * - one explicit range -> {@link BitmapFont.measureLine}
+     * - a box that will hold every line -> {@link BitmapFont.measureWidest}
+     * - the total advance of the whole string, newlines included -> `measure`
+     *
+     * Returns **`NaN`** if `text` is not a string, or if `scale` is outside
+     * `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity` (F-36). A renderer
+     * can decline to act; a query cannot decline to answer. Throws after
+     * `destroy()`.
+     *
+     * The text door is `typeof text === 'string'`, so a **boxed** `String`
+     * object is rejected and returns `NaN`. That is deliberate: the looser
+     * "has a length and a charCodeAt" test admits an object that never
+     * terminates.
+     *
+     * The cross-newline sum is pinned current behaviour, not a feature: 2.0.0
+     * promotes `measure` to the widest line.
+     */
     measure(text: string, scale?: number): number;
+
+    /**
+     * Width of the WIDEST line of `text` at `scale`, kerning-aware -- the number
+     * to size or centre a box with, and the one `draw` aligns each line against
+     * (F-06). `measureWidest('AA\nAA')` is `16` where `measure` is `32`; for a
+     * newline-free string the two are equal.
+     *
+     * Lines split at `\n` only, and the kerning chain RESETS at the break,
+     * matching `draw`. A trailing newline yields a final empty line of width 0,
+     * so `'AAA\n'` is `24`, not `0`. One pass, zero allocation.
+     *
+     * **Can return a NEGATIVE width.** A negative `xadvance` or kerning `amount`
+     * is a valid Int16 the constructor accepts, so a line can legitimately
+     * measure negative; the result is then the greatest (least negative) line.
+     * An empty line measures 0, which is wider than any negative line.
+     *
+     * Returns **`NaN`** if `text` is not a string or `scale` is outside
+     * `(0, Infinity)`. Throws after `destroy()`.
+     */
+    measureWidest(text: string, scale?: number): number;
+
+    /**
+     * Width of ONE range of `text` at `scale`, kerning-aware.
+     *
+     * `start` and `end` are CLAMPED into `[0, text.length]` and are otherwise
+     * left alone -- exactly what `drawWrapped` does to the indices it reads out
+     * of a layout buffer, which is what makes this report what `drawWrapped`
+     * RENDERS rather than what a raw index walk counts. Fractional indices are
+     * read as `charCodeAt` reads them, truncated per iteration, NOT rounded at
+     * the boundary. On `'AAAA'` at advance 8: `[-0.5, 2)` is `16` (two glyphs,
+     * as drawn), `[0.5, 2.7)` is `24` (three glyphs, as drawn), and
+     * `[-Infinity, Infinity)` is `32` and RETURNS (F-34, F-35).
+     *
+     * The clamp has the same TWO legs `drawWrapped` uses, so a `NaN` bound
+     * behaves as the renderer treats it: a `NaN` `start` becomes 0 and a `NaN`
+     * `end` becomes `text.length`, which measures the WHOLE line -- `NaN` is
+     * what a `Float32Array` layout buffer holds when a layout pass failed.
+     *
+     * An empty range (after clamping) returns **`0`**, not `NaN`: the sum of an
+     * empty set of advances is 0, and it is the width `drawWrapped` renders for
+     * that line. A negative `end` measures 0 for the same reason.
+     *
+     * Returns **`NaN`** if `text` is not a string or `scale` is outside
+     * `(0, Infinity)`. Door order is text, then scale, THEN the range, so a bad
+     * `scale` with an empty range is `NaN`, not `0`. Throws after `destroy()`.
+     */
+    measureLine(text: string, start: number, end: number, scale?: number): number;
 
     /**
      * Does the descriptor cover this glyph id? Fail-closed on every non-integer:
@@ -114,6 +184,13 @@ export class BitmapFont {
     /**
      * Render a (possibly multi-line) string. Newlines (`\n`) advance by `lineHeight`.
      * `x`/`y` is the baseline anchor of the first line.
+     *
+     * **Pixel-snapped per LINE ORIGIN in X and per BASELINE in Y** -- that is the
+     * exact scope of the promise (F-07). EVERY baseline is snapped, not just the
+     * first: line `i` lands at
+     * `Math.round(y) + Math.round(i * lineHeight * scale)`. Glyph X is
+     * deliberately NOT snapped -- only the line origin is rounded, so at
+     * `scale` 1.1 a glyph column reads `0, 8.8, 17.6, 26.4...`.
      *
      * A `scale` outside `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity` --
      * draws NOTHING and returns (F-11). An `align` outside `{0, 1, 2}` -- including
@@ -174,6 +251,11 @@ export class BitmapFont {
      *   and a plain `Array` behave identically); no type check is performed.
      * - Id 10 (`\n`) inside a line range is NOT a line break here -- lines come from
      *   the layout buffer. It advances 0 and draws nothing.
+     * - **Pixel-snapped per LINE ORIGIN in X and per BASELINE in Y** (F-07, 1.4.0).
+     *   Line `l` lands at `anchor + Math.round(l * lineHeight * scale)`, where
+     *   `anchor` is the unchanged line-0 anchor `Math.round(y + base * scale)`
+     *   plus, at `vAlign` 1/2, the separately rounded centring term. Glyph X is
+     *   not snapped.
      */
     drawWrapped(
         ctx: CanvasRenderingContext2D,

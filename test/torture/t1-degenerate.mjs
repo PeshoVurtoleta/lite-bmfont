@@ -23,8 +23,12 @@
  *     fork 5) the three draw bodies carry a per-call range door
  *     `if (!(scale > 0 && scale < Infinity)) return;`, so a NaN, 0, negative or
  *     Infinity scale now draws NOTHING and the F-11 pin below is INVERTED to
- *     0 calls / nanScan 0. measure()/_measureRange keep NO door (five pins
- *     below), so scale===Infinity there still returns a non-finite number.
+ *     0 calls / nanScan 0. As of M4 (F-36, decisions/0004 fork 4) the PUBLIC
+ *     measure family carries the same range door plus a `typeof text` door and
+ *     answers a rejected argument with NaN, so three of the six measure pins
+ *     below are INVERTED or TIGHTENED. `_measureRange` alone keeps NO door --
+ *     it is an explicitly-unsafe internal (fork 3 A2) whose body is
+ *     byte-for-byte the 1.3.0 body.
  *
  * The value arrays are module-level typed arrays; the layout buffers are
  * pre-built Float32Arrays. T1 makes no profiler call.
@@ -128,15 +132,47 @@ export function run() {
     }
 
     // --- CLEAN lane: measure() degenerate scale pins (return value, not rec) -----
+    // SIX pins. M4 (F-36, decisions/0004 fork 4) inverts two, tightens one and
+    // leaves three exactly as they were. INVERTED IN PLACE, never deleted, never
+    // demoted to test.todo -- the pin must fail in both directions.
     const baseW = FONT_ASCII.measure('ABC', 1);
-    check(FONT_ASCII.measure('ABC', 0) === 0, () => 'T1: measure(scale 0) != 0');
-    check(FONT_ASCII.measure('ABC', -1) === -baseW, () => 'T1: measure(scale -1) != -width');
+    check(baseW === 36, () => 'T1: measure("ABC",1) ' + baseW + ' != 36 (fixture moved)');
+    // INVERTED by M4: was `=== 0`. The scale door is a RANGE test, so 0 -- which
+    // is finite and which a `scale !== scale` door cannot see -- is rejected.
+    // Killed by writing the door as a NaN test: this row goes back to 0.
+    check(Number.isNaN(FONT_ASCII.measure('ABC', 0)),
+        () => 'T1/M4: measure(scale 0) ' + FONT_ASCII.measure('ABC', 0) + ' is not NaN (door written as a NaN test?)');
+    // INVERTED by M4: was `=== -baseW`, a NEGATIVE WIDTH returned to a layout.
+    // -1 is finite; same detector as the row above, opposite side of the range.
+    check(Number.isNaN(FONT_ASCII.measure('ABC', -1)),
+        () => 'T1/M4: measure(scale -1) ' + FONT_ASCII.measure('ABC', -1) + ' is not NaN (negative width still shipping?)');
+    // UNCHANGED: an empty string at a VALID scale is 0, not NaN. This is the
+    // twin that fails if the text door starts rejecting strings.
     check(FONT_ASCII.measure('', 1) === 0, () => 'T1: measure("") != 0');
+    // UNCHANGED, and load-bearing: A SUBNORMAL SCALE IS A VALID SCALE. It
+    // renders nothing visible and returns a correct width, and it is inside
+    // (0, Infinity). A door "cleaned up" to reject subnormals reddens here and
+    // nowhere else -- it is the only detector of that mutation.
     check(FONT_ASCII.measure('ABC', 1e-45) >= 0, () => 'T1: measure(subnormal scale) < 0');
-    check(!Number.isFinite(FONT_ASCII.measure('ABC', Infinity)),
-        () => 'T1: measure(scale Infinity) is finite');
+    check(Number.isFinite(FONT_ASCII.measure('ABC', 1e-45)),
+        () => 'T1: measure(subnormal scale) is not finite');
+    // TIGHTENED by M4: was `!Number.isFinite(...)`, which NaN and +/-Infinity
+    // both satisfy. The door now makes it exactly NaN, by policy rather than by
+    // arithmetic accident (declared delta D5).
+    check(Number.isNaN(FONT_ASCII.measure('ABC', Infinity)),
+        () => 'T1/M4: measure(scale Infinity) ' + FONT_ASCII.measure('ABC', Infinity) + ' is not exactly NaN');
+    // UNCHANGED in value, changed in REASON: NaN was arithmetic in 1.3.0 and is
+    // policy in 1.4.0. Kept because a door that stops firing must still redden.
     check(Number.isNaN(FONT_ASCII.measure('ABC', NaN)),
         () => 'T1: measure(scale NaN) is not NaN (F-11 via measure)');
+    // M4: `_measureRange` keeps NO door (fork 3 A2). Its 1.3.0 answers are
+    // pinned HERE so "the public faces gained a door" cannot be mistaken for
+    // "the shared helper gained one" -- the frozen-body guarantee, expressed as
+    // an executable row rather than only as a source-text sha.
+    check(FONT_ASCII._measureRange('ABC', 0, 3, 0) === 0,
+        () => 'T1/M4: _measureRange(scale 0) is not 0 -- the internal grew a door');
+    check(FONT_ASCII._measureRange('ABC', 0, 3, -1) === -baseW,
+        () => 'T1/M4: _measureRange(scale -1) is not -width -- the internal grew a door');
 
     // --- FINDING lane: exactly four pinned-bad cases ----------------------------
     // Each is an EQUALITY on the exact count, so the pin fails in both directions.

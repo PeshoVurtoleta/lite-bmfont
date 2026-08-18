@@ -124,8 +124,8 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-03** | **S1** | **The NaN guard polarity is inverted between the measure path and both draw paths.** `_measureRange` uses `if (id >= 0 && id < 256)` -- `NaN` fails it, fail-closed, correct. `draw()` and `drawWrapped()` use `if (id < 0 \|\| id >= 256) continue;` -- `NaN` fails *that* too, so the glyph is **accepted**. The same predicate, written two ways, with opposite behaviour on the one value that matters. Downstream, `glyphs[NaN*7+6]` is `undefined` and `cursorX += undefined * scale` poisons the cursor for the rest of the line. | `(NaN >= 0 && NaN < 256)` -> `false` (rejects); `(NaN < 0 \|\| NaN >= 256)` -> `false` (accepts) |
 | **F-04** | **S1** | **A `startIdx < 0` in the layout buffer renders an entire line at `NaN`.** `charCodeAt(-1)` is `NaN`, which passes the F-03 guard, so every glyph on that line is drawn at `NaN` x. This is the exact hand-off shape from lite-text-layout (roadmap Session 2 makes it the public contract), and it is the same failure class as lite-bvh B-03: one bad value enters once and the output is silently wrong with no signal. Note a *fractional* start is harmless -- `charCodeAt(0.5)` truncates -- so the bug is not uniform across bad indices, which makes it harder to spot. | `drawWrapped(ctx, 'HELLO', new Float32Array([-1,5,40,0]), 1, ...)` -> 5 drawImage calls, all dst x `NaN`. Same buffer with start `0` -> `0,8,16,24,32` |
 | **F-05** | S2 | **`drawWrapped` never bounds-checks `layoutBuffer` against `lineCount * 4`.** A `lineCount` larger than the buffer holds reads `undefined` for every field; the inner loop `for (i = undefined; i < undefined; ...)` never runs and the line silently vanishes. The doc comment says "Buffer must contain at least `lineCount * 4` floats" and nothing enforces it. Fail-open on unverified state. | `drawWrapped(ctx,'HELLO', new Float32Array(4), 3, ...)` -> no throw, draws only line 0 |
-| **F-06** | S2 | **`measure()` sums across newlines; `draw()` aligns per line.** The two disagree on what "the width of this text" means, and centring a multi-line string using `measure()` -- the obvious thing to do -- is wrong by the width of every other line. | `measure('AA\nAA')` -> `32`; the longest line is `16`. `measure('A\nAAAAAA')` -> `56`; longest line is `48` |
-| **F-07** | S2 | **Only the first line is pixel-snapped in Y.** `draw()` documents "Pixel-snapped baseline for crisp pixel fonts" and does `cursorY = Math.round(y)` once, then accumulates `cursorY += this.lineHeight * scale` unrounded. At any fractional `lineHeight * scale` every line after the first lands off-grid, which is precisely the blur the promise exists to prevent. `drawWrapped` has the identical shape. | `draw(ctx,'A\nB\nC',0,0,1.1)` -> dst Y `-13.200000000000001`, `4.4`, `22` |
+| **F-06** | S2 | **`measure()` sums across newlines; `draw()` aligns per line.** The two disagree on what "the width of this text" means, and centring a multi-line string using `measure()` -- the obvious thing to do -- is wrong by the width of every other line. | **Owner: M4 (the missing function) / M9 (the semantics)** -- M4 (v1.4.0) ships `measureWidest`, which returns the widest line, and documents `measure` as the total advance it actually is; `measure`'s own return value is UNCHANGED because promoting it is a silent numeric change and a minor may not carry one. M9 makes `measure` return the widest line in 2.0.0. | `measure('AA\nAA')` -> `32`; the longest line is `16`. `measure('A\nAAAAAA')` -> `56`; longest line is `48` |
+| **F-07** | S2 | **Only the first line is pixel-snapped in Y.** `draw()` documents "Pixel-snapped baseline for crisp pixel fonts" and does `cursorY = Math.round(y)` once, then accumulates `cursorY += this.lineHeight * scale` unrounded. At any fractional `lineHeight * scale` every line after the first lands off-grid, which is precisely the blur the promise exists to prevent. `drawWrapped` has the identical shape. **Fixed in 1.4.0 (M4)**: every baseline is snapped from an exact per-line product, `Math.round(y) + Math.round(i * lineHeight * scale)` (decisions/0004 fork 2 sub-fork B1); `drawWrapped` snaps the same way from its own, unchanged, line-0 anchor. | `draw(ctx,'A\nB\nC',0,0,1.1)` -> dst Y `-13.200000000000001`, `4.4`, `22` |
 | **F-08** | S2 | **`Int16Array` truncation and wrap in the constructor are silent.** Glyph fields are stored into `Int16Array` with no range check: an atlas coordinate of `40000` wraps to `-25536`, and a fractional `xadvance` of `8.6` truncates to `8` -- a 0.6px-per-glyph drift that accumulates across a string. BMFont exporters do emit fractional advances. **Owner: M3 (detection) / M9 (storage)** -- M3 (v1.3.0) makes the drift DETECTABLE under `{ checked: true }` with its exact numbers; the storage behaviour itself is unchanged and is M9's. | `char.x = 40000` -> `glyphs[65*7] === -25536`; `xadvance 8.6` -> `8`, so `measure('AA')` is `16` where exact is `17.2` |
 | **F-09** | S3 | **Kerning keys are checked only on the upper bound.** `if (k.first < 256 && k.second < 256)` admits negatives: `first = -1` computes index `-191` and the write is silently discarded by the typed array; `second = -1` computes index `-1`, same. `k.amount` is also silently truncated (`-1.7` -> `-1`). | `kernings:[{first:-1,second:65,amount:-2}]` -> no write, no error; `amount -1.7` -> stored `-1` |
 | **F-10** | S2 | **The constructor accepts three malformed descriptors and rejects three others with raw `TypeError`s.** `{chars: 7}` constructs a font with zero glyphs (`7.length` is `undefined`, loop never runs) so every `measure` returns 0 forever. `{common:{lineHeight:NaN}}` constructs and every line lands at `NaN` Y. `atlas = null` constructs and `draw()` happily calls `drawImage(null, ...)`. Meanwhile `null`, `{}` and a missing `chars` each throw a raw `TypeError` naming an internal property. Neither half is a policy. | see `probe.mjs` F-10 block |
@@ -152,6 +152,13 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-31** | S2 | **T6's structural gate pins four NAMED arrays and cannot see a fifth, so any new per-font allocation is invisible to the whole suite.** `t6-alloc.mjs:39-53` asserts `_charScratch.byteLength === 24`, `glyphs === 3584`, `kerning === 131072` and `_mapped === 32` -- four independent equalities and no total. Nothing asserts that the font has no OTHER typed array. Proven in M3: adding `this._bloat = new Float64Array(512)` (4096 bytes) to every font left `npm run torture` at `ok` exit 0 and `npm test` at 103/100/0/3, with all four named checks green. T7 builds 4096 fonts, so that mutation adds 16.7 MB across the soak and no tier notices; the package publishes 134,712 bytes per font as a headline number in README and `decisions/0002`, and that number is unguarded. This is the AR-02 question answered NO: the plan's assertion A29 named this gate as the detector for exactly this mutation and the attribution does not reproduce. Distinct from F-27 (which blinds the RETENTION witness): this blinds the STRUCTURAL witness, and the two together mean a per-font allocation added in any future session is caught by nothing. Fix: assert the sum, derived by walking the instance's own typed-array properties, so an unlisted array raises the total and fails. **Routed to M9** alongside F-27. | `this._bloat = new Float64Array(512)` in the constructor -> `npm run torture` `ok`, `npm test` 103/100/0/3, all four structural equalities green |
 | **F-32** | S2 | **The zero-alloc and retention gates never drive the REJECT branch of the three new per-call `scale` doors, so a leak or an allocation planted there is invisible end to end.** T6's alloc/ops windows all call with `scale = 1` (window A passes it explicitly at `t6-alloc.mjs:80`; B and C take the default), which is the ACCEPT branch. The reject branch is exercised only by T1's correctness sweep and T3 rows 41-43, and neither gates allocation or retention. Proven twice, independently, in M3: replacing `draw`'s `if (!(scale > 0 && scale < Infinity)) return;` with a body that does `this._rejectLog = (this._rejectLog || []).concat(scale); return;` -- an unbounded per-instance leak AND a per-call allocation on the session's headline new code -- left `npm test` at 103/100/0/3 and `npm run torture` at `ok` exit 0. Third instance of the class that F-27 (retention witness tracks a throwaway) and F-31 (structural gate has no total) belong to: each blinds a different witness, and together they mean the zero-GC claim is unenforced on every path the measured windows do not happen to take. **Routed to M9** with F-27 and F-31. Fix: drive each door's reject branch inside a measured window, or record that fail-closed branches are correctness-tested only and never alloc-gated. | plant `this._rejectLog = (this._rejectLog \|\| []).concat(scale)` in `draw`'s scale-door reject -> `npm test` 103/100/0/3, `npm run torture` `ok` exit 0 |
 | **F-33** | S3 | **T3 row 56 claims every CHECKED row runs in BOTH lanes; row 26 runs only one.** The tier-wide contract (`SESSION-M3.md` section 6.2 row 56, restated in `decisions/0003`) is that each checked-lane row is asserted twice -- once with `{checked: true}` and once without -- because a row asserted in a single lane cannot see a door that migrated to the wrong lane. Row 26 (`xadvance: -8.6`) asserts only the CHECKED throw (`t3-descriptor.mjs:174-178`, duplicated at `BitmapFont.test.js:1013-1014`); the UNCHECKED half -- that the Int16 store truncates toward ZERO and stores `-8`, not `-9` -- is asserted nowhere executable and survives only as prose in `decisions/0003` and the ROADMAP PROBE. The checked half is genuine, so F-08's message-wording requirement (must say "toward zero", never "floor") is really pinned; what is unpinned is the storage behaviour that wording DESCRIBES. Same shape as F-24: a record asserting a property no gate checks. Found by qa in M3, fixed in M3. | before the fix, no executable assertion in `test/` pinned `glyphs[65*7+6] === -8`, while row 56's both-lanes claim appears in three files |
+| **F-34** | **S1** | **`_measureRange` NEVER TERMINATES on an unbounded range, and `measure` reaches it from the public surface.** The walk is `for (let i = start; i < end; i++)`; at `start === -Infinity` the increment never advances (`-Infinity + 1 === -Infinity`) and the loop is unkillable, exactly F-01's shape one function over. `measure(text, scale)` forwards `0` and `text.length`, so a string can never reach it -- but `measure` has no text door (F-36), and `measure({length: Infinity, charCodeAt(){return 65}})` hangs today, in 1.3.0, with no throw. `drawWrapped` is IMMUNE: M2's F-04 clamp (`if (!(startIdx >= 0)) startIdx = 0;` plus the `endIdx` clamp) runs first, which is the third confirmation that the clamp, not the guard reshape, is the load-bearing fix (F-26). This is a hard PRECONDITION of M4, not something M4 may discover: the brief prescribes `measureLine(text, start, end, scale)` as "a thin forward to `_measureRange`", which publishes an unbounded hang as a supported API on a render-adjacent path. T9 control 9 already owns out-of-process hang machinery (`t9-hang-child.mjs`) and is the ready-made gate. **Fixed in 1.4.0 (M4)** at the PUBLIC faces only: `measure`/`measureWidest` gain a `typeof text === 'string'` door and `measureLine` gains the `drawWrapped` clamp, so all three terminate. `_measureRange` keeps NO door and its body is byte-for-byte the 1.3.0 body (decisions/0004 fork 3 sub-fork A2) -- clamping it would tax `draw`'s per-line align calls, which cannot be out of range by construction. The boundary is proven by T9 control 13, which kills a door-removed child. | `f._measureRange('AAAA', -Infinity, Infinity, 1)` -> SIGKILL after 6 s (exit 137); `f.measure({length: Infinity, charCodeAt(){return 65}})` -> SIGKILL after 6 s; same input through `drawWrapped`'s layout buffer -> returns |
+| **F-35** | S2 | **`_measureRange` and `drawWrapped` disagree about what a fractional or negative index means, so a public `measureLine` would report a width `drawWrapped` does not render.** `drawWrapped` CLAMPS its indices once, up front, then walks a fractional `i` and lets `charCodeAt` truncate per ITERATION -- exactly as `_measureRange` does, so the ONLY difference between the two walks is the clamp. The two readings coincide for positive fractions and diverge for a negative one, because `charCodeAt(-0.5)` is `ToIntegerOrInfinity(-0.5) === -0`, which reads index **0** -- so a negative fractional start ADDS a glyph instead of being rejected, the exact opposite of what the F-04 clamp exists to do. A caller computing `layoutBuffer[2]` (lineWidth) with `measureLine` and handing it to `drawWrapped` gets an alignment one glyph too wide, silently. This is F-06's own disease -- two functions in a four-function package disagreeing about a width -- in the surface M4 proposes to ADD, so M4 must settle the index policy before it publishes the method. **Fixed in 1.4.0 (M4)**: `measureLine` CLAMPS and deliberately does NOT truncate, exactly as `drawWrapped` does not, so it reports what the renderer draws on every measured range -- `[-0.5, 2)` 16 / 2 quads, `[0.5, 2.7)` 24 / 3 quads, `[1.9, 3.1)` 16 / 2 quads, `[0, 99)` 32 / 4 quads. A clamp-PLUS-truncate door was ratified first and reversed mid-session on measurement: truncating collapses `[0.5, 2.7)` to two glyphs and reintroduces F-35 one method over. T5 pins the agreement itself (`measureLine === drawn * advance`), not three literals, and `BitmapFont.js` carries a DO-NOT-ADD-Math.trunc comment at the door. | range `[-0.5, 2)` on `'AAAA'`, advance 8: `drawWrapped` draws **2** glyphs, `_measureRange` returns **24** (3 glyphs). `[0.5, 2.7)` -> 3 and 3; `[1.9, 3.1)` -> 2 and 2 |
+| **F-36** | S2 | **`measure` has no scale door and no text door, so M3's F-11 fail-closed policy is installed on the renderers only.** All three draw methods now reject a `scale` outside `(0, Infinity)` and draw nothing; `measure` propagates it -- `measure('AA', NaN)` -> `NaN`, `measure('AA', Infinity)` -> `NaN`, `measure('AA', -1)` -> `-16` (a negative width). The text argument has no door either: `measure(123)` -> `0` (fails open, `(123).length` is `undefined`) and `measure(null)` / `measure(undefined)` -> a raw `TypeError` naming an internal property, the shape M3 spent its whole budget removing from the constructor. One bad `scale` therefore produces TWO different failure modes in one frame: the caller sizes a box at `NaN` and `draw` silently declines to render, so the text vanishes and the layout is poisoned, with no throw at either site. Compounds with F-34: it is the absent text door that makes the hang publicly reachable. M4 adds `measureWidest` and `measureLine` to this family and must settle the policy for all four at once -- including whether `measure`'s own frozen `NaN` return changes, which is a behaviour delta on a public method and belongs in a declared row, not a footnote. **Fixed in 1.4.0 (M4)**: one fail signal -- NaN -- across all three public measure faces, with the same range-test scale door the three draw bodies carry and a `typeof text === 'string'` door, in that order. Seven declared deltas (D1-D7 in CHANGELOG). The asymmetry with the renderers is deliberate and documented: a renderer can decline to act, a query cannot decline to answer. | `measure('AA', NaN)` -> `NaN`; `measure('AA', -1)` -> `-16`; `measure(123)` -> `0`; `measure(null)` -> `TypeError: Cannot read properties of null (reading 'length')`; the same `scale` values through `draw` -> 0 drawImage calls |
+| **F-37** | **S2** | **Nothing in the gate can see TRANSIENT allocation, so "zero allocation on any hot path" is unproven on all six T6 windows -- and the one rule that would catch it is structurally vacuous.** Three independent mechanisms compose: (i) `measureAllocs` / `maxBytesPerCall` is a RETENTION lane by the profiler's own definition -- `lite-gc-profiler/llms.txt:179` says it is "Distinct from `measureOps`, which reports an allocation RATE (`maxBytesPerOp`) and sees transient garbage that `measureAllocs` settles away" -- so per-call garbage that the scavenger reclaims measures as exactly 0 bytes; (ii) `checkNoGc`'s `maxBytesPerOp` rule reads `summary.bytesPerOp`, but `measureOps` puts `bytesPerOp` on the RESULT, not the summary (`summary.bytesPerOp` is `undefined`), and `checkNoGc` cannot be handed the result instead because it dereferences `summary.gc.major` and throws -- **so `maxBytesPerOp` passes at every threshold for every body, including `0` and `0.0001` against a measured 0.0638 B/op**; (iii) `stabilize: 'deep'`, which `harness.mjs:157-164` hardcodes because `maxArrayBuffersGrowth` requires it, additionally converts `bytesPerOp` from transient allocation into retention (`Gc.d.ts:822-826`). Proven in M4 by planting the plan's own A26 mutation -- `measureWidest` reimplemented with `text.split('\n')`, allocating one array plus three strings per call across 505,000 calls in window E: `npm run torture` printed `ok`, exit 0, with `measureAllocs` reporting `bytesPerCall = 0`, `checkAllocs` `verdict = pass`, and `checkNoGc` `ok = true`. A direct `perf_hooks` GC observer over the same loop separates the two bodies unambiguously -- **shipped 1 GC event, split mutant 82 (81 scavenges)**, heap delta 35,184 B vs 73,912 B -- so the signal exists and no gated rule reads it. Fourth member of the class F-27 (retention witness tracks a throwaway), F-31 (structural gate has no total) and F-32 (reject branches never measured) belong to, and the broadest: those blind one witness each, this one means the package's headline claim, asserted in README seven times (F-17) and in `llms.txt`, has never been gated by anything that can observe it. **M4 corrects its own false comment and adds an ALLOCATION-VOLUME detector to the two windows it introduces (E and F) -- the sum of positive `heapUsed` deltas over 200,000 strided calls, limit 1,000,000 B, measured 21,384-26,432 B on the shipped bodies and 32,881,040 B on the split mutant. A `PerformanceObserver` on `'gc'` was prescribed first and measured UNUSABLE: its entries are delivered on a later turn and `takeRecords()` returns 0 from inside the loop; the general fix -- all six windows, the vacuous rule, and the `maxArrayBuffersGrowth`-vs-transient conflict, which cannot both be gated in one `stabilize` mode and therefore need two passes -- is routed to M9** alongside F-27/F-31/F-32. | plant `measureWidest(t,s){ const L=t.split('\n'); let m=0; for(...) m=Math.max(m,this._measureRange(L[l],0,L[l].length,s)); return m; }` -> `npm run torture` `ok` exit 0; `measureAllocs` `bytesPerCall=0` `verdict=pass`; `checkNoGc` `ok=true`; `checkNoGc(summary,{maxBytesPerOp:0.0001})` -> `pass` at a measured `result.bytesPerOp` of `0.0638`; `checkNoGc(result,...)` -> `TypeError: Cannot read properties of undefined (reading 'major')`; perf_hooks GC events shipped **1** vs mutant **82** |
+| **F-38** | **S2** | **`measureLine`'s clamp has FOUR legs where `drawWrapped`'s has TWO, so the two disagree on a NaN `end` -- fork (3)'s own criterion, unclosed, on the exact value a failed layout produces.** `drawWrapped` clamps with `if (!(startIdx >= 0)) startIdx = 0;` and `if (!(endIdx <= tlen)) endIdx = tlen;` (`BitmapFont.js:919-920`) -- a NaN `endIdx` fails `<=`, becomes `tlen`, and the WHOLE line renders. `measureLine` adds `if (!(end >= 0)) end = 0;`, which fires first on NaN and drives `end` to 0, so it returns 0 px for a range the renderer draws in full. Measured on an advance-8 font: `[0, NaN)` -> `measureLine` **0** vs `drawWrapped` **4 quads (32)**; `[NaN, NaN)` -> 0 vs 32; `[1, NaN)` -> 0 vs 24. A `layoutBuffer` is a `Float32Array` and NaN is precisely what it holds when a layout pass fails or was never run, which is the caller this method exists for. The two surplus legs were added for symmetry and one of them is not symmetric: dropping `!(end >= 0) -> 0` makes the doors agree on NaN AND on negatives (a negative `end` then falls to `!(end > start)` and returns 0, matching the renderer's never-entered loop), while `!(start <= len) -> len` is harmless and can stay. Found by qa in M4, fixed in M4. Same shape as F-35, one method further on, and the reason it survived fork (3)'s ratification is that no tier enumerated a NaN `end`. | `measureLine('AAAA', 0, NaN, 1)` -> `0`; the same range through `drawWrapped` -> 4 drawImage calls |
+| **F-39** | S3 | **`measureWidest` floors its answer at 0, so it disagrees with `measure` and with its own oracle law on any font whose widest line is negative.** The body opens `let max = 0` and closes `return width > max ? width : max`, so a negative line width can never be returned. A negative `xadvance` is a valid `Int16` the constructor accepts in BOTH lanes -- `{ checked: true }` included, because a negative advance is neither lossy nor non-finite -- and negative kerning reaches the same state with non-negative advances. Measured: `xadvance: -5` gives `measure('AAA') === -15` and `measureWidest('AAA') === 0`; `xadvance: 0` with `kernings: [{first: 65, second: 65, amount: -3}]` gives `measure('AAA') === -6`, oracle max `-6`, `measureWidest` `0`. This falsifies assertion A3 (`measureWidest(s) === measure(s)` for newline-free `s`) and A5 (the allocating-oracle law) for that whole class, and both assertions are VACUOUS with respect to it because T5's corpus runs only `FONT_SNAP` and `FONT_SNAP_KERN`, which are all-positive by construction. Fix: initialise the accumulator to `-Infinity`; the empty string still returns 0 because the final comparison sees `width === 0`. Found by qa in M4, fixed in M4. | `xadvance: -5` -> `measure('AAA')` `-15`, `measureWidest('AAA')` `0` |
+| **F-40** | S3 | **The fork (4) amendment claims a constructed font cannot produce a NaN width from valid input; it can, so NaN is not an unambiguous fail signal.** `decisions/0004` and `SESSION-M4.md` 2.6 both record "every advance is a value out of an `Int16Array` multiplied by a finite scale, so a font that constructs cannot produce a NaN width from valid input", which is what makes NaN readable as "you gave me an argument I cannot use". Mixed-sign Int16 advances defeat it: with `xadvance: 32767` and `xadvance: -32768`, `measure('AB', Number.MAX_VALUE)` is **NaN** (`+Infinity + -Infinity`), indistinguishable from the door's fail signal, and `measure('A', Number.MAX_VALUE)` is **Infinity** -- a non-finite width from a scale the door ACCEPTS, since `Number.MAX_VALUE` passes `!(scale > 0 && scale < Infinity)`. Both behaviours are pre-existing (1.3.0 is identical) and neither is a semver delta; what is new in M4 is the record asserting they cannot happen. Recorded rather than fixed: narrowing the scale door to exclude `MAX_VALUE` would need a magnitude bound nobody has derived, and the honest repair is to state the limit. Same class as F-24 -- a record claiming a property the code does not have. Found by qa in M4; the claim is corrected in M4, the behaviour is left to M9 alongside F-08's storage half. | `chars` advances `32767` and `-32768`: `measure('AB', Number.MAX_VALUE)` -> `NaN`; `measure('A', Number.MAX_VALUE)` -> `Infinity` |
 
 (The F-12 and F-24 reproduction strings contain one non-ASCII character; it is
 written here as the JS escape `'A\u00C8A'` / `'A\u00C8B'` so this file stays
@@ -1041,7 +1048,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-bmfont"
 version_target: 1.3.0
-status: done          # 2026-08-18; 103 tests, torture ok; F-08(detection)/F-09/F-10/F-11/F-13/F-28/F-29/F-30/F-33 closed, F-31/F-32 opened
+status: done          # shipped 2026-08-18 (9ce50b7, published); 103 tests, torture ok; F-08(detection)/F-09/F-10/F-11/F-13/F-28/F-29/F-30/F-33 closed, F-31/F-32 opened
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -1281,13 +1288,14 @@ DONE WHEN
 ---
 package: "@zakkster/lite-bmfont"
 version_target: 1.4.0
-status: planned
+status: done          # 2026-08-18; 119 tests, torture ok; F-07/F-34/F-35/F-36/F-38/F-39/F-41 closed, F-06 half-closed (measureWidest ships; measure semantics stay M9's), F-37/F-40 opened
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler"]
-findings: [F-06, F-07]
+findings: [F-06, F-07, F-34, F-35, F-36]
+frozen_baseline: v1.3.0 (9ce50b7, published 2026-08-18), BitmapFont.js sha256 11ca9228102dc595532f001fc472e323681feff7c700919c3b343af075d4f9bf
 depends_on: [M3]
 blocks: [M9]
 ---
@@ -1307,6 +1315,91 @@ PURPOSE
   raw. At scale 1.1 with lineHeight 20 the lines land at -13.200000000000001,
   4.4, 22 -- which is exactly the blur the promise exists to prevent, on every
   line after the first. `drawWrapped` has the identical shape.
+
+  M4 widens the measure surface. The M3 lesson is that widening a surface
+  publishes whatever that surface already does wrong, so the probe below runs
+  first and three of this brief's original prescriptions do not survive it.
+
+PRECONDITION PROBE
+  Measured 2026-08-18 against the published 1.3.0 (`9ce50b7`, sha256
+  `11ca9228`), scratch `m4-probe.mjs` / `m4-hang.mjs`. Authoritative where it
+  contradicts anything else in this brief.
+
+  (a) THE BRIEF'S FOUR LITERAL NUMBERS NEED A FIXTURE THAT DOES NOT EXIST.
+      32 / 16 and 56 / 48 hold for an advance-8 font. Every harness font
+      advances 12 with lineHeight 20, where the same strings give
+      `measure('AA\nAA') = 48` (widest 24) and `measure('A\nAAAAAA') = 84`
+      (widest 72). The F-07 table additionally needs lineHeight 17. M4 adds ONE
+      fixture -- `JSON_SNAP` / `FONT_SNAP`, lineHeight 17, base 16, advance 8,
+      ASCII 32..126, no kernings -- and asserts the literal numbers against it.
+      A coder who asserts 32 against `FONT_ASCII` is measuring nothing.
+
+  (b) F-07 REPRODUCES EXACTLY, on that fixture, at scale 1.1:
+        today   0, 18.7, 37.4, 56.1, 74.8      (7 of 8 lines off-grid)
+        B form  0, 19, 37, 56, 75
+        A form  0, 19, 38, 57, 76
+      At scale 1 nothing is off-grid; at 1/3 the drift reaches 0.333 px.
+
+  (c) THE PINNED FIVE-LINE TABLE DOES NOT DISCRIMINATE (AR-02). Decision (2)'s
+      B has a sub-fork the brief never names, and at `y = 0` both halves produce
+      the pinned row, so the headline assertion passes for BOTH:
+        B1 rounded anchor  `Math.round(y) + Math.round(i * lineHeight * scale)`
+        B2 raw anchor      `Math.round(y + i * lineHeight * scale)`
+      They diverge at a fractional `y`. At `y = 0.6`, lineHeight 17, scale 1.1:
+        today  1, 19.7      B1  1, 20      B2  1, 19
+      Both agree with today on line 0 (`Math.round(y)`), so single-line output
+      is unchanged under either and that is NOT the discriminator. Every
+      assertion in this session that claims to pin the rounding form must carry
+      a fractional `y`.
+
+  (d) `drawWrapped` ROUNDS TWICE TODAY and the brief's own cross-method
+      assertion is not free. `:677` is `Math.round(y + base * scale)`, then
+      `:682`/`:683` add `Math.round((boxHeight - totalHeight) / 2)` (or the
+      bottom form) for vAlign 1/2. Collapsing to one round per line from a raw
+      accumulator changes line 0 whenever both fractions round up
+      (`round(0.5) + round(0.5)` is 2, `round(1.0)` is 1). So "drawWrapped
+      produces the identical baseline sequence as draw" forces a choice:
+      either a declared line-0 delta in `drawWrapped` at vAlign 1/2, or B1 in
+      both methods. Settle it in the decision file, not in review.
+
+  (e) THE TWO METHODS' ANCHORS DIFFER BY A ROUNDED TERM. At `y = 0`, scale 1.1,
+      base 16, `drawWrapped` gives 18, 36.7, 55.4, 74.1, 92.8: the offset from
+      `draw`'s sequence is `Math.round(base * scale)` = 18, not `base * scale`
+      = 17.6. State that relation in the assertion or it compares nothing.
+
+  (f) X IS NOT SNAPPED INSIDE A LINE AND MUST NOT BE. At scale 1.1 the glyph
+      x column is `0, 8.8, 17.6, 26.400000000000002` in both `draw` and
+      `drawFast`; only the line ORIGIN is rounded (`:451`, `:467`, `:576`,
+      `:717`). Rounding each glyph would break T0 law 1, which asserts
+      `walk === mr === oracle` EXACTLY with no epsilon anywhere in the tier.
+      The promise is therefore per-line-origin in X and per-baseline in Y, and
+      the docs must say so rather than leaving a reader to infer the stronger
+      claim from "pixel-snapped".
+
+  (g) THREE NEW LEDGER ROWS, ALL BLOCKING THIS SESSION -- F-34 (the
+      `_measureRange` non-termination, publicly reachable through `measure`
+      today), F-35 (the index-semantics disagreement with `drawWrapped`, which
+      diverges on a negative fractional start), F-36 (`measure` has neither a
+      scale door nor a text door). The brief's "`measureLine` is a thin forward
+      to `_measureRange`" is therefore REJECTED as written: it publishes a hang
+      and an alignment disagreement as supported API.
+
+  (h) THE README FOOTGUN THE BRIEF DESCRIBES IS NOT THERE. The quick-start
+      (`README.md:40-60`) shows a SINGLE-line centred `draw` and a separate
+      `measure('Hello', 1.5)`; no multi-line `draw` appears in it. The real gap
+      is that no document anywhere states that `measure` sums through newlines.
+      Fix that, and do not go hunting for an example that does not exist.
+
+  (i) T5 IS AN EMPTY REGISTERED STUB (`test/torture/t5-fuzz.mjs`,
+      `TODO = 'M4'`). It is the one tier M4 builds from nothing. T9 control 9
+      already runs a child process and asserts it RETURNS
+      (`t9-hang-child.mjs`); that is the ready-made mechanism for F-34's
+      control, and no new machinery is needed.
+
+  (j) AFTER `destroy()`, `measure`, `_measureRange` and `hasGlyph` all throw a
+      raw `TypeError` -- not a `BitmapFontError`. Whatever the new methods do,
+      they match the family; changing the family's post-destroy error type is
+      not this session's job.
 
 THE DECISION (record it before coding)
   (1) measure() semantics (F-06).
@@ -1333,43 +1426,108 @@ THE DECISION (record it before coding)
      each line. One round per line, and every line is on-grid. But the rounding
      error compounds: line spacing wobbles between floor and ceil, and after N
      lines the block can sit a full pixel away from where the metrics say.
-  B. **ROUND AT THE USE SITE FROM AN EXACT ACCUMULATOR.** Keep an unrounded
-     `baseY` and a line index, and compute
-     `Math.round(baseY + line * lineHeight * scale)` for each line. Same one
-     round per line, no drift, and the block's total height is exactly right.
-  Recommendation: **B**, and the two options are distinguishable by a number,
-  which is the whole reason to write them both down. With `lineHeight: 17` and
-  `scale: 1.1` (step 18.7), five lines land at:
+  B. **ROUND AT THE USE SITE FROM AN EXACT ACCUMULATOR.** Keep a line index and
+     round once per line. Same one round per line, no drift, and the block's
+     total height is exactly right. Sub-fork, from probe (c) -- B1 measures
+     from the SNAPPED first baseline (`Math.round(y) + Math.round(i * step)`),
+     B2 from the caller's RAW `y` (`Math.round(y + i * step)`).
+  Recommendation: **B**, and per probe (c) the session must also ratify B1 vs
+  B2 and pin it at a fractional `y`, because the five-line table at `y = 0`
+  cannot tell them apart. Lean **B1**: it keeps `drawWrapped`'s existing
+  two-round anchor legal (probe (d)) so the cross-method assertion costs no
+  behaviour delta, and it makes the block's geometry a function of what was
+  actually drawn rather than of a `y` the renderer already discarded. With
+  `lineHeight: 17` and `scale: 1.1` (step 18.7), five lines from `y = 0`:
      B (no drift):      0, 19, 37, 56, 75
      A (accumulating):  0, 19, 38, 57, 76   <- diverges from line 2 on
      today (no round):  0, 18.7, 37.4, 56.1, 74.8
-  The T5 assertion pins the B row exactly. A reviewer can tell which
-  implementation shipped by reading one array.
+  and from `y = 0.6`, which is the row that actually decides the sub-fork:
+     B1:  1, 20        B2:  1, 19        today: 1, 19.7
+  A reviewer can tell which implementation shipped by reading two arrays.
+
+  (3) The range door on `measureLine` (F-34, F-35). NEW -- this fork did not
+  exist before the probe.
+  A. **CLAMP EXACTLY AS `drawWrapped` DOES.** Truncate both indices, clamp
+     `start` to `[0, len]` and `end` to `[0, len]`, return 0 when `end <=
+     start`. Terminates by construction, and it is the only option under which
+     `measureLine` agrees with what `drawWrapped` will render for the same
+     range -- including `[-0.5, 2)`, where they differ by a glyph today.
+  B. **THROW on any non-integer or out-of-range index.** Loud, but hostile to
+     the one caller this method exists for: a `layoutBuffer` is a
+     `Float32Array`, its indices are already Float32-rounded, and 2.9999999 is
+     a normal value there, not an error.
+  C. **FORWARD RAW** (the brief as written). Publishes F-34 and F-35. Rejected
+     on measurement, not on taste.
+  Sub-fork -- WHERE the clamp lives:
+     A1 at the head of `_measureRange`: one site, kills every path including
+        `measure`'s, and costs `draw`'s per-line align calls two comparisons
+        and two truncations each.
+     A2 at the PUBLIC faces only (`measure`, `measureLine`, `measureWidest`),
+        leaving `_measureRange` an explicitly-unsafe internal carrying a
+        comment that names F-34 and states the precondition its callers keep.
+  Recommendation: **A2**. Fail closed at the boundary, keep the shared hot body
+  free, and prove the boundary holds with the T9 child-process control rather
+  than trusting the comment. If the coder finds A1 measures free in T6 window
+  C, A1 is also acceptable -- but the number decides it, not the argument.
+
+  (4) The measure family's fail signal (F-36). NEW.
+  A. **FULL F-11 PARITY, SILENT.** Reject a bad `scale`/`text` and return 0.
+     Rejected: a 0 width is a value a layout will happily act on, and "null is
+     not zero" is the Law that exists for this exact case.
+  B. **NEW METHODS THROW, `measure` UNCHANGED.** Preserves 1.3.0 byte for byte
+     and gives the new surface a defensible policy -- at the cost of two
+     policies for one question, which is F-06's disease in a fresh surface.
+  C. **NaN IS THE MEASURE FAMILY'S FAIL SIGNAL, ACROSS ALL FOUR.** A width has
+     to have a value, and NaN is the only value that cannot be mistaken for a
+     real one: it propagates through every downstream comparison and fails
+     closed. This is a WIDENING of what `measure` already does for a NaN scale,
+     not a new policy -- and it turns three current fail-open answers into
+     honest ones: `measure(123)` 0 -> NaN, `measure(null)` raw TypeError ->
+     NaN, `measure('AA', -1)` -16 -> NaN.
+  Recommendation: **C**, with the three changes above written into CHANGELOG
+  "Changed (behaviour)" as declared deltas and driven through the qa
+  differential -- never as a footnote. The renderers keep drawing nothing for
+  the same input (that is F-11 and it is shipped); state plainly in the docs
+  that the two halves of the package signal a bad `scale` differently and why:
+  a renderer can decline to act, a query cannot decline to answer.
 
 TASKS
-  - Write decisions/0004-metrics-and-snapping.md BEFORE coding, with the
-    five-line table above and the M9 promotion of measure().
+  - Write `decisions/0004-metrics-and-snapping.md` BEFORE coding: both Y tables
+    from probes (b)/(c), the B1/B2 ratification, the `drawWrapped` double-round
+    resolution from probe (d), forks (3) and (4), the M9 promotion of
+    `measure()`, and the measured reason X is not snapped (probe (f)).
+  - `FONT_SNAP` fixture in `harness.mjs` (probe (a)) -- lineHeight 17, base 16,
+    advance 8. Every literal number in this session is asserted against it.
   - `measureWidest(text, scale)` -- one pass, tracks the max per-line width,
     zero allocation, no split, no slice.
   - `measureLine(text, start, end, scale)` -- the public face of
-    `_measureRange`. Note that this partly anticipates M6; keep the signatures
-    compatible so M6 is a widening, not a rename.
-  - **F-07** in `draw` and in `drawWrapped`, per the decision. Both have the
-    identical bug and must get the identical fix; a shared comment naming F-07
-    at both sites.
-  - Extend T0 with the per-line-vs-total residual law and T5 with the exact
-    five-line Y table.
-  - README, llms.txt, d.ts: the new methods, and a short "which width do I
-    want" note. The README currently shows `measure()` next to a centred
-    multi-line `draw()` in the same quick-start block, which is the exact
-    footgun; fix the example.
+    `_measureRange`, WITH the fork (3) door. Not a thin forward. Note that this
+    partly anticipates M6; keep the signatures compatible so M6 is a widening,
+    not a rename.
+  - The fork (4) door on all four measure-family entry points.
+  - **F-07** in `draw` and in `drawWrapped`, per decision (2) including the
+    sub-fork. Both have the identical bug and must get the identical fix; a
+    shared comment naming F-07 at both sites.
+  - Extend T0 with the per-line-vs-total residual law. BUILD T5 (it is empty):
+    the allocating reference renderer, the exact five-line Y table, and the
+    fractional-`y` discriminator.
+  - T9: the A-form control, the B-losing-sub-fork control, and the F-34
+    child-process non-termination control on the pattern of control 9.
+  - **T6 gets a window per new method.** F-31 and F-32 are in the ledger
+    because a body outside every measured window is guarded by nothing;
+    `measureWidest` and `measureLine` are two new hot bodies and must not ship
+    the same way. Record window C's delta for the F-07 fix.
+  - README, llms.txt, d.ts: the new methods, the "which width do I want" note,
+    the newline-summing statement probe (h) says is missing everywhere, and the
+    precise scope of the pixel-snap promise from probe (f).
 
 HOT PATH
   `measureWidest` is a new hot body -- same shape as `_measureRange`, indexed
-  reads only, no allocation, no slicing. `measureLine` is a thin forward to
-  `_measureRange` and must not add a frame; if the engine will not inline it,
-  say so in the decision file with the number rather than shipping a wrapper
-  that costs a call.
+  reads only, no allocation, no slicing. `measureLine` is `_measureRange` plus
+  the fork (3) door; the brief's original "thin forward" is dead, so its cost
+  is a real number that T6 must produce rather than a rounding error someone
+  asserts. If fork (3) lands as A1, `draw`'s per-line align calls pay it too --
+  measure that separately in window C and record both.
 
   The F-07 fix adds one multiply and one round per LINE and removes one add per
   line. A 12-line paragraph pays 12 rounds where it previously paid 1, against
@@ -1377,36 +1535,55 @@ HOT PATH
   record the delta -- "obviously negligible" is not a measurement.
 
 ASSERTIONS
-  - `measure('AA\nAA') === 32` (pinned, unchanged);
-    `measureWidest('AA\nAA') === 16`.
-    `measure('A\nAAAAAA') === 56`; `measureWidest('A\nAAAAAA') === 48`.
-    All four numbers asserted literally.
+  - On `FONT_SNAP`: `measure('AA\nAA') === 32` (pinned, unchanged);
+    `measureWidest('AA\nAA') === 16`; `measure('A\nAAAAAA') === 56`;
+    `measureWidest('A\nAAAAAA') === 48`. All four literal.
   - `measureWidest(s) === Math.max(...s.split('\n').map(l => measure(l)))` for
-    the whole T5 corpus, where the right-hand side is the allocating oracle.
+    the whole T5 corpus, where the right-hand side is the allocating oracle,
+    run outside every measured window.
   - `measureLine(t, a, b, s) === _measureRange(t, a, b, s)` for 50k seeded
-    ranges, exactly.
-  - `draw(ctx, 'A\nB\nC\nD\nE', 0, 0, 1.1)` on a lineHeight-17 font produces
-    baselines exactly `[0, 19, 37, 56, 75]`. Today: `[0, 18.7, 37.4, 56.1,
-    74.8]`. The accumulating variant gives `[0, 19, 38, 57, 76]` and must FAIL
-    this assertion -- T9 gains a control that ships the accumulating form and
-    proves the test discriminates.
+    IN-RANGE tuples, exactly -- and, for the out-of-range corpus, `measureLine`
+    equals the width `drawWrapped` actually renders for the same range,
+    including `[-0.5, 2)` where the raw helper reports one glyph too many.
+  - `draw(ctx, 'A\nB\nC\nD\nE', 0, 0, 1.1)` on `FONT_SNAP` produces baselines
+    exactly `[0, 19, 37, 56, 75]`, and at `y = 0.6` exactly the ratified one of
+    `[1, 20, ...]` (B1) or `[1, 19, ...]` (B2). The accumulating variant gives
+    `[0, 19, 38, 57, 76]` and the losing sub-fork gives the other fractional-y
+    row; T9 ships BOTH as controls and proves the tests discriminate.
   - Every recorded baseline in T5, across every multi-line case and every
     fractional scale, satisfies `Number.isInteger`.
-  - `drawWrapped` produces the identical baseline sequence as `draw` for an
-    equivalent layout at the same origin and scale.
-  - `assertOps` on draw / drawWrapped within noise of v1.3.0; T6 window C
+  - `drawWrapped` produces the baseline sequence `draw` produces, offset by the
+    anchor relation from probe (e), at a fractional `y` AND at a vAlign whose
+    centring term is fractional -- the case probe (d) says is not free.
+  - `measureLine`, `measure` and `measureWidest` RETURN on
+    `[-Infinity, Infinity]` and on `{length: Infinity}`: asserted in process,
+    and gated by a child process that is killed if it does not exit (F-34).
+  - The fork (4) fail-signal table asserted literally, every cell, both the
+    unchanged rows and the three declared deltas.
+  - `assertOps` on draw / drawWrapped within noise of v1.3.0; `assertAllocs`
+    at `maxBytesPerCall: 0` on `measureWidest` and `measureLine`; T6 window C
     recorded.
-  - `npm run torture` prints "ok"; the accumulating-round control fails.
+  - qa runs the 1.3.0 differential: every declared delta driven through the
+    comparator to prove it is non-vacuous, and no undeclared fifth delta.
+  - `npm run torture` prints "ok"; every control above fails when it should.
 
 NON-GOALS
-  No change to `measure`'s return value (that is M9, and it is breaking). No
-  vertical metrics accessors -- still in the rejection ledger, still no
-  consumer. No baseline-vs-top anchor change.
+  No change to `measure`'s return value for a valid multi-line string (that is
+  M9, and it is breaking). No X snapping -- probe (f) gives the measured reason
+  and it is a T0 law, not a preference. No vertical metrics accessors -- still
+  in the rejection ledger, still no consumer. No baseline-vs-top anchor change.
+  F-31/F-32/F-27 stay M9's; M4 must not quietly half-fix a gate it depends on.
 
 DONE WHEN
-  measureWidest / measureLine shipped and oracle-verified;
+  `measureWidest` / `measureLine` shipped, doored per forks (3) and (4), and
+  oracle-verified;
   every line's baseline is an integer at every fractional scale in T5;
-  the five-line Y table is asserted literally and the accumulating control fails
+  the five-line Y table AND the fractional-y sub-fork row are asserted
+  literally, and both losing variants fail as T9 controls;
+  the measure family terminates on an unbounded range, proven by a child
+  process that gets killed if it does not;
+  both new methods sit inside a measured T6 window;
+  every behaviour delta is declared and driven through the 1.3.0 differential
 ```
 
 ===============================================================================

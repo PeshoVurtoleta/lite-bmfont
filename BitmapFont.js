@@ -361,9 +361,22 @@ export class BitmapFont {
 
     /**
      * Pixel width of a substring at `scale`, kerning-aware. Internal hot-path helper.
+     *
+     * **EXPLICITLY UNSAFE. This body has NO door and 1.4.0 did not give it one**
+     * (F-34, decisions/0004 fork 3 sub-fork A2). At `start === -Infinity` the
+     * `i++` never advances and the loop is unkillable. A clamp here would tax
+     * `draw`'s per-line align calls, which pass `0` and a computed `lineEnd`
+     * provably in `[0, len]` by construction -- bytes in a hot body to defend
+     * against a mistake made somewhere else (ROADMAP law 6).
+     *
+     * **The precondition every caller keeps: `text` is a string, and `start` and
+     * `end` are finite and inside `[0, text.length]`.** The three PUBLIC faces
+     * establish it before they call, and T9 control 13 proves that boundary out
+     * of process. Use `measureLine` if you did not compute the indices yourself.
+     *
      * @param {string} text
-     * @param {number} start  Inclusive start index.
-     * @param {number} end    Exclusive end index.
+     * @param {number} start  Inclusive start index. Must be finite and in [0, len].
+     * @param {number} end    Exclusive end index. Must be finite and in [0, len].
      * @param {number} scale
      * @returns {number}
      */
@@ -391,13 +404,180 @@ export class BitmapFont {
     }
 
     /**
-     * Pixel width of `text` at `scale`, kerning-aware.
+     * TOTAL advance of `text` at `scale`, kerning-aware.
+     *
+     * **It SUMS ACROSS NEWLINES.** `measure('AA\nAA')` on an advance-8 font is
+     * **32**, not 16: this is a total advance, NOT a layout width. For the width
+     * of the widest line -- the number you want when sizing or centring a box
+     * that `draw` will fill -- use {@link BitmapFont#measureWidest}. For one
+     * explicit range use {@link BitmapFont#measureLine}. The cross-newline sum
+     * is PINNED CURRENT BEHAVIOUR, not a feature: 2.0.0 promotes `measure` to
+     * the widest line (F-06, decisions/0004 fork 1).
+     *
+     * Fail signal is **NaN**, shared by the whole measure family
+     * (decisions/0004 fork 4). A non-string `text`, or a `scale` outside
+     * `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity` -- returns NaN.
+     * The text door is `typeof text === 'string'`, so a **boxed** `String`
+     * object (`new String('AA')`) is REJECTED and returns NaN, deliberately: the
+     * looser "has a length and a charCodeAt" test admits
+     * `{length: Infinity, charCodeAt(){...}}`, which does not terminate.
+     * The asymmetry with the renderers is deliberate: a renderer can decline to
+     * act (`draw` draws nothing), a query cannot decline to answer. Door order
+     * is text, then scale. Throws after `destroy()`, like every other read.
+     *
      * @param {string} text
      * @param {number} [scale=1.0]
-     * @returns {number}
+     * @returns {number}  NaN if `text` is not a string or `scale` is out of range.
      */
     measure(text, scale = 1.0) {
+        // F-36 doors, per CALL, zero per glyph. The text door is `typeof`, NOT
+        // an array-like test: `{length: Infinity, charCodeAt(){return 65}}` has
+        // a numeric length and a charCodeAt and is exactly the input that hung
+        // 1.3.0 forever (F-34). The scale door is a RANGE test, not a NaN test
+        // -- `0` and `-1` are finite and returned `0` and a NEGATIVE width,
+        // which `scale !== scale` cannot see (ROADMAP law 4 idiom).
+        if (typeof text !== 'string') return NaN;
+        if (!(scale > 0 && scale < Infinity)) return NaN;
         return this._measureRange(text, 0, text.length, scale);
+    }
+
+    /**
+     * Width of the WIDEST line of `text` at `scale`, kerning-aware -- the number
+     * `draw` aligns each line against, and the one to size a box with (F-06).
+     *
+     * `measureWidest('AA\nAA')` on an advance-8 font is **16** where `measure`
+     * is 32. For a newline-free string the two are equal.
+     *
+     * Lines are split at id 10 (`\n`) only, and the kerning chain RESETS at the
+     * break, exactly as `draw` resets `prevId` there (decisions/0004 fork 6). A
+     * trailing newline yields a final empty line of width 0, so `'AAA\n'` is 24,
+     * not 0. One pass, no `split`, no `slice`, no array: zero allocation, gated
+     * by T6 window E's allocation-VOLUME check. (NOT by its `maxBytesPerCall: 0`
+     * lane -- that lane is retention-only and a `split()` implementation passes
+     * it. F-37, decisions/0004 correction 6.)
+     *
+     * Fail signal is **NaN**: a non-string `text` or a `scale` outside
+     * `(0, Infinity)`. There is no range door because there is no range
+     * (fork 7). Throws after `destroy()`.
+     *
+     * @param {string} text
+     * @param {number} [scale=1.0]
+     * @returns {number}  NaN if `text` is not a string or `scale` is out of range.
+     */
+    measureWidest(text, scale = 1.0) {
+        if (typeof text !== 'string') return NaN;
+        if (!(scale > 0 && scale < Infinity)) return NaN;
+
+        const len = text.length;
+        // -Infinity, NOT 0 (F-39). A negative `xadvance` or a negative kerning
+        // amount is a valid Int16 the constructor accepts in BOTH lanes -- it is
+        // neither lossy nor non-finite -- so a line CAN legitimately measure
+        // negative. Seeding the accumulator at 0 silently floored every such
+        // font at 0 and made `measureWidest` disagree with `measure` on a
+        // single-line string, which is the one equivalence this method promises.
+        // The empty string still returns 0: the final comparison sees
+        // `width === 0` and 0 > -Infinity.
+        let max = -Infinity;
+        let width = 0;
+        let prevId = -1;
+
+        for (let i = 0; i < len; i++) {
+            const id = text.charCodeAt(i);
+            // The ONE extra per-glyph comparison this method pays over
+            // _measureRange. Id 10 already advances 0 and kerns 0 for every font
+            // (its seven slots are zeroed at construction, F-25), so this branch
+            // exists purely to close the line and reset the chain -- which is
+            // what makes the answer equal draw's per-line align width.
+            if (id === 10) {
+                if (width > max) max = width;
+                width = 0;
+                prevId = -1;
+                continue;
+            }
+            // F-03 REFERENCE FORM, identical to _measureRange. NaN fails BOTH
+            // comparisons, so a NaN id is REJECTED.
+            if (id >= 0 && id < 256) {
+                if (prevId !== -1) {
+                    width += this.kerning[(prevId << 8) | id] * scale;
+                }
+                width += this.glyphs[id * 7 + 6] * scale;
+                prevId = id;
+            }
+        }
+        return width > max ? width : max;
+    }
+
+    /**
+     * Width of ONE range of `text` at `scale`, kerning-aware -- the doored,
+     * public face of `_measureRange` (F-34, F-35, decisions/0004 fork 3).
+     *
+     * `start` and `end` are CLAMPED into `[0, text.length]` with the NaN-safe
+     * idiom and are otherwise left alone -- exactly what `drawWrapped` does to
+     * the indices it reads out of a layout buffer. That is what makes this
+     * method report what `drawWrapped` RENDERS rather than what the raw helper
+     * counts: on `'AAAA'` at advance 8, `[-0.5, 2)` is **16** here and **24**
+     * through `_measureRange`, and `drawWrapped` draws the two glyphs this
+     * number describes. Fractional indices are read as `charCodeAt` reads them,
+     * truncated per iteration, so `[0.5, 2.7)` is **24** -- three glyphs, which
+     * is again what `drawWrapped` draws. An unbounded range RETURNS:
+     * `[-Infinity, Infinity)` is 32, where the raw helper never terminates.
+     *
+     * An empty range (after clamping) is **0**, not NaN (fork 5): the sum of an
+     * empty set of advances is 0, and it is the width `drawWrapped` renders for
+     * the same line. NaN means one thing only -- an argument that cannot be used.
+     *
+     * Fail signal is **NaN**: a non-string `text` or a `scale` outside
+     * `(0, Infinity)`. Door order is text, then scale, THEN the range, so a bad
+     * `scale` with an empty range is NaN, not 0. Throws after `destroy()`.
+     *
+     * @param {string} text
+     * @param {number} start  Inclusive start index. Clamped into `[0, len]`;
+     *   NOT truncated -- a fractional index is read as `charCodeAt` reads it.
+     * @param {number} end    Exclusive end index. Clamped into `[0, len]`;
+     *   NOT truncated, for the same reason.
+     * @param {number} [scale=1.0]
+     * @returns {number}  NaN if `text` is not a string or `scale` is out of
+     *   range; 0 for an empty range.
+     */
+    measureLine(text, start, end, scale = 1.0) {
+        if (typeof text !== 'string') return NaN;
+        if (!(scale > 0 && scale < Infinity)) return NaN;
+
+        // The fork (3) range door: CLAMP ONLY. `!(v >= 0)` and `!(v <= len)`
+        // each reject NaN as well as their bound, so nothing non-finite survives
+        // to the walk -- which is the whole of F-34. After the clamp both ends
+        // are finite and in [0, len] and the counter increments by 1, so the
+        // walk terminates; that is the entire termination argument.
+        //
+        // TWO LEGS, NOT FOUR -- the clamp is `drawWrapped`'s, leg for leg
+        // (F-38). There is deliberately NO `if (!(end >= 0)) end = 0;`. A NaN
+        // `end` must fall through to `!(end <= len)` and become `len`, because
+        // that is what the renderer does with it: a NaN endIdx renders the whole
+        // line. An `end >= 0` leg fires FIRST on NaN and drives it to 0 instead,
+        // so `measureLine(t, 0, NaN, 1)` reported 0 for a line drawWrapped draws
+        // in full. A layoutBuffer is a Float32Array and NaN is exactly what it
+        // holds when a layout pass failed or never ran -- the caller this method
+        // exists for. A negative `end` still measures 0, via `!(end > start)`,
+        // and the renderer's loop never runs either: both 0, no leg needed.
+        //
+        // DO NOT ADD `Math.trunc` HERE either. It looks like tidying and it
+        // silently reintroduces F-35 one method over. `drawWrapped` clamps its
+        // indices and does NOT pre-truncate them: it walks a fractional `i` and
+        // lets charCodeAt truncate per ITERATION, so [0.5, 2.7) visits 0.5, 1.5
+        // and 2.5 and renders THREE glyphs. Truncating both ends here collapses
+        // that to [0, 2) and reports two -- a width the renderer will not draw,
+        // which is exactly the defect this method exists to remove.
+        //
+        // Termination still holds, which is the whole of F-34: whatever reaches
+        // the walk satisfies `0 <= start < end <= len` with both ends finite, so
+        // the counter gets there. NaN and +/-Infinity are all absorbed above.
+        const len = text.length;
+        if (!(start >= 0)) start = 0;
+        if (!(start <= len)) start = len;
+        if (!(end <= len)) end = len;
+        if (!(end > start)) return 0;
+
+        return this._measureRange(text, start, end, scale);
     }
 
     /**
@@ -420,7 +600,17 @@ export class BitmapFont {
 
     /**
      * Render a (possibly multi-line) string. Newlines (`\n`) advance by `lineHeight`.
-     * Pixel-snapped baseline for crisp pixel fonts.
+     *
+     * **Pixel-snapped, per LINE ORIGIN in X and per BASELINE in Y** -- and that
+     * is the exact scope of the promise (F-07, decisions/0004 fork 2). EVERY
+     * baseline is snapped, not just the first: line `i` lands at
+     * `Math.round(y) + Math.round(i * lineHeight * scale)`. Before 1.4.0 only
+     * line 0 was rounded and the rest accumulated raw, so at `scale` 1.1 with
+     * `lineHeight` 17 the five baselines were `0, 18.7, 37.4, 56.1, 74.8`; they
+     * are now `0, 19, 37, 56, 75`. Glyph X is deliberately **not** snapped: only
+     * the line origin is rounded, so a glyph column at `scale` 1.1 reads
+     * `0, 8.8, 17.6, 26.4...`. Rounding X per glyph would break the advance
+     * conservation law and cost bytes in the glyph loop.
      *
      * @param {CanvasRenderingContext2D} ctx
      * @param {string} text
@@ -439,7 +629,28 @@ export class BitmapFont {
         if (len === 0) return;
 
         let cursorX = x;
-        let cursorY = Math.round(y);
+        // ---- F-07, decisions/0004 fork (2), sub-fork B1 ---------------------
+        // baseline(i) = Math.round(y) + Math.round(i * lineHeight * scale)
+        //
+        // ONE round per line from an EXACT per-line product, never from a
+        // running float. `Math.round(y)` is computed once and reused as the
+        // anchor, so line i sits exactly Math.round(i * step) below the baseline
+        // this renderer ACTUALLY used for line 0 (B1). Rejected: B2
+        // (`Math.round(y + i * step)`) re-derives every line from a raw `y` the
+        // renderer discarded and forces a drawWrapped line-0 delta; A
+        // (`Math.round(cursorY + step)`) feeds each line's error into the next
+        // and drifts a full pixel over a paragraph. T9 controls 11/12 ship both
+        // and both must fail.
+        //
+        // THE SNAP IS PER LINE ORIGIN IN X, PER BASELINE IN Y -- the whole
+        // promise, stated exactly. `cursorX` is rounded once per line and NEVER
+        // per glyph: a per-glyph round would break T0 law 1's exact, no-epsilon
+        // `walk === _measureRange === oracle` equality, and would put bytes in a
+        // hot body to serve a cosmetic preference.
+        const anchorY = Math.round(y);
+        const step = this.lineHeight * scale;
+        let lineIndex = 0;
+        let cursorY = anchorY;
         let prevId = -1;
 
         let lineEnd = 0;
@@ -454,7 +665,10 @@ export class BitmapFont {
             const id = text.charCodeAt(i);
 
             if (id === 10) {
-                cursorY += this.lineHeight * scale;
+                // F-07 / B1. Per LINE: one multiply, one round, one add, one
+                // increment -- replacing one multiply and one add. ZERO per
+                // glyph. Do not re-derive this from a running accumulator.
+                cursorY = anchorY + Math.round(++lineIndex * step);
                 cursorX = x;
                 prevId = -1;
 
@@ -631,6 +845,12 @@ export class BitmapFont {
      *   `Array` behave identically). No type check is performed.
      * - Id 10 (`\n`) inside a line range is NOT a line break here -- lines come
      *   from the layout buffer. It advances 0 and draws nothing.
+     * - **Pixel-snapped per LINE ORIGIN in X and per BASELINE in Y** (F-07,
+     *   1.4.0). Line `l` lands at `anchor + Math.round(l * lineHeight * scale)`,
+     *   where `anchor` is the unchanged line-0 anchor
+     *   `Math.round(y + base * scale)` plus, at `vAlign` 1/2, the separately
+     *   rounded centring term. At `vAlign` 0 that is exactly `draw`'s baseline
+     *   sequence plus `Math.round(base * scale)`. Glyph X is not snapped.
      *
      * The ellipsis flag is for layout engines that truncated a line and want the
      * renderer to append "…" without paying for a separate string. Requires
@@ -682,6 +902,24 @@ export class BitmapFont {
             if (vAlign === 1) cursorY += Math.round((boxHeight - totalHeight) / 2);
             else if (vAlign === 2) cursorY += Math.round(boxHeight - totalHeight);
         }
+
+        // ---- F-07, decisions/0004 fork (2), sub-fork B1 ---------------------
+        // baseline(l) = anchorY + Math.round(l * lineHeight * scale), and at
+        // vAlign 0 that is exactly draw's sequence plus Math.round(base*scale).
+        //
+        // The line-0 anchor ABOVE is UNCHANGED in 1.4.0, including the two
+        // composed rounds at vAlign 1/2. `round(a) + round(b)` is not
+        // `round(a + b)`, so collapsing them MOVES line 0 by a pixel at a
+        // fractional centring term -- an undeclared delta that must not ship.
+        // B1 was chosen precisely so it costs nothing: the per-line term is
+        // added to the anchor the method already computed, never re-derived
+        // from the raw `y`.
+        //
+        // THE SNAP IS PER LINE ORIGIN IN X, PER BASELINE IN Y. `cursorX` is
+        // rounded once per line below and NEVER per glyph -- a per-glyph round
+        // would break T0 law 1's exact, no-epsilon three-way equality.
+        const anchorY = cursorY;
+        const step = this.lineHeight * scale;
 
         let ptr = 0;
         // F-13 checked-lane flag: read the per-font boolean ONCE here (per call),
@@ -783,7 +1021,10 @@ export class BitmapFont {
                 _throwField('flags', flags, 'has bits outside the known mask ' + FLAG_MASK);
             }
 
-            cursorY += this.lineHeight * scale;
+            // F-07 / B1. Per LINE: one multiply, one round, one add -- replacing
+            // one multiply and one add. ZERO per glyph. `l + 1` because `l` is
+            // still this line's index; the next line is one below the anchor.
+            cursorY = anchorY + Math.round((l + 1) * step);
         }
     }
 
@@ -795,4 +1036,4 @@ export class BitmapFont {
 }
 export default BitmapFont;
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';

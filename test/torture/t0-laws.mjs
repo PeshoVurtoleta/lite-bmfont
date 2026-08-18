@@ -30,6 +30,7 @@ import {
     FONT_ASCII, FONT_KERN, JSON_ASCII, JSON_KERN,
     FONT_GAP, FONT_GAP6, JSON_GAP, JSON_GAP6,
     FONT_NL, FONT_NLK, JSON_NL, JSON_NLK,
+    FONT_SNAP, FONT_SNAP_KERN,
 } from './harness.mjs';
 
 const SCALES = [0.25, 0.5, 1, 2, 4];
@@ -225,6 +226,147 @@ export function run() {
     const longest = FONT_ASCII._measureRange('A\nAAAAAA', 2, 8, 1);
     check(m2 === 84, () => 'T0/F-06: measure("A\\nAAAAAA") ' + m2 + ' != 84');
     check(longest === 72, () => 'T0/F-06: longest line ' + longest + ' != 72');
+
+    // ---- Law 12 (M4) -- the per-line-vs-total RESIDUAL law (F-06) -----------
+    // Three equations, stated separately because they fail for different
+    // reasons:
+    //
+    //   (i)   measure(s, k)        === sum over lines L of measure(L, k)
+    //   (ii)  measureWidest(s, k)  === max over lines L of measure(L, k)
+    //   (iii) measure(s,k) - measureWidest(s,k) === sum of the NON-LONGEST lines
+    //
+    // (i) is a property of `measure`, which M4 does not change, so it is the
+    // CONTROL: if it reddens, the session broke something it promised not to
+    // touch. (ii) is measureWidest's contract. (iii) IS THE F-06 NUMBER, asserted
+    // as an exact value rather than as an inequality -- it is the only one of the
+    // three that reads as a number in a failure message.
+    //
+    // The two equalities directly above (48 and 84 on FONT_ASCII) are this law's
+    // control at scale 1; the residuals below re-derive them.
+    //
+    // DEPENDENCY, stated because it is invisible: id 10's own advance is 0 for
+    // every font (M2 zeroes its seven slots, BitmapFont.js F-25 block), so the
+    // sum-of-lines identity is EXACT and needs no id-10 correction term. If M9
+    // ever un-zeroes those slots, this law is the first thing to re-derive.
+    //
+    // The right-hand side uses `_measureRange` over the ORIGINAL string rather
+    // than `measure` over a `slice`: identical arithmetic (each call starts a
+    // fresh kerning chain by construction) and no substring allocation.
+    check(FONT_ASCII.measure('AA\nAA') - FONT_ASCII.measureWidest('AA\nAA') === 24,
+        () => 'T0.law12/F-06: FONT_ASCII residual for "AA\\nAA" != 24');
+    check(FONT_ASCII.measure('A\nAAAAAA') - FONT_ASCII.measureWidest('A\nAAAAAA') === 12,
+        () => 'T0.law12/F-06: FONT_ASCII residual for "A\\nAAAAAA" != 12');
+    check(FONT_SNAP.measure('AA\nAA') === 32 && FONT_SNAP.measureWidest('AA\nAA') === 16,
+        () => 'T0.law12/F-06: FONT_SNAP "AA\\nAA" ' + FONT_SNAP.measure('AA\nAA') + '/' +
+            FONT_SNAP.measureWidest('AA\nAA') + ' != 32/16');
+    check(FONT_SNAP.measure('AA\nAA') - FONT_SNAP.measureWidest('AA\nAA') === 16,
+        () => 'T0.law12/F-06: FONT_SNAP residual for "AA\\nAA" != 16');
+    check(FONT_SNAP.measure('A\nAAAAAA') === 56 && FONT_SNAP.measureWidest('A\nAAAAAA') === 48,
+        () => 'T0.law12/F-06: FONT_SNAP "A\\nAAAAAA" != 56/48');
+    check(FONT_SNAP.measure('A\nAAAAAA') - FONT_SNAP.measureWidest('A\nAAAAAA') === 8,
+        () => 'T0.law12/F-06: FONT_SNAP residual for "A\\nAAAAAA" != 8');
+    // The trailing-newline row. A `for` that stops at the last id 10 drops the
+    // final line from the max and reddens ONLY here.
+    check(FONT_SNAP.measureWidest('AAA\n') === 24 && FONT_SNAP.measureWidest('\n\n\nAAA') === 24,
+        () => 'T0.law12/F-06: trailing/leading newline widest != 24');
+    check(FONT_SNAP.measureWidest('\n') === 0 && FONT_SNAP.measureWidest('') === 0,
+        () => 'T0.law12/F-06: empty-line widest != 0');
+
+    // The sweep. FONT_SNAP_KERN is the fixture that can SEE fork (6): on a
+    // kerningless font a measureWidest that carries the kerning chain across the
+    // line break is arithmetically identical to one that resets it, so running
+    // this only on FONT_SNAP would be vacuous (F-21's shape). Deleting the
+    // `prevId = -1` reset from measureWidest reddens (ii) and (iii) HERE.
+    const RESID_FONTS = [FONT_SNAP, FONT_SNAP_KERN, FONT_ASCII];
+    let residSeen = 0, residNonZero = 0, residCrossKern = 0;
+    for (let fi = 0; fi < RESID_FONTS.length; fi++) {
+        const font = RESID_FONTS[fi];
+        for (let i = 0; i < 256; i++) {
+            const t = CORPUS_NL[i];
+            const len = t.length;
+            for (let k = 0; k < 5; k++) {
+                const s = SCALES[k];
+                let sum = 0, max = 0, lineStart = 0, lines = 0;
+                for (let p = 0; p <= len; p++) {
+                    if (p === len || t.charCodeAt(p) === 10) {
+                        const w = font._measureRange(t, lineStart, p, s);
+                        sum += w;
+                        if (w > max) max = w;
+                        lines++;
+                        lineStart = p + 1;
+                    }
+                }
+                const total = font.measure(t, s);
+                const wide = font.measureWidest(t, s);
+                // (i) the CONTROL
+                check(total === sum,
+                    () => 'T0.law12(i): measure ' + total + ' != per-line sum ' + sum +
+                        ' (seed=' + SEED + ' fi=' + fi + ' i=' + i + ' s=' + s + ')');
+                // (ii) measureWidest's contract
+                check(wide === max,
+                    () => 'T0.law12(ii): measureWidest ' + wide + ' != per-line max ' + max +
+                        ' (seed=' + SEED + ' fi=' + fi + ' i=' + i + ' s=' + s + ')');
+                // (iii) THE F-06 NUMBER, exact
+                check(total - wide === sum - max,
+                    () => 'T0.law12(iii): residual ' + (total - wide) + ' != sum of non-longest ' +
+                        (sum - max) + ' (seed=' + SEED + ' fi=' + fi + ' i=' + i + ' s=' + s + ')');
+                residSeen++;
+                if (total - wide !== 0) residNonZero++;
+                // Non-vacuity for fork (6): count the multi-line strings on the
+                // KERNED snap font whose seam glyphs carry a non-zero kern. Those
+                // are the only tuples where crossing the newline would change the
+                // answer at all.
+                if (fi === 1 && lines > 1) {
+                    for (let p = 1; p < len; p++) {
+                        if (t.charCodeAt(p) === 10 && p + 1 < len &&
+                            font.kerning[(t.charCodeAt(p - 1) << 8) | t.charCodeAt(p + 1)] !== 0) {
+                            residCrossKern++;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    check(residSeen === 3840, () => 'T0.law12: swept ' + residSeen + ' tuples, expected 3840');
+    check(residNonZero >= 1000,
+        () => 'T0.law12: only ' + residNonZero + ' non-zero residuals -- the corpus went single-line');
+    check(residCrossKern >= 100,
+        () => 'T0.law12: only ' + residCrossKern + ' kerned line seams on FONT_SNAP_KERN (< 100) -- ' +
+            'fork (6) is VACUOUS again (F-21 shape); the newline-reset mutation would not be detected');
+
+    // Row 16: the newline-free twin. measureWidest === measure exactly, over the
+    // whole newline-free corpus at every scale. A measureWidest that resets its
+    // running max at every glyph passes every multi-line row above and dies here.
+    for (let i = 0; i < 512; i++) {
+        const t = CORPUS[i];
+        for (let k = 0; k < 5; k++) {
+            const s = SCALES[k];
+            const a = FONT_KERN.measureWidest(t, s);
+            const b = FONT_KERN.measure(t, s);
+            check(a === b,
+                () => 'T0.law12/row16: measureWidest ' + a + ' != measure ' + b +
+                    ' on a newline-free string (seed=' + SEED + ' i=' + i + ' s=' + s + ')');
+        }
+    }
+
+    // measureLine === _measureRange for every IN-RANGE integer tuple: the door
+    // must be transparent when it has nothing to do. Out-of-range indices are
+    // policy, not arithmetic, and get enumerated rows in T5 instead.
+    for (let i = 0; i < 512; i++) {
+        const t = CORPUS[i];
+        const len = t.length;
+        const a = prng() % len;
+        const b = a + 1 + (prng() % (len - a));
+        for (let k = 0; k < 5; k++) {
+            const s = SCALES[k];
+            const ml = FONT_KERN.measureLine(t, a, b, s);
+            const mr = FONT_KERN._measureRange(t, a, b, s);
+            check(ml === mr,
+                () => 'T0.law12: measureLine ' + ml + ' != _measureRange ' + mr +
+                    ' (seed=' + SEED + ' i=' + i + ' a=' + a + ' b=' + b + ' s=' + s + ')');
+        }
+    }
 
     // ---- Laws 7 & 8 -- fork (3), the missing glyph and the kerning chain (4.7)
     const chr200 = String.fromCharCode(200);

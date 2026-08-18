@@ -2,6 +2,105 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.4.0 -- 2026-08-18
+
+Metrics coherence and the pixel-snap promise. `measure()` sums across newlines
+and `draw()` aligns per line, so the two disagreed about the package's central
+noun and centring a multi-line string with the obvious call was wrong by the
+width of every line that is not the longest. `draw()` documented a
+"pixel-snapped baseline" and rounded exactly once, then accumulated
+`lineHeight * scale` raw, so at any fractional step every line after the first
+landed off-grid -- the blur the promise exists to prevent. And the measure family
+had no fail signal at all: one input returned a negative width, one returned 0
+for a number, one threw a raw `TypeError`, and one never returned. Design record:
+`decisions/0004-metrics-and-snapping.md`.
+
+### Added
+- **`measureWidest(text, scale = 1)`** -- the width of the WIDEST line, which is
+  the number to size or centre a box with. `measureWidest('AA\nAA')` is 16 on an
+  advance-8 font where `measure` is 32; for a newline-free string the two are
+  equal. Lines split at `\n` only and the kerning chain RESETS at the break,
+  matching `draw`. One pass, no `split`, no `slice`, no array -- zero allocation,
+  gated at `maxBytesPerCall: 0`.
+- **`measureLine(text, start, end, scale = 1)`** -- the width of one explicit
+  range, with `start`/`end` clamped into `[0, text.length]` and otherwise left
+  alone -- the same TWO-leg clamp `drawWrapped` applies to the indices it reads
+  out of a layout buffer, so the number is the width the renderer will actually
+  draw. Fractional indices are read as `charCodeAt` reads them, truncated per
+  iteration; a `NaN` `start` becomes 0 and a `NaN` `end` becomes `text.length`,
+  so `[0, NaN)` measures the whole line -- `NaN` is what a `Float32Array` holds
+  when a layout pass failed or never ran. An empty range, or a negative `end`,
+  measures 0. Built for the caller who has a layout buffer and wants the width of
+  the line it just produced.
+- **Which width do I want:** `measureLine` for one range, `measureWidest` for a
+  box that will hold every line, `measure` for the total advance of the whole
+  string including its newlines.
+- All three answer a `scale` outside `(0, Infinity)` or a non-string `text` with
+  **`NaN`**. The text door is `typeof text === 'string'`, so a **boxed** `String`
+  object is rejected -- deliberate, because the looser "has a length and a
+  charCodeAt" test admits an object that never terminates. `NaN` is what the
+  doors produce; it is not unique in the absolute, since a font with mixed-sign
+  Int16 advances at an extreme but in-range `scale` can also produce `NaN` or
+  `Infinity` by arithmetic, exactly as it did in 1.3.0.
+- `measureWidest` **can return a negative width**: a negative `xadvance` or
+  kerning `amount` is a valid Int16 the constructor accepts, so a line can
+  legitimately measure negative and the result is the greatest (least negative)
+  line. An empty line measures 0, which is wider than any negative line.
+
+### Fixed
+
+| ID | Sev | Finding | Reproduction | Fixed in |
+| --- | --- | --- | --- | --- |
+| **F-07** | S2 | **Only the first line was pixel-snapped in Y.** `draw` ran `cursorY = Math.round(y)` once and then accumulated `cursorY += lineHeight * scale` unrounded, so at any fractional step every line after the first landed off the pixel grid. `drawWrapped` had the identical shape. Every baseline is now snapped, from an exact per-line product rather than a running float: `Math.round(y) + Math.round(i * lineHeight * scale)`. | `draw(ctx,'A\nB\nC\nD\nE',0,0,1.1)` at `lineHeight` 17 -> baselines were `0, 18.7, 37.4, 56.1, 74.8`; now `0, 19, 37, 56, 75` | 1.4.0 |
+| **F-34** | **S1** | **The measure walk never terminated on an unbounded range, and the public `measure` could reach it.** The walk is `for (let i = start; i < end; i++)`; at `start === -Infinity` the increment never advances and the loop is unkillable. `measure` forwards `0` and `text.length`, so a real string was safe -- but `measure` had no text door, and an object with a numeric `length` and a `charCodeAt` reached it. All three public faces now terminate. | `measure({length: Infinity, charCodeAt(){return 65}})` -> was SIGKILL after 6 s; now returns `NaN`. `measureLine('AAAA', -Infinity, Infinity, 1)` -> `32` | 1.4.0 |
+| **F-35** | S2 | **The raw range walk and `drawWrapped` disagreed about a negative fractional index**, so a public range measure would have reported a width the renderer does not draw. `drawWrapped` clamps once, up front; the raw walk let `charCodeAt` truncate per iteration, and `charCodeAt(-0.5)` reads index 0 -- adding a glyph instead of rejecting one. `measureLine` clamps first -- and clamps ONLY, because `drawWrapped` does not pre-truncate either: it walks a fractional index and lets `charCodeAt` truncate per iteration. A door that rounded the bounds would report a width the renderer does not draw, which is the same defect one method over. | range `[-0.5, 2)` on `'AAAA'` at advance 8 -> `drawWrapped` draws 2 glyphs; the raw walk returned 24 (three glyphs); `measureLine` returns **16**. `[0.5, 2.7)` -> 3 glyphs and **24** from both | 1.4.0 |
+| **F-36** | S2 | **`measure` had neither a scale door nor a text door**, so M3's fail-closed policy was installed on the renderers only. One bad `scale` produced two different failure modes in one frame: the caller sized a box at a negative or zero width and `draw` silently declined to render. All three public measure faces now carry the same range door the three draw bodies carry, plus a `typeof text === 'string'` door. | `measure('AA', -1)` -> was `-16`; now `NaN`. `measure(123)` -> was `0`; now `NaN`. `measure(null)` -> was a raw `TypeError`; now `NaN` | 1.4.0 |
+| **F-06** | S2 (half) | **`measure()` sums across newlines while `draw()` aligns per line.** 1.4.0 adds `measureWidest` and documents `measure` as what it is -- a total advance, not a layout width. `measure`'s own return value is UNCHANGED; promoting it to the widest line is a silent numeric change and lands in 2.0.0. | `measure('AA\nAA')` -> `32` (unchanged); `measureWidest('AA\nAA')` -> `16` | 1.4.0 (half); 2.0.0 (semantics) |
+
+### Changed (behaviour)
+
+**We believe no working call site changes.** It is stated as a claim, not a fact,
+and the call sites that can notice are named below.
+
+| # | Call | 1.3.0 | 1.4.0 |
+| --- | --- | --- | --- |
+| D1 | `measure(123)` | `0` | **`NaN`** |
+| D2 | `measure(null)` / `measure(undefined)` | raw `TypeError` | **`NaN`** |
+| D3 | `measure('AA', -1)` | `-16` | **`NaN`** |
+| D4 | `measure('AA', 0)` | `0` | **`NaN`** |
+| D5 | `measure('AA', Infinity)` | `NaN` by arithmetic | `NaN` **by policy** -- not a value change, but the reason changed |
+| D6 | `measure([])` / `({})` / `(true)` | `0` | **`NaN`** |
+| D7 | `measure({length: Infinity, charCodeAt(){return 65}})` | **hung forever** | **`NaN`, returns** |
+| D8 | `draw`, multi-line, fractional `lineHeight * scale`, line index >= 1 | off-grid (`18.7, 37.4, ...`) | **snapped** (`19, 37, ...`) |
+| D9 | `drawWrapped`, same condition, line index >= 1 | off-grid (`36.7, 55.4, ...`) | **snapped** (`37, 55, ...`) |
+
+D1, D2, D6 and D7 replace a fail-open answer, a raw throw and a hang with a fail
+signal, and none of the four can be part of a call site that produces correct
+output. **D3 and D4 are different and the honest sentence is different: a
+negative or zero width is a value a caller may have been acting on
+deliberately**, and it now reads `NaN`. If you were pre-clamping `scale` to 0 to
+hide text and reading `measure`'s `0` as a valid "hidden" width, that arithmetic
+becomes `NaN`; use a real conditional instead. If you were catching `TypeError`
+around `measure(userInput)`, that catch stops firing.
+
+**D8/D9 migration note, because this is the one call site that can regress
+visually: if you were compensating for the Y drift by pre-rounding your own `y`,
+stop.** The renderer now does it and the two corrections compose.
+
+**Not changed, stated positively so a differential that finds otherwise is a
+bug:** line 0 of `draw` and of `drawWrapped` is byte-identical to 1.3.0,
+including `drawWrapped`'s two composed rounds at `vAlign` 1/2; at an integer
+`lineHeight * scale` nothing moves at all; glyph X is still not snapped per
+glyph -- only the line origin is rounded, and the promise is **per line origin in
+X, per baseline in Y**; `drawFast` is untouched; `measure`'s value for a valid
+multi-line string is unchanged; and the internal range walk keeps no door, since
+clamping it would tax `draw`'s per-line align calls, which cannot be out of range
+by construction.
+
+**The measure family answers a bad argument with `NaN` while the renderers answer
+it by drawing nothing.** That asymmetry is deliberate: a renderer can decline to
+act, a query cannot decline to answer.
+
 ## 1.3.0 -- 2026-08-18
 
 The descriptor door. Three of the four things a `BitmapFont` needs in order to

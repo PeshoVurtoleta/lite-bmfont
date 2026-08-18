@@ -221,8 +221,94 @@ A descriptor entry for id 10 (`\n`) is **discarded** at construction -- width,
 height, offsets, advance, and any kerning pair naming it. A newline is a layout
 instruction, not a glyph.
 
+### Which width do I want?
+
+The package has three width functions because a multi-line string has three
+honest widths. Pick by the question you are asking, not by the shortest name.
+
+| Question | Call | `'AA\nAA'` at advance 8 |
+|---|---|---|
+| How wide is this one range? | `measureLine(text, start, end, scale?)` | `measureLine(s, 0, 2)` -> `16` |
+| How wide must a box be to hold every line? | `measureWidest(text, scale?)` | `16` |
+| What is the total advance of the whole string, newlines included? | `measure(text, scale?)` | `32` |
+
+**`measure` sums across newlines.** It is a total advance, not a layout width.
+Centring a multi-line string with `measure` is wrong by the width of every line
+that is not the longest -- use `measureWidest`, which is the number `draw`
+aligns each line against.
+
 ### `measure(text, scale?) → number`
-Returns kerning-aware pixel width.
+Kerning-aware **total advance** of `text`. **Sums across newlines**:
+`measure('AA\nAA')` on an advance-8 font is `32`, not `16`.
+
+Returns **`NaN`** if `text` is not a string, or if `scale` is outside
+`(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity`. Throws after
+`destroy()`.
+
+The cross-newline sum is pinned current behaviour, not a feature: 2.0.0 promotes
+`measure` to the widest line, with a migration note.
+
+### `measureWidest(text, scale?) -> number`
+Width of the **widest line** -- the number to size or centre a box with.
+`measureWidest('AA\nAA')` is `16` where `measure` is `32`; for a newline-free
+string the two are equal.
+
+Lines split at `\n` only, and the kerning chain **resets at the break**, matching
+`draw`. A trailing newline yields a final empty line of width 0, so `'AAA\n'` is
+`24`, not `0`. One pass, no `split`, no `slice`, zero allocation -- gated by an
+allocation-volume check over 200,000 calls, not merely by a retained-bytes rule
+(a retention lane cannot see per-call garbage the collector reclaims).
+
+**Can return a negative width.** A negative `xadvance` or kerning `amount` is a
+valid Int16 the constructor accepts, so a line can legitimately measure negative
+and the result is the greatest (least negative) line. An empty line measures `0`,
+which is wider than any negative line.
+
+Returns **`NaN`** on a non-string `text` or a `scale` outside `(0, Infinity)`.
+
+### `measureLine(text, start, end, scale?) -> number`
+Width of **one range**. `start` and `end` are clamped into `[0, text.length]` and
+are otherwise left alone -- exactly what `drawWrapped` does to the indices it
+reads out of a layout buffer, which is what makes this report what `drawWrapped`
+**renders** instead of what a raw index walk counts. Fractional indices are read
+as `charCodeAt` reads them, truncated per iteration, not rounded at the boundary.
+
+```js
+// the width of the line your layout engine just produced
+const w = font.measureLine(text, layout[l * 4], layout[l * 4 + 1], scale);
+```
+
+- `[-0.5, 2)` on `'AAAA'` at advance 8 -> `16`, the two glyphs `drawWrapped`
+  draws (a raw range walk reports `24`).
+- `[0.5, 2.7)` -> `24`, the three glyphs `drawWrapped` draws.
+- `[-Infinity, Infinity)` -> `32`, and it **returns**.
+- A `NaN` bound behaves as the renderer treats it: `NaN` `start` -> `0`, `NaN`
+  `end` -> `text.length`, so `[0, NaN)` measures the **whole line**. `NaN` is
+  what a `Float32Array` holds when a layout pass failed or never ran.
+- An empty range after clamping, or a negative `end` -> `0`, not `NaN`.
+- Non-string `text` or a `scale` outside `(0, Infinity)` -> **`NaN`**. Door order
+  is text, then scale, **then** the range, so a bad `scale` with an empty range
+  is `NaN`, not `0`.
+
+### The measure family answers with `NaN`; the renderers answer by drawing nothing
+
+`draw`, `drawFast` and `drawWrapped` respond to a bad `scale` by emitting zero
+`drawImage` calls. `measure`, `measureWidest` and `measureLine` respond by
+returning `NaN`. The asymmetry is deliberate: **a renderer can decline to act, a
+query cannot decline to answer.** A caller who passes `scale: NaN` to both in one
+frame gets zero pixels and a `NaN` width, and both are honest.
+
+The scale door is a **range** test -- `!(scale > 0 && scale < Infinity)` -- so
+`0` and `-1`, which are finite, are rejected too. The text door is
+`typeof text === 'string'`, not an "array-like" test, so a **boxed** `String`
+object (`new String('AA')`) is rejected and returns `NaN`. That is deliberate:
+the looser test admits `{length: Infinity, charCodeAt(){...}}`, which never
+terminates.
+
+`NaN` is what the doors produce, and it is not unique in the absolute: a font
+with mixed-sign Int16 advances at an extreme but in-range `scale` can also
+produce `NaN` or `Infinity` by arithmetic. That behaviour is unchanged from
+1.3.0.
 
 ### `hasGlyph(id) -> boolean`
 Does the descriptor cover this glyph id? Fail-closed on every non-integer: `NaN`,
@@ -236,6 +322,23 @@ any value outside `{0, 1, 2}` (`NaN`, negatives, fractionals) renders **left**.
 A `scale` outside `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity` --
 draws **nothing** and returns (F-11). `x, y` is the **baseline anchor** of the
 first line.
+
+**Pixel-snapped per line origin in X and per baseline in Y.** That is the exact
+scope of the promise, and it is worth stating precisely because "pixel-snapped"
+invites the stronger reading:
+
+- **Y: every baseline is snapped**, not just the first. Line `i` lands at
+  `Math.round(y) + Math.round(i * lineHeight * scale)`. Before 1.4.0 only line 0
+  was rounded and the rest accumulated raw, so at `lineHeight` 17 and
+  `scale` 1.1 the five baselines were `0, 18.7, 37.4, 56.1, 74.8`; they are now
+  `0, 19, 37, 56, 75`.
+- **X: only the line origin is snapped, never the individual glyph.** At
+  `scale` 1.1 a glyph column reads `0, 8.8, 17.6, 26.4...` and that is
+  deliberate. Rounding each glyph's x would break the advance conservation law
+  the whole test suite rests on, and would cost bytes in the glyph loop to serve
+  a cosmetic preference.
+
+`drawWrapped` snaps the same way, from its own line-0 anchor.
 
 ### `drawFast(ctx, value, x, y, scale?, align?) → void`
 Zero-alloc number renderer with one decimal place.
@@ -312,10 +415,12 @@ loaders and `catch` blocks.
 
 ## 🧪 Testing
 
-`npm test` runs **103 tests** (100 pass, 0 fail, 3 finding-watch todos: F-07,
-F-14, F-18) across `node:test`. `npm run torture` runs the ten-tier zero-GC gate
+`npm test` runs **116 tests** (114 pass, 0 fail, 2 finding-watch todos: F-14,
+F-18) across `node:test`. `npm run torture` runs the ten-tier zero-GC gate
 (`node --expose-gc test/torture.mjs`) and prints exactly `ok`; the descriptor door
-is proven by T3's 50-row abuse matrix and T9's control 10.
+is proven by T3's 50-row abuse matrix and T9's control 10, and the pixel-snap
+promise by T5's allocating reference renderer plus two T9 controls that rebuild
+the rejected rounding variants and require the numbers to move.
 
 ## 📚 LLM-Friendly Documentation
 

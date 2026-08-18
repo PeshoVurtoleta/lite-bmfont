@@ -1,9 +1,9 @@
 /**
  * T6 -- the zero-alloc gate (F-17).
  *
- * Four windows, run STRICTLY SEQUENTIALLY (the profiler is one-measurement-at-a-
- * time and throws "already in flight" if nested). Each window is gated on TWO
- * lanes:
+ * SIX windows (A-D from M0/M2, E and F added in M4), run STRICTLY
+ * SEQUENTIALLY (the profiler is one-measurement-at-a-time and throws
+ * "already in flight" if nested). Each window is gated on TWO lanes:
  *   - measureOps + checkNoGc (RULES): an allocation RATE gate. maxMajor:0,
  *     maxPauseMs:4, maxArrayBuffersGrowth:0. The last rule needs stabilize:'deep'
  *     (runOpsGate supplies it) because typed-array backing stores live OUTSIDE
@@ -33,8 +33,62 @@ import {
 /** Retained sink for the BREAK control -- survives GC so arrayBuffers grows. */
 const leak = [];
 
-/** DCE guard for window D (measure has no drawImage side effect to anchor it). */
+/** DCE guard for windows D, E and F (no drawImage side effect to anchor them). */
 let sink = 0;
+
+// ---- F-37: the transient-allocation detector, windows E and F ONLY ----------
+//
+// WHY IT EXISTS. Neither profiler lane can see a body that allocates per call
+// and lets the scavenger reclaim it:
+//   - measureAllocs / maxBytesPerCall is a RETENTION lane by definition
+//     (lite-gc-profiler llms.txt: measureOps "sees transient garbage that
+//     measureAllocs settles away"). Per-call garbage measures as exactly 0.
+//   - checkNoGc's maxBytesPerOp reads summary.bytesPerOp, but measureOps puts
+//     bytesPerOp on the RESULT, not the summary -- so the rule reads undefined
+//     and cannot fail at any threshold for any body.
+//   - stabilize:'deep', which runOpsGate hardcodes because maxArrayBuffersGrowth
+//     requires it, additionally converts bytesPerOp from transient allocation
+//     into retention. The two rules cannot both be gated in one stabilize mode.
+// Measured: a `measureWidest` implemented with `text.split('\n')` passes ALL of
+// window E's profiler lanes. That is F-37, it is recorded in ROADMAP.md, and the
+// GENERAL fix belongs to M9 with F-27/F-31/F-32. M4 does not half-fix a gate --
+// it adds the one detector its own two new bodies need.
+//
+// HOW IT WORKS. Between collections `heapUsed` rises monotonically with
+// allocation; a scavenge shows up as a negative delta. Summing only the POSITIVE
+// deltas therefore approximates total bytes allocated by the body, which is the
+// quantity a retention lane throws away. It is synchronous, so it works inside a
+// sync tier -- a PerformanceObserver on 'gc' does not: those entries are
+// delivered on a later turn and takeRecords() returns 0 from inside the loop.
+//
+// THE THRESHOLD AND ITS MARGIN, measured on this host, 8 reps each, after a
+// 20,000-iteration warmup:
+//   shipped single-pass measureWidest:      0 B typical, 63,040 B worst
+//   the same body written with split():    28,042,664 B, every rep
+// The limit below sits 15.9x above the worst zero-alloc observation and 28x
+// below the mutant. It is a GC-adjacent number and therefore environment
+// sensitive, which is exactly why the margin is this wide and why it is stated
+// here rather than tuned quietly. The floor is not 0 because
+// process.memoryUsage() itself allocates; that is why sampling is strided.
+const VOL_OPS = 200000;
+const VOL_WARMUP = 20000;
+const VOL_MAX = 1000000;
+
+function allocVolume(fn) {
+    for (let i = 0; i < VOL_WARMUP; i++) fn(i);
+    globalThis.gc();
+    let prev = process.memoryUsage().heapUsed;
+    let sum = 0;
+    for (let i = 0; i < VOL_OPS; i++) {
+        fn(i);
+        if ((i & 1023) === 0) {
+            const h = process.memoryUsage().heapUsed;
+            if (h > prev) sum += h - prev;
+            prev = h;
+        }
+    }
+    return sum;
+}
 
 function structural(font, label) {
     check(font._charScratch.byteLength === 24,
@@ -142,5 +196,81 @@ export function run() {
         gateOps(report, summary, 'D');
         const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
         gateAlloc(aReport, result, 'D');
+    }
+
+    // --- Window E (M4): measureWidest() -- no drawImage, 0 glyphs ---------------
+    // S64 is the SAME string window D measures -- 64 chars, 3 lines, 2 newlines --
+    // so E and D are directly comparable and E's cost over D is exactly what
+    // fork (6)'s per-line max-tracking costs. A single-line string would leave the
+    // newline branch never taken and the window would measure a body the method
+    // does not have.
+    //
+    // WHAT THIS WINDOW'S PROFILER LANES ACTUALLY GATE, stated correctly after
+    // measurement (F-37): maxMajor:0, maxPauseMs:4, maxArrayBuffersGrowth:0 and
+    // RETAINED bytes per call. They do NOT gate transient allocation -- a
+    // measureWidest written with `text.split('\n')` passes every one of them, and
+    // it passes T0's residual law and T5's oracle differential too, because the
+    // oracle does exactly the same thing and is allowed to. The detector that
+    // forbids it is the allocation-VOLUME check appended below, not
+    // maxBytesPerCall:0.
+    {
+        const OPS = 500000, WARMUP = 5000, GLYPHS = 0;
+        resetRec(ATLAS); resetTotals();
+        const hot = (i) => {
+            rec.calls = 0;
+            sink = FONT_ASCII.measureWidest(S64); // assigned so V8 cannot DCE the call
+        };
+        const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+        check(rec.total === (OPS + WARMUP) * GLYPHS,
+            () => 'T6/E: rec.total ' + rec.total + ' != 0 (measureWidest must not draw)');
+        check(sink === 252, () => 'T6/E: measureWidest(S64) sink ' + sink + ' != 252');
+        structural(FONT_ASCII, 'E');
+        gateOps(report, summary, 'E');
+        const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
+        gateAlloc(aReport, result, 'E');
+        // F-37: the transient-allocation detector. THIS is what forbids a
+        // split()-based measureWidest; the two lanes above cannot see it.
+        const volE = allocVolume(hot);
+        check(volE <= VOL_MAX,
+            () => 'T6/E: measureWidest allocated ' + volE + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOL_MAX + ') -- a per-call allocation shipped, most likely ' +
+                'text.split() or a slice in the widest walk');
+    }
+
+    // --- Window F (M4): measureLine() -- the fork (3) door + a 21-glyph walk ----
+    // (S64, 0, 21, 1) is line 0 of S64 exactly -- 21 'A's, no newline -- so this
+    // window measures the range door plus a _measureRange walk. It is directly
+    // comparable to nothing, so its throughput is RECORDED rather than compared;
+    // what it GATES is maxBytesPerCall:0 and maxMajor:0, which are absolute.
+    //
+    // Both new windows drive the ACCEPT branch (scale defaults to 1, indices in
+    // range). That is F-32's exact shape and this comment states it rather than
+    // pretending otherwise: the REJECT branches -- a NaN scale, a non-string
+    // text, an unbounded range -- are exercised by T5's correctness rows and by
+    // T9 control 13, and they are NOT alloc-gated. F-32 stays M9's. What M4 does
+    // do is put both new bodies inside a measured window from the day they ship,
+    // which is the thing F-31/F-32 say is missing for the existing bodies.
+    {
+        const OPS = 500000, WARMUP = 5000, GLYPHS = 0;
+        resetRec(ATLAS); resetTotals();
+        const hot = (i) => {
+            rec.calls = 0;
+            sink = FONT_ASCII.measureLine(S64, 0, 21, 1);
+        };
+        const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+        check(rec.total === (OPS + WARMUP) * GLYPHS,
+            () => 'T6/F: rec.total ' + rec.total + ' != 0 (measureLine must not draw)');
+        check(sink === 252, () => 'T6/F: measureLine(S64,0,21,1) sink ' + sink + ' != 252');
+        structural(FONT_ASCII, 'F');
+        gateOps(report, summary, 'F');
+        const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
+        gateAlloc(aReport, result, 'F');
+        // F-37, same detector: measureLine's door must not allocate either -- a
+        // `text.slice(start, end)` before the walk would be the natural mistake.
+        const volF = allocVolume(hot);
+        check(volF <= VOL_MAX,
+            () => 'T6/F: measureLine allocated ' + volF + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOL_MAX + ') -- a per-call allocation shipped' +
+                ' in the range door');
     }
 }

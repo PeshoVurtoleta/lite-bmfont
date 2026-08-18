@@ -193,4 +193,113 @@ export function run() {
             die('T9 control 10: chars [] threw -- the descriptor door is always-throwing (T3 non-vacuity twin would fail)');
         }
     }
+
+    // ---- M4 controls 11, 12, 13 --------------------------------------------
+    // All three run OUT OF PROCESS against a REBUILT library, not against a
+    // model of one. A control that recomputes the rejected arithmetic in the
+    // test file and compares it to itself proves nothing about the shipped body;
+    // these mutate BitmapFont.js, import the mutation, and require the numbers
+    // to move. Control 13's variants cannot even be run in process -- they never
+    // return -- so spawnSync's timeout is the only mechanism, exactly as it is
+    // for control 9.
+    const mchild = new URL('./t9-measure-hang-child.mjs', import.meta.url).pathname;
+    const spawnChild = (mode, ms) => spawnSync(process.execPath, [mchild, mode],
+        { timeout: ms, killSignal: 'SIGKILL', encoding: 'utf8' });
+    const parseChild = (r, mode) => {
+        if (r.status === 3) {
+            die('T9 control 11-13: could not reconstruct the ' + mode + ' body -- the markers moved; ' +
+                'update t9-measure-hang-child.mjs. stderr: ' + (r.stderr || '').trim());
+        }
+        if (r.status !== 0 || r.signal !== null) {
+            die('T9 control 11-13: the ' + mode + ' child did not exit 0 (status=' + r.status +
+                ' signal=' + r.signal + ') stderr: ' + (r.stderr || '').trim());
+        }
+        return JSON.parse(r.stdout.trim());
+    };
+    const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+    // The shipped body's own numbers, read from the same child so every
+    // comparison below is library-against-library.
+    const shipped = parseChild(spawnChild('door', 4000), 'door');
+
+    // Control 11 -- fork (2) option A, the ACCUMULATE-ROUNDED form.
+    // It must be DETECTED at the y = 0 table, and detected at lines 2, 3 and 4
+    // specifically: A and B agree on lines 0 and 1, so a control that checked a
+    // two-line prefix would pass and the whole session would ship the wrong
+    // fork. The full five-element array is asserted.
+    {
+        const a = parseChild(spawnChild('aform', 4000), 'aform');
+        if (same(a.y0, shipped.y0)) {
+            die('T9 control 11: the accumulate-rounded (A) form produced the SHIPPED y=0 baselines ' +
+                a.y0.join(',') + ' -- the Y table cannot tell fork (2) A from B, and it is decorative');
+        }
+        if (!(a.y0[0] === shipped.y0[0] && a.y0[1] === shipped.y0[1])) {
+            die('T9 control 11: A and B disagree at line 0 or 1 (' + a.y0.join(',') + ' vs ' +
+                shipped.y0.join(',') + ') -- the harness moved, not the library');
+        }
+        if (!(a.y0[2] !== shipped.y0[2] && a.y0[3] !== shipped.y0[3] && a.y0[4] !== shipped.y0[4])) {
+            die('T9 control 11: A diverges from B on fewer than three of lines 2-4 (' + a.y0.join(',') +
+                ' vs ' + shipped.y0.join(',') + ')');
+        }
+        // The other direction: the SHIPPED body still produces the pinned row.
+        if (!same(shipped.y0, [0, 19, 37, 56, 75])) {
+            die('T9 control 11: the shipped body gives y=0 baselines ' + shipped.y0.join(',') +
+                ' != 0,19,37,56,75');
+        }
+    }
+
+    // Control 12 -- the losing sub-fork B2, Math.round(y + i * step).
+    // It must be DETECTED at the fractional-y row and NOT detected at y = 0.
+    // The second half is the point: B2 passing the y = 0 table is the measured
+    // fact that makes the fractional-y row necessary. A control that fires on
+    // y = 0 means the harness is wrong, not the library.
+    {
+        const b2 = parseChild(spawnChild('b2form', 4000), 'b2form');
+        if (!same(b2.y0, shipped.y0)) {
+            die('T9 control 12: B2 was DETECTED at y=0 (' + b2.y0.join(',') + ' vs ' +
+                shipped.y0.join(',') + ') -- B1 and B2 are identical there; the harness is wrong');
+        }
+        if (same(b2.y06, shipped.y06)) {
+            die('T9 control 12: B2 produced the SHIPPED y=0.6 baselines ' + b2.y06.join(',') +
+                ' -- the discriminator does not discriminate and the sub-fork is unpinned');
+        }
+        // The shipped row, pinned literally. B1 gives 1,20,38,57,76; B2 gives
+        // 1,19,38,57,75; they differ at indices 1 and 4 ONLY.
+        if (!same(shipped.y06, [1, 20, 38, 57, 76])) {
+            die('T9 control 12: the shipped body gives y=0.6 baselines ' + shipped.y06.join(',') +
+                ' != 1,20,38,57,76 (B1)');
+        }
+        if (!same(b2.y06, [1, 19, 38, 57, 75])) {
+            die('T9 control 12: the B2 variant gives ' + b2.y06.join(',') + ' != 1,19,38,57,75');
+        }
+        if (!(b2.y06[0] === shipped.y06[0] && b2.y06[2] === shipped.y06[2] && b2.y06[3] === shipped.y06[3])) {
+            die('T9 control 12: B1 and B2 disagree outside indices 1 and 4 -- re-derive the row');
+        }
+    }
+
+    // Control 13 -- the F-34 out-of-process non-termination control.
+    // The shipped child already exited 0 above AND checked every returned value,
+    // so "it returned" is not being mistaken for "it returned the right thing".
+    // What remains is the SELF-TEST: a door-removed body MUST be killed. If a
+    // doorless child also exits 0 the watchdog is not watching, and a control
+    // that cannot fail is decorative (ROADMAP law 8).
+    {
+        // The fourth value is 32, not 0, since F-38: a NaN index pair clamps to
+        // the whole line, matching what drawWrapped renders for it.
+        if (shipped.a !== 32 || shipped.b !== 'NaN' || shipped.c !== 'NaN' || shipped.d !== 32) {
+            die('T9 control 13: the shipped child returned ' + JSON.stringify(shipped) +
+                ' -- expected 32 / NaN / NaN / 32');
+        }
+        for (const broken of ['nodoor', 'notext']) {
+            const r = spawnChild(broken, 2000);
+            if (r.status === 3) {
+                die('T9 control 13: could not reconstruct the ' + broken + ' body -- the markers moved');
+            }
+            if (r.signal !== 'SIGKILL') {
+                die('T9 control 13: the ' + broken + ' body RETURNED (status=' + r.status +
+                    ' signal=' + r.signal + ') -- the door-removed walk terminated, so the hang ' +
+                    'control is vacuous and F-34 is not actually gated');
+            }
+        }
+    }
 }

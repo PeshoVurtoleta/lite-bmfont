@@ -4,6 +4,7 @@ import { BitmapFont, BitmapFontError, DRAWFAST_MAX } from '../BitmapFont.js';
 import {
     rec, resetRec, ATLAS,
     FONT_ASCII, FONT_NUM, FONT_GAP, FONT_NL, JSON_ASCII, JSON_GAP, oracleAdvance,
+    FONT_SNAP, FONT_SNAP_KERN, FONT_SNAP_NEG, JSON_SNAP,
 } from './torture/harness.mjs';
 
 // The next representable double above v (v >= 0). 1e21's ulp is 2^17 = 131072.
@@ -1079,5 +1080,362 @@ describe('BitmapFont M3: the descriptor door', () => {
         assert.doesNotThrow(() => ASCII_CHECKED.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 1), 1, 1000, 1000, 0, 0, 1, 0, 0));
         assert.equal(rec.calls, 8);
         clean();
+    });
+});
+
+/**
+ * M4 (v1.4.0) -- metrics coherence and the pixel-snap promise.
+ * F-06, F-07, F-34, F-35, F-36. Design record:
+ * `decisions/0004-metrics-and-snapping.md`.
+ *
+ * Every literal below is asserted against FONT_SNAP: advance 8, lineHeight 17,
+ * base 16. No other fixture in this repo has those numbers -- FONT_ASCII
+ * advances 12 with lineHeight 20 -- and asserting 32/16/56/48 against it would
+ * be measuring nothing while staying green.
+ */
+describe('BitmapFont M4: metrics coherence and the pixel-snap promise', () => {
+    // Recover the integer baseline from a recorded dy. Every drawn FONT_SNAP
+    // glyph has yoffset 2 and the font has base 16, and `draw` computes
+    // `dy = (cursorY + yoffset*scale) - base*scale`, so this round-trips exactly.
+    const baselineOf = (dy, scale) => Math.round(dy - (2 * scale - 16 * scale));
+    const baselines = (scale) => {
+        const out = [];
+        for (let i = 0; i < rec.calls; i++) out.push(baselineOf(rec.dy[i], scale));
+        return out;
+    };
+    const clean = () => {
+        assert.equal(rec.dropped, 0);
+        assert.equal(rec.imgMismatch, 0);
+    };
+    const FIVE = 'A\nB\nC\nD\nE';
+    const LAY5 = (() => {
+        const b = new Float32Array(20);
+        for (let l = 0; l < 5; l++) { b[l * 4] = l * 2; b[l * 4 + 1] = l * 2 + 1; b[l * 4 + 2] = 8; b[l * 4 + 3] = 0; }
+        return b;
+    })();
+
+    test('F-06: measureWidest returns the widest line where measure returns the sum', () => {
+        assert.equal(FONT_SNAP.measure('AA\nAA'), 32);
+        assert.equal(FONT_SNAP.measureWidest('AA\nAA'), 16);
+        assert.equal(FONT_SNAP.measure('A\nAAAAAA'), 56);
+        assert.equal(FONT_SNAP.measureWidest('A\nAAAAAA'), 48);
+        // 'A\nAAAAAA' is the string that catches a measureWidest returning the
+        // FIRST line instead of the max: the first line is 8, not 48.
+        assert.notEqual(FONT_SNAP.measureWidest('A\nAAAAAA'), 8);
+        // ...and 'AAA\n' catches one that drops the final (empty) line, which
+        // 'AA\nAA' cannot see.
+        assert.equal(FONT_SNAP.measureWidest('AAA\n'), 24);
+        assert.equal(FONT_SNAP.measureWidest('\n\n\nAAA'), 24);
+        assert.equal(FONT_SNAP.measureWidest('\n'), 0);
+        assert.equal(FONT_SNAP.measureWidest(''), 0);
+        // The residual IS the F-06 number, asserted as an exact value.
+        assert.equal(FONT_SNAP.measure('AA\nAA') - FONT_SNAP.measureWidest('AA\nAA'), 16);
+        assert.equal(FONT_SNAP.measure('A\nAAAAAA') - FONT_SNAP.measureWidest('A\nAAAAAA'), 8);
+    });
+
+    test('F-06: measure still sums across newlines, unchanged in 1.4.0', () => {
+        // PINNED CURRENT BEHAVIOUR, NOT DESIRED BEHAVIOUR. 2.0.0 promotes
+        // `measure` to the widest line (decisions/0004 fork 1); this block exists
+        // so that flip lands visibly instead of silently, and it is expected to
+        // go red in that session, which will own updating it.
+        assert.equal(FONT_SNAP.measure('AA\nAA'), 32);
+        assert.equal(FONT_SNAP.measure('A\nAAAAAA'), 56);
+        assert.equal(FONT_ASCII.measure('AA\nAA'), 48);
+        assert.equal(FONT_ASCII.measure('A\nAAAAAA'), 84);
+    });
+
+    test('F-06: measureWidest equals measure for a newline-free string', () => {
+        // The twin. A measureWidest that "fixes" measure too would redden the
+        // block above; one that resets its running max at every glyph dies here.
+        for (const s of ['AAAA', 'A', 'Hello world', '~', ' ', 'The quick brown fox']) {
+            assert.equal(FONT_SNAP.measureWidest(s), FONT_SNAP.measure(s), s);
+            assert.equal(FONT_SNAP_KERN.measureWidest(s), FONT_SNAP_KERN.measure(s), s);
+        }
+        assert.equal(FONT_SNAP.measureWidest('AAAA'), 32);
+    });
+
+    test('F-06: measureWidest resets the kerning chain at a line break', () => {
+        // Fails under decisions/0004 fork (6) option B (one continuous walk).
+        // FONT_SNAP_KERN is the ONLY fixture that can see this: on a kerningless
+        // font both options are arithmetically identical for every string.
+        const s = 'AB\nBA';
+        // Each line measured independently, chain starting fresh.
+        const l0 = FONT_SNAP_KERN.measure('AB');
+        const l1 = FONT_SNAP_KERN.measure('BA');
+        assert.equal(FONT_SNAP_KERN.measureWidest(s), Math.max(l0, l1));
+        // Non-vacuity: the seam glyphs really do carry a kern, so a walk that
+        // crossed the break would produce a different number.
+        const seam = FONT_SNAP_KERN.kerning[(66 << 8) | 66];
+        assert.notEqual(seam, 0);
+        // And the widest is NOT what a continuous walk would report.
+        assert.equal(FONT_SNAP_KERN.measureWidest(s), FONT_SNAP_KERN.measureWidest('AB\nBA'));
+    });
+
+    test('F-35: measureLine agrees with drawWrapped on [-0.5, 2), where the raw helper reports one glyph too many', () => {
+        // Diverges on 1.3.0: the raw walk returns 24.
+        assert.equal(FONT_SNAP.measureLine('AAAA', -0.5, 2, 1), 16);
+        assert.equal(FONT_SNAP._measureRange('AAAA', -0.5, 2, 1), 24);
+        // ...and 16 is the RENDERER's number, not an invention.
+        resetRec(ATLAS);
+        FONT_SNAP.drawWrapped(rec, 'AAAA', Float32Array.of(-0.5, 2, 32, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        assert.equal(rec.calls, 2);
+        assert.deepEqual(Array.from(rec.dx.slice(0, 2)), [0, 8]);
+        clean();
+    });
+
+    test('F-35: measureLine clamps but does NOT truncate, so it reports what drawWrapped renders', () => {
+        // Fork (3)'s whole justification is that the door is the only option
+        // under which measureLine agrees with the renderer. That is asserted
+        // here, on every fractional range, rather than described: 8 px a glyph.
+        for (const [a, b, quads] of [[-0.5, 2, 2], [0.5, 2.7, 3], [1.9, 3.1, 2], [0, 4, 4]]) {
+            resetRec(ATLAS);
+            FONT_SNAP.drawWrapped(rec, 'AAAA', Float32Array.of(a, b, 32, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+            assert.equal(rec.calls, quads, 'drawWrapped [' + a + ',' + b + ')');
+            assert.equal(FONT_SNAP.measureLine('AAAA', a, b, 1), quads * 8, 'measureLine [' + a + ',' + b + ')');
+        }
+        // [0.5, 2.7) is the row that forbids a truncating door. A `Math.trunc` on
+        // both ends collapses it to [0, 2) and reports 16 -- a width the renderer
+        // will not draw, which is F-35 relocated from _measureRange to
+        // measureLine. The raw walk already agrees here; only the door can break it.
+        assert.equal(FONT_SNAP.measureLine('AAAA', 0.5, 2.7, 1), 24);
+        assert.equal(FONT_SNAP._measureRange('AAAA', 0.5, 2.7, 1), 24);
+        assert.notEqual(FONT_SNAP.measureLine('AAAA', 0.5, 2.7, 1), 16);
+        clean();
+    });
+
+    test('F-07: draw snaps every baseline, not just the first', () => {
+        // 1.3.0 gave 0, 18.7, 37.4, 56.1, 74.8.
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, FIVE, 0, 0, 1.1, 0);
+        assert.equal(rec.calls, 5);
+        assert.deepEqual(baselines(1.1), [0, 19, 37, 56, 75]);
+        // Narrow: at an integer step nothing moves.
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, FIVE, 0, 0, 1, 0);
+        assert.deepEqual(baselines(1), [0, 17, 34, 51, 68]);
+        // Every baseline is an integer at a third-scale too (1.3.0 drifted 0.333).
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, FIVE, 0, 0, 1 / 3, 0);
+        assert.deepEqual(baselines(1 / 3), [0, 6, 11, 17, 23]);
+        clean();
+    });
+
+    test('F-07: the snap is measured from the snapped first baseline (B1)', () => {
+        // THE DISCRIMINATOR. At y = 0 the ratified B1 form and the rejected B2
+        // form produce identical baselines, so the block above pins nothing about
+        // the sub-fork. At y = 0.6 B1 gives 1,20,38,57,76 and B2 gives
+        // 1,19,38,57,75 -- they differ at indices 1 and 4 only, so the WHOLE
+        // array is asserted. 1.3.0 gave 1, 19.7, 38.4, 57.1, 75.8.
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, FIVE, 0, 0.6, 1.1, 0);
+        assert.deepEqual(baselines(1.1), [1, 20, 38, 57, 76]);
+        // A negative fractional anchor: Math.round(-0.5) is -0.
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, FIVE, 0, -0.5, 1.1, 0);
+        assert.deepEqual(baselines(1.1), [0, 19, 37, 56, 75]);
+        // Explicitly NOT a discriminator, recorded so nobody cites it as one:
+        // single-line output is identical under B1, B2 and 1.3.0 alike.
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, 'A', 0, 0.6, 1.1, 0);
+        assert.deepEqual(baselines(1.1), [1]);
+        clean();
+    });
+
+    test('F-07: drawWrapped snaps every baseline and keeps its line-0 anchor', () => {
+        resetRec(ATLAS);
+        FONT_SNAP.drawWrapped(rec, FIVE, LAY5, 5, 100, 200, 0, 0, 1.1, 0, 0);
+        assert.deepEqual(baselines(1.1), [18, 37, 55, 74, 93]);
+        // The offset from draw's sequence is Math.round(base*scale) = 18, NOT
+        // base*scale = 17.6. An assertion written with the raw product compares
+        // nothing and is off by 0.4 px on every line.
+        assert.equal(Math.round(16 * 1.1), 18);
+        assert.notEqual(16 * 1.1, 18);
+        // THE LINE-0 ANCHOR IS UNCHANGED FROM 1.3.0, including the two composed
+        // rounds at vAlign 1/2. The fixture is chosen so they do NOT compose:
+        // Math.round(1.0 + 17.6) + Math.round(5.5999...) is 19 + 6 = 25, while a
+        // single round of 24.199... is 24. This is the only detector of a
+        // reviewer collapsing them "for consistency".
+        const bh = 104.7;
+        assert.equal(Math.round(1.0 + 16 * 1.1) + Math.round((bh - 5 * 17 * 1.1) / 2), 25);
+        assert.equal(Math.round(1.0 + 16 * 1.1 + (bh - 5 * 17 * 1.1) / 2), 24);
+        resetRec(ATLAS);
+        FONT_SNAP.drawWrapped(rec, FIVE, LAY5, 5, 100, bh, 0, 1.0, 1.1, 0, 1);
+        assert.deepEqual(baselines(1.1), [25, 44, 62, 81, 100]);
+        clean();
+    });
+
+    test('F-07: draw and drawWrapped keep identical per-line increments at a fractional y', () => {
+        // What B1 makes exact at EVERY y. The plan's stronger form --
+        // wrapped(i) === draw(i) + Math.round(base*scale) -- holds at integer y
+        // only, because drawWrapped's line-0 anchor rounds a composite
+        // (Math.round(y + base*scale)) and B1 deliberately leaves that alone. At
+        // y = 0.6 the anchors differ by 17, not 18.
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, FIVE, 0, 0.6, 1.1, 0);
+        const d = baselines(1.1);
+        resetRec(ATLAS);
+        FONT_SNAP.drawWrapped(rec, FIVE, LAY5, 5, 100, 200, 0, 0.6, 1.1, 0, 0);
+        const w = baselines(1.1);
+        for (let i = 1; i < 5; i++) assert.equal(w[i] - w[0], d[i] - d[0], 'increment ' + i);
+        assert.equal(w[0] - d[0], 17);
+        // At an integer y the offset IS Math.round(base*scale), on every line.
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, FIVE, 0, 0, 1.1, 0);
+        const d0 = baselines(1.1);
+        resetRec(ATLAS);
+        FONT_SNAP.drawWrapped(rec, FIVE, LAY5, 5, 100, 200, 0, 0, 1.1, 0, 0);
+        const w0 = baselines(1.1);
+        for (let i = 0; i < 5; i++) assert.equal(w0[i] - d0[i], 18, 'line ' + i);
+        clean();
+    });
+
+    test('F-07: X is snapped per line origin, never per glyph', () => {
+        // Passes on 1.3.0 and 1.4.0 alike: it pins a CONTRACT, not a fix. The
+        // mutation it exists for -- `cursorX = Math.round(cursorX)` in the glyph
+        // loop -- is the one most likely to be proposed as an improvement, and it
+        // would kill the advance conservation law's exact three-way equality.
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, 'AAAA', 0, 0, 1.1, 0);
+        assert.deepEqual(Array.from(rec.dx.slice(0, 4)), [0, 8.8, 17.6, 26.400000000000002]);
+        assert.equal(Number.isInteger(rec.dx[1]), false);
+        // The line ORIGIN is snapped: a fractional x rounds once per line.
+        resetRec(ATLAS);
+        FONT_SNAP.draw(rec, 'AA\nAA', 13.5, 0, 1, 0);
+        assert.equal(rec.dx[0], 14);
+        assert.equal(rec.dx[2], 14);
+        clean();
+    });
+
+    test('F-34: the measure family returns on an unbounded range', () => {
+        // Two of these three never return on 1.3.0. In process they prove the
+        // door works; T9 control 13 proves out of process that the gate can SEE a
+        // door that does not, and neither substitutes for the other.
+        const hangy = { length: Infinity, charCodeAt() { return 65; } };
+        const t0 = Date.now();
+        assert.equal(FONT_SNAP.measureLine('AAAA', -Infinity, Infinity, 1), 32);
+        assert.ok(Number.isNaN(FONT_SNAP.measure(hangy)));
+        assert.ok(Number.isNaN(FONT_SNAP.measureWidest(hangy)));
+        assert.ok(Number.isNaN(FONT_SNAP.measureLine(hangy, 0, 4, 1)));
+        assert.ok(Date.now() - t0 < 250);
+        // The clamp's other corners. NaN does not reach the walk -- but it
+        // clamps to the WHOLE line, not to an empty one (F-38): NaN start -> 0,
+        // NaN end -> len, which is what drawWrapped renders for the same pair.
+        assert.equal(FONT_SNAP.measureLine('AAAA', NaN, NaN, 1), 32);
+        assert.equal(FONT_SNAP.measureLine('AAAA', 0, 99, 1), 32);
+        // An empty range measures 0 (fork 5), with its non-vacuity twin: a
+        // measureLine returning 0 unconditionally passes the four zeros.
+        assert.equal(FONT_SNAP.measureLine('AAAA', 2, 2, 1), 0);
+        assert.equal(FONT_SNAP.measureLine('AAAA', 5, 2, 1), 0);
+        assert.equal(FONT_SNAP.measureLine('AAAA', 4, 4, 1), 0);
+        assert.equal(FONT_SNAP.measureLine('AAAA', -3, -1, 1), 0);
+        assert.equal(FONT_SNAP.measureLine('AAAA', 0, 1, 1), 8);
+        // The internal keeps NO door (fork 3 A2) -- that is the boundary, stated.
+        assert.equal(FONT_SNAP._measureRange('AAAA', 0, 4, 1), 32);
+    });
+
+    test('F-36: the measure family answers a bad scale or a non-string text with NaN', () => {
+        // Three cells differ on 1.3.0: measure(123) was 0, measure(null) threw a
+        // raw TypeError, measure('AA', -1) was -16.
+        for (const bad of [123, null, undefined, [], {}, true]) {
+            assert.ok(Number.isNaN(FONT_SNAP.measure(bad)), 'measure ' + String(bad));
+            assert.ok(Number.isNaN(FONT_SNAP.measureWidest(bad)), 'measureWidest ' + String(bad));
+            assert.ok(Number.isNaN(FONT_SNAP.measureLine(bad, 0, 1, 1)), 'measureLine ' + String(bad));
+        }
+        // The twin: a text door that rejects strings passes every row above.
+        assert.equal(FONT_SNAP.measure('AA'), 16);
+        assert.equal(FONT_SNAP.measure('AA\nAA'), 32);
+        assert.equal(FONT_SNAP.measureWidest('AA\nAA'), 16);
+        assert.equal(FONT_SNAP.measureLine('AAAA', 0, 4, 1), 32);
+        // The scale door is a RANGE test, not a NaN test: 0 and -1 are finite,
+        // and `scale !== scale` cannot see them.
+        for (const s of [0, -1, NaN, Infinity]) {
+            assert.ok(Number.isNaN(FONT_SNAP.measure('AA', s)), 'measure scale ' + s);
+            assert.ok(Number.isNaN(FONT_SNAP.measureWidest('AA', s)), 'measureWidest scale ' + s);
+            assert.ok(Number.isNaN(FONT_SNAP.measureLine('AA', 0, 2, s)), 'measureLine scale ' + s);
+        }
+        // The twin for that: a SUBNORMAL scale is a VALID scale. It renders
+        // nothing visible and returns a correct width, and a door widened to
+        // reject it passes all twelve rows above.
+        for (const v of [FONT_SNAP.measure('AA', 1e-45), FONT_SNAP.measureWidest('AA', 1e-45),
+            FONT_SNAP.measureLine('AA', 0, 2, 1e-45)]) {
+            assert.ok(Number.isFinite(v) && v >= 0, 'subnormal scale -> ' + v);
+        }
+        // Door ORDER: text, then scale, THEN the range. A bad scale with an empty
+        // range is NaN, not 0.
+        assert.ok(Number.isNaN(FONT_SNAP.measureLine('AAAA', 2, 2, -1)));
+        // The renderers answer the same bad scale by drawing nothing, and the
+        // asymmetry is deliberate: a renderer can decline to act, a query cannot
+        // decline to answer.
+        for (const s of [0, -1, NaN, Infinity]) {
+            resetRec(ATLAS);
+            FONT_SNAP.draw(rec, 'AAAA', 0, 0, s, 0);
+            assert.equal(rec.calls, 0, 'draw scale ' + s);
+        }
+        // After destroy() the family throws a raw TypeError, unchanged in 1.4.0.
+        const dead = new BitmapFont(ATLAS, JSON_SNAP);
+        dead.destroy();
+        assert.throws(() => dead.measure('AA'), TypeError);
+        assert.throws(() => dead.measureWidest('AA'), TypeError);
+        assert.throws(() => dead.measureLine('AA', 0, 2, 1), TypeError);
+    });
+
+    test('F-38: measureLine clamps with drawWrapped\'s TWO legs, so a NaN end measures the whole line', () => {
+        // The first version of this door had FOUR legs. The extra
+        // `!(end >= 0) -> 0` fired on a NaN end and drove it to 0, where the
+        // renderer drives NaN to text.length and draws the whole line. A
+        // layoutBuffer is a Float32Array; NaN is exactly what it holds when a
+        // layout pass failed or never ran -- the caller this method exists for.
+        for (const [a, b, quads] of [
+            [0, NaN, 4], [NaN, NaN, 4], [1, NaN, 3], [2, NaN, 2], [NaN, 4, 4],
+            [-Infinity, NaN, 4], [-Infinity, Infinity, 4], [Infinity, Infinity, 0],
+            [0, -5, 0], [5, 2, 0], [-3, -1, 0], [0, 99, 4], [0, 4, 4]]) {
+            resetRec(ATLAS);
+            FONT_SNAP.drawWrapped(rec, 'AAAA', Float32Array.of(a, b, 32, 0), 1, 1000, 1000, 0, 0, 1, 0, 0);
+            assert.equal(rec.calls, quads, 'drawWrapped [' + a + ',' + b + ')');
+            assert.equal(FONT_SNAP.measureLine('AAAA', a, b, 1), quads * 8,
+                'measureLine [' + a + ',' + b + ')');
+        }
+        // The twin: the NaN rows must not be satisfiable by "always return the
+        // whole string". A negative end still measures 0, and so does the renderer.
+        assert.equal(FONT_SNAP.measureLine('AAAA', 0, -5, 1), 0);
+        assert.equal(FONT_SNAP.measureLine('AAAA', 2, 2, 1), 0);
+        clean();
+    });
+
+    test('F-39: measureWidest can return a NEGATIVE width, because a font can have negative advances', () => {
+        // A negative xadvance or kerning amount is a valid Int16 the descriptor
+        // door accepts in BOTH lanes -- neither lossy nor non-finite -- so a line
+        // legitimately measures negative. An accumulator seeded at 0 floored
+        // every such font at 0 and made measureWidest disagree with measure on a
+        // single-line string, which is the one equivalence it promises.
+        assert.equal(FONT_SNAP_NEG.measure('AAA'), -30);
+        assert.equal(FONT_SNAP_NEG.measureWidest('AAA'), -30);
+        assert.equal(FONT_SNAP_NEG.measureWidest('AAA'), FONT_SNAP_NEG.measure('AAA'));
+        // The max really is a max, not the first or the last line.
+        assert.equal(FONT_SNAP_NEG.measureWidest('A\nAAA'), FONT_SNAP_NEG.measure('A'));
+        // The -Infinity seed must never escape as a width, and an empty line is
+        // 0 -- which is WIDER than any negative line, so these stay 0.
+        assert.equal(FONT_SNAP_NEG.measureWidest(''), 0);
+        assert.equal(FONT_SNAP_NEG.measureWidest('\n'), 0);
+        assert.equal(FONT_SNAP_NEG.measureWidest('AAA\n'), 0);
+        assert.equal(Number.isFinite(FONT_SNAP_NEG.measureWidest('AAA')), true);
+        // The all-positive fixture is unaffected -- this is the twin that would
+        // catch a fix which broke the ordinary case.
+        assert.equal(FONT_SNAP.measureWidest('AAA\n'), 24);
+        assert.equal(FONT_SNAP.measureWidest(''), 0);
+    });
+
+    test('F-41: the text door is `typeof`, so a BOXED String is rejected', () => {
+        // Deliberate, not an oversight. The looser "has a length and a
+        // charCodeAt" test admits {length: Infinity, charCodeAt(){...}}, which
+        // does not terminate -- so the door is exact and a String OBJECT is a
+        // non-string. Documented rather than merely intended.
+        assert.ok(Number.isNaN(FONT_SNAP.measure(new String('AAA'))));
+        assert.ok(Number.isNaN(FONT_SNAP.measureWidest(new String('AAA'))));
+        assert.ok(Number.isNaN(FONT_SNAP.measureLine(new String('AAA'), 0, 3, 1)));
+        // The primitive twin, so the row cannot be passed by rejecting everything.
+        assert.equal(FONT_SNAP.measure('AAA'), 24);
+        assert.equal(FONT_SNAP.measureWidest('AAA'), 24);
+        assert.equal(FONT_SNAP.measureLine('AAA', 0, 3, 1), 24);
     });
 });

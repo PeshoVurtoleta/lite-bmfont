@@ -242,6 +242,89 @@ export const JSON_KERN = (() => {
     return { common: { lineHeight: 20, base: 16 }, chars: JSON_ASCII.chars, kernings };
 })();
 
+/**
+ * M4's snap fixture. ADVANCE 8, lineHeight 17, base 16 -- the three numbers
+ * every literal in M4 is asserted against, and none of them exist in any other
+ * fixture here (JSON_ASCII advances 12 with lineHeight 20). 17 is what makes
+ * `17 * 1.1 = 18.7` fractional, which is the whole F-07 table.
+ *
+ * Every field is an integer, so no F-08 truncation residual contaminates any M4
+ * number. Space (id 32) has width 0 and height 0 -- `gw > 0 && gh > 0` is false
+ * so it never reaches drawImage, matching JSON_ASCII's convention -- but it
+ * STILL ADVANCES 8, so a string containing a space measures correctly and draws
+ * one fewer quad.
+ *
+ * By construction: measure('AA') === 16, measure('AA\n' + 'AA') === 32,
+ * measure('A\nAAAAAA') === 56, measureWidest('AA\nAA') === 16,
+ * measureWidest('A\nAAAAAA') === 48.
+ */
+export const JSON_SNAP = (() => {
+    const chars = [];
+    for (let id = 32; id <= 126; id++) {
+        if (id === 32) {
+            chars.push({ id: 32, x: 0, y: 0, width: 0, height: 0, xoffset: 0, yoffset: 0, xadvance: 8 });
+        } else {
+            chars.push({ id, x: (id - 32) * 8, y: 0, width: 8, height: 14, xoffset: 0, yoffset: 2, xadvance: 8 });
+        }
+    }
+    return { common: { lineHeight: 17, base: 16 }, chars, kernings: [] };
+})();
+
+/**
+ * JSON_SNAP plus JSON_KERN's dense kerning table, rebuilt over 33..126 against
+ * the advance-8 chars. IT EXISTS FOR ONE ASSERTION and this comment says which:
+ * decisions/0004 fork (6) -- whether `measureWidest` resets the kerning chain at
+ * a line break. On a KERNINGLESS font both fork (6) options are arithmetically
+ * identical for every string, so the decision would be untestable against
+ * JSON_SNAP alone. That is F-21's vacuity shape in a new costume, in the fixture
+ * built to prevent it. This is the only font that can see it.
+ */
+export const JSON_SNAP_KERN = (() => {
+    const kernings = [
+        { first: 65, second: 66, amount: -1 },
+        { first: 66, second: 65, amount: 2 },
+        { first: 65, second: 65, amount: -2 },
+    ];
+    for (let f = 33; f <= 126; f++) {
+        for (let s = 33; s <= 126; s++) {
+            if (f === 65 && (s === 65 || s === 66)) continue;
+            if (f === 66 && s === 65) continue;
+            const a = ((f * 31 + s * 17) % 7) - 3;
+            if (a !== 0) kernings.push({ first: f, second: s, amount: a });
+        }
+    }
+    return { common: { lineHeight: 17, base: 16 }, chars: JSON_SNAP.chars, kernings };
+})();
+
+/**
+ * JSON_SNAP with NEGATIVE metrics (F-39). Advance -8 for every glyph and a
+ * negative kerning pair, so a line's width is legitimately negative.
+ *
+ * A negative `xadvance` or kerning `amount` is a valid Int16 that the descriptor
+ * door accepts in BOTH lanes -- it is neither lossy nor non-finite -- so a font
+ * like this constructs and `measure` returns a negative number for it. Every
+ * other fixture in this file is all-positive, which made the `measureWidest`
+ * equivalence laws (A3, A5) VACUOUS for the whole negative class: an accumulator
+ * seeded at 0 floors every line at 0 and no all-positive corpus can see it.
+ * This fixture is the one that can.
+ *
+ * DEVIATION, declared: SESSION-M4.md section 12 authorises JSON_SNAP and
+ * JSON_SNAP_KERN in this file and nothing else. This third fixture was added
+ * after qa found F-39, on the coordinator's instruction, for exactly that
+ * finding.
+ */
+export const JSON_SNAP_NEG = (() => {
+    const chars = [];
+    for (let id = 32; id <= 126; id++) {
+        chars.push({ id, x: (id - 32) * 8, y: 0, width: 8, height: 14, xoffset: 0, yoffset: 2, xadvance: -8 });
+    }
+    return {
+        common: { lineHeight: 17, base: 16 },
+        chars,
+        kernings: [{ first: 65, second: 65, amount: -3 }, { first: 65, second: 66, amount: -2 }],
+    };
+})();
+
 /** 200 glyphs (ids 32..231), 500 kerning pairs, all integer. T7 only. */
 export const JSON_SOAK = (() => {
     const chars = [];
@@ -293,6 +376,12 @@ export const FONT_GAP = new BitmapFont(ATLAS, JSON_GAP);
 export const FONT_GAP6 = new BitmapFont(ATLAS, JSON_GAP6, { missingAdvance: 6 });
 export const FONT_NL = new BitmapFont(ATLAS, JSON_NL);
 export const FONT_NLK = new BitmapFont(ATLAS, JSON_NLK);
+// M4. Neither is passed `{ checked: true }`: every field is already integer and
+// in range, so `checked` would change nothing and would couple M4 to M3's lane
+// split for no reason.
+export const FONT_SNAP = new BitmapFont(ATLAS, JSON_SNAP);
+export const FONT_SNAP_KERN = new BitmapFont(ATLAS, JSON_SNAP_KERN);
+export const FONT_SNAP_NEG = new BitmapFont(ATLAS, JSON_SNAP_NEG);   // F-39
 
 /** 64 chars, 3 lines, 2 newlines, NO spaces -> 62 drawn glyphs exactly. */
 export const S64 = 'A'.repeat(21) + '\n' + 'A'.repeat(21) + '\n' + 'A'.repeat(20);

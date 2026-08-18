@@ -9,9 +9,21 @@
  * now live as real assertions in `test/BitmapFont.test.js`
  * (`describe('BitmapFont M3: the descriptor door')`) and in the torture gate
  * (`t3-descriptor.mjs`). **F-08's STORAGE half remains OPEN and is M9's**: the
- * Int16 store still truncates and wraps in 1.3.0 (unchecked output is
- * byte-identical); M3 only makes the drift detectable under `{ checked: true }`.
- * The THREE remaining watch-todos are F-07, F-14, F-18.
+ * Int16 store still truncates and wraps (unchecked output is byte-identical);
+ * M3 only makes the drift detectable under `{ checked: true }`.
+ *
+ * M4 (v1.4.0, metrics coherence and the pixel-snap promise) closes FOUR more --
+ * F-07, F-34, F-35, F-36 -- and adds `measureWidest`/`measureLine` for the first
+ * half of F-06. F-07's watch-todo leaves this file below; the other three were
+ * found after M0 and never had one. Their contracts now live in
+ * `test/BitmapFont.test.js` (`describe('BitmapFont M4: metrics coherence and the
+ * pixel-snap promise')`) and in the torture gate (`t5-fuzz.mjs`, `t0-laws.mjs`
+ * law 12, `t6-alloc.mjs` windows E and F, `t9-controls.mjs` controls 11-13).
+ * **F-06's SEMANTIC half remains OPEN and is M9's**: `measure` still sums across
+ * newlines, which is a documented contract now, pinned in `BitmapFont.test.js`
+ * block "F-06: measure still sums across newlines".
+ *
+ * The TWO remaining watch-todos are F-14 and F-18.
  *
  * Every block below is `test.todo(...)`: it still RUNS and its result is
  * printed, but a todo failure does not fail `npm test`'s exit code. That is
@@ -53,9 +65,18 @@ import { rec, resetRec, JSON_ASCII, ATLAS } from './torture/harness.mjs';
 // cursor conservation", block F-03) and in the torture gate (t0-laws law 11,
 // t1-degenerate's F-04 pin). A finding fixed is a finding that leaves this file.
 
-test.todo('F-07: only the first line is pixel-snapped in Y; later lines drift unrounded', () => {
-    // A base=12/yoffset=0/lineHeight=16 font isolates the rounding mechanism
-    // from any yoffset/base fractional noise -- the exact CHANGELOG.md repro.
+// F-07 was FIXED in M4 (v1.4.0, decisions/0004 fork 2 sub-fork B1). Its
+// watch-todo is removed here; a finding fixed is a finding that leaves this file.
+// The contract ships as real assertions in BitmapFont.test.js ("BitmapFont M4:
+// metrics coherence and the pixel-snap promise", the four F-07 blocks) and in the
+// torture gate (t5-fuzz.mjs rows Y1-Y10, t9-controls.mjs controls 11 and 12,
+// which rebuild the two REJECTED variants and require the numbers to move).
+//
+// The original repro, kept as one real assertion so the fix has a regression test
+// on the exact font the old todo used: base=12, yoffset=0, lineHeight=16 isolates
+// the rounding mechanism from any yoffset/base fractional noise, and 16 * 1.1 is
+// 17.6, a step that never lands back on an integer.
+test('F-07 (FIXED in 1.4.0): every baseline is pixel-snapped, not just the first', () => {
     const json = {
         common: { lineHeight: 16, base: 12 },
         chars: [{ id: 65, x: 0, y: 0, width: 8, height: 12, xoffset: 0, yoffset: 0, xadvance: 8 }],
@@ -65,13 +86,15 @@ test.todo('F-07: only the first line is pixel-snapped in Y; later lines drift un
     resetRec(ATLAS);
     f.draw(rec, 'A\nB\nC', 0, 0, 1.1, 0);
     assert.equal(rec.calls, 3);
-    // draw() runs `cursorY = Math.round(y)` exactly ONCE, then accumulates
-    // `cursorY += lineHeight * scale` on every subsequent line WITHOUT
-    // re-rounding -- 16 * 1.1 = 17.6, a fractional step that never lands
-    // back on an integer. This is the exact CHANGELOG.md reproduction.
-    assert.equal(rec.dy[0], -13.200000000000001);
-    assert.equal(rec.dy[1], 4.4);
-    assert.equal(rec.dy[2], 22);
+    // dy = baseline + yoffset*scale - base*scale, and yoffset is 0 here, so the
+    // whole column is `baseline - 13.200000000000001`. The baselines are
+    // Math.round(0) + Math.round(i * 17.6) = 0, 18, 35.
+    const shift = 0 * 1.1 - 12 * 1.1;
+    assert.deepEqual(Array.from(rec.dy.slice(0, 3)),
+        [0 + shift, 18 + shift, 35 + shift]);
+    // 1.3.0 produced -13.200000000000001, 4.4, 22 -- only line 0 was rounded and
+    // the rest accumulated raw. Line 1 is the cheapest witness that it changed.
+    assert.notEqual(rec.dy[1], 4.4);
 });
 
 // F-08 (detection), F-09, F-10 and F-13 were CLOSED in M3 (the descriptor door).

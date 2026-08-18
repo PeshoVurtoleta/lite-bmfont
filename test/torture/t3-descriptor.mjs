@@ -298,14 +298,27 @@ export function run() {
         check(rec.calls === 6, () => 'T3/43b drawFast scale ' + s + ': calls ' + rec.calls + ' != 6');
         clean('43b drawFast scale ' + s);
     }
-    // row 44: measure keeps ALL FIVE degenerate answers -- no door in the pure fn.
+    // row 44: M3 pinned "measure keeps ALL FIVE degenerate answers -- no door in
+    // the pure fn". M4 (F-36, decisions/0004 fork 4) gives the three PUBLIC
+    // measure faces the same range door the three draw bodies got in M3, so this
+    // row is INVERTED here exactly as its twin at t1-degenerate.mjs is -- in
+    // place, with the fixture's own numbers, never deleted. The scale door is
+    // shared with rows 41-43 above: the SAME predicate now answers a renderer by
+    // drawing nothing and a query by returning NaN, which is the asymmetry
+    // fork (4) declares. `_measureRange` keeps no door and T1 pins that.
     {
         const baseW = FONT_ASCII.measure('ABC', 1);
-        check(FONT_ASCII.measure('ABC', 0) === 0, () => 'T3/44: measure(0) != 0');
-        check(FONT_ASCII.measure('ABC', -1) === -baseW, () => 'T3/44: measure(-1) != -baseW');
+        check(Number.isNaN(FONT_ASCII.measure('ABC', 0)), () => 'T3/44/M4: measure(0) is not NaN');
+        check(Number.isNaN(FONT_ASCII.measure('ABC', -1)), () => 'T3/44/M4: measure(-1) is not NaN');
         check(FONT_ASCII.measure('ABC', 1e-45) >= 0, () => 'T3/44: measure(1e-45) < 0');
         check(Number.isNaN(FONT_ASCII.measure('ABC', NaN)), () => 'T3/44: measure(NaN) not NaN');
-        check(!Number.isFinite(FONT_ASCII.measure('ABC', Infinity)), () => 'T3/44: measure(Infinity) finite');
+        check(Number.isNaN(FONT_ASCII.measure('ABC', Infinity)), () => 'T3/44/M4: measure(Infinity) is not exactly NaN');
+        // The twin: a VALID scale still answers, so a door that rejects
+        // everything cannot pass this row.
+        check(FONT_ASCII.measure('ABC', 2) === baseW * 2, () => 'T3/44/M4: measure(2) != 2*baseW');
+        // The internal is untouched (fork 3 A2) -- same inputs, 1.3.0 answers.
+        check(FONT_ASCII._measureRange('ABC', 0, 3, 0) === 0, () => 'T3/44/M4: _measureRange(0) grew a door');
+        check(FONT_ASCII._measureRange('ABC', 0, 3, -1) === -baseW, () => 'T3/44/M4: _measureRange(-1) grew a door');
     }
 
     // ==== align / vAlign documented fallbacks, rows 45-46 ==================
