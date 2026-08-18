@@ -2,7 +2,8 @@
 
 Status: accepted
 Session: M4 (v1.4.0)
-Findings: F-06, F-07, F-34, F-35, F-36
+Findings: F-06, F-07, F-34, F-35, F-36, F-42
+Amended: M4a (v1.4.1) -- Fork (9), F-42 (fork (4)'s four-face door table is now six)
 Date: 2026-08-18
 Frozen baseline sha256: `11ca9228102dc595532f001fc472e323681feff7c700919c3b343af075d4f9bf`
 
@@ -684,6 +685,132 @@ surface to the cross-package `Float32Array` stride (ROADMAP law 1), which is a
 format contract and a major-version hostage. The caller reads `layoutBuffer[l*4]`
 and `[l*4+1]` themselves; the README recipe already shows that read.
 
+## Fork (9) -- the renderer text door (F-42)
+
+Amendment, M4a (v1.4.1). This is not a new ADR: the door being decided here IS
+fork (4)'s door applied to three more faces, and splitting one policy across two
+records is how the two families drifted apart in the first place. Fork (4)
+tabled "four entry points and their one door"; that table is now **six** --
+`measure`, `measureWidest`, `measureLine`, `draw`, `drawFast`(*), `drawWrapped`,
+of which the five text-taking faces (`draw`, `drawWrapped`, `measure`,
+`measureWidest`, `measureLine`) carry the `typeof text !== 'string'` door and
+`drawFast` takes a number and carries none.
+
+### Fork (9a) -- what is the renderer's text door?
+
+**A** `typeof text !== 'string'` -> return. **B** a length RANGE door,
+`const len = text.length; if (!(len >= 0 && len < Infinity)) return;`. **C**
+relax the measure family to a duck-type test so both sides accept the same wide
+set.
+
+**Decision: A. RATIFIED.**
+
+The decisive argument is measurable today, not a prediction. A is the only option
+under which the six-face x seven-input table has a DECIDABLE number of answers.
+The table has FOUR answers today -- renders N glyphs, renders 0 silently, throws
+a raw `TypeError`, returns `NaN` -- across six functions and seven inputs. Under
+A it has TWO: every renderer draws 0 and returns; every measure face returns
+`NaN`. Under B it still has four: `draw(ctx, null)` still throws
+(`null.length` throws before the range test can read it -- B does not even reach
+its own predicate), a boxed `String` still renders 1 glyph where `measureWidest`
+returns `NaN`, and `{length: 2, charCodeAt}` still draws 2. B closes the hang and
+closes nothing else. A four-answer table cannot be asserted; a two-answer table
+can.
+
+B is rejected on a second, independent ground: B does not actually close
+`draw(ctx, null)` or `draw(ctx, undefined)` at all. `const len = text.length` on
+`null` throws before any predicate runs. To make B work the coder must ALSO
+reorder or add a null check, at which point B is two predicates and A is one. B
+is more bytes in a hot body for a strictly weaker guarantee -- ROADMAP law 6
+inverted.
+
+**C is rejected for the second time, copied verbatim from fork (4):**
+`{length: Infinity, charCodeAt(){return 65}}` HAS a numeric length and HAS a
+`charCodeAt`. The loose test is precisely what admits the object that never
+terminates. Do not reopen C without reading F-34. The comment at
+`BitmapFont.js` already says this in the source and it is now true of six faces
+instead of three.
+
+A's cost: one `typeof` per call on two methods. Zero per glyph, zero per line.
+`typeof` on a string is a single V8 map check; the door sits ahead of
+`text.length`, which the body reads anyway. If T6 window A or C moves at all, the
+door was written in the wrong place -- inside a loop, or as a helper call.
+
+### Fork (9b) -- fail signal: return or throw?
+
+**Decision: RETURN. RATIFIED.**
+
+M4's asymmetry is already the rule: a renderer can decline to act, a query cannot
+decline to answer (fork (4), restated in the source). `draw`'s scale door already
+returns silently on `NaN`, `0`, a negative and `Infinity`, and `draw(ctx, 123)`
+returns silently today. Drawing nothing IS the closed state for a renderer --
+ROADMAP law 3: a fail-closed door in a renderer emits zero `drawImage` calls.
+
+The counter-argument answered rather than accommodated: turning a raw
+`TypeError` into silence looks fail-OPEN. It is not. The `TypeError` today is not
+a signal anybody designed -- it is `null.length` escaping from an internal read,
+the exact shape M3 spent its budget removing from the constructor. A throw here
+would additionally make `draw` the only method in the package that reports a bad
+argument by throwing on a per-frame path, and per-frame throws are the argument
+M1's option C and M2's fork (1) both lost on.
+
+The residual risk, named: a caller who today gets a loud `TypeError` from
+`draw(ctx, null)` gets silence after 1.4.1. That caller's recourse is the measure
+family, which returns `NaN` and which `Number.isNaN(measureWidest(t))` gates on.
+That sentence ships in the README delta note.
+
+### Fork (9c) -- door order
+
+**Decision: TEXT FIRST, THEN SCALE. RATIFIED.**
+
+It is unobservable for the renderers -- both doors return `undefined` and draw
+nothing, so no input can tell which fired -- and that is exactly why uniformity
+is free. The measure family is text-then-scale. Six faces, one order, nothing to
+remember. In `draw` the text door goes ABOVE the scale door, not between it and
+`const len = text.length`. In `drawWrapped` the same.
+
+A consequence: ordering text first means `drawWrapped(ctx, null, buf, 3, ...)`
+returns without throwing the F-05 `RangeError` for a short buffer. That is
+correct -- there is nothing to draw, so there is no line count to honour -- and
+it is asserted in T1 so it cannot regress into an accident.
+
+### Fork (9d) -- version: 1.4.1 or 1.5.0?
+
+**Decision: 1.4.1. RATIFIED.**
+
+M1 shipped the `drawFast` magnitude door -- a hang fix that also changed
+behaviour on out-of-range values -- as 1.2.2, a patch. Same shape (an S1
+unkillable loop), same severity, same kind of delta (behaviour changes only on
+inputs that were already broken). 1.5.0 would shift M5 through M8 one minor each
+and buy nothing.
+
+The counter-argument, answered: `draw(ctx, new String('A'))` rendering 1 glyph
+today and 0 after is a visible change to code that "works", and semver says a
+patch may not change behaviour. The answer is that the package has one policy for
+this class already -- M1's -- and the alternative to following it is not
+correctness, it is inconsistency plus four wasted version numbers. Both deltas go
+in the CHANGELOG under `### Changed (behaviour)` regardless of the number.
+
+### Fork (9) -- declared deltas
+
+Two, ratified as the DECLARED deltas:
+
+| Input | 1.4.0 | 1.4.1 |
+| --- | --- | --- |
+| `draw(ctx, new String('A'), ...)` / `drawWrapped` boxed `String` | renders 1 glyph | renders 0 and returns |
+| `draw(ctx, null, ...)` / `(undefined)` / `drawWrapped` with either | throws a raw `TypeError` | returns, draws 0 |
+
+`[65]` is an instance of row 2 (it throws today for the same reason `null` does
+-- an internal read escaping) and `{length: 2, charCodeAt}` is an instance of
+row 1 (it renders today for the same reason a boxed `String` does -- duck-typing).
+Two rows, not four: splitting them implies four independent policy decisions where
+there is one.
+
+**Superseded/extended:** fork (4)'s "four entry points and their one door" is now
+a table of six (this fork, F-42). Fork (3)'s A2 stands: `_measureRange` keeps NO
+door; adding the text door there "for symmetry" breaks the frozen-body guarantee
+and taxes `draw`'s per-line align calls.
+
 ## Forks at a glance
 
 | Fork | Question | Decision | Rejected |
@@ -696,8 +823,9 @@ and `[l*4+1]` themselves; the README recipe already shows that read.
 | **(6)** | Does `measureWidest` cross `\n`? | **A: split at id 10, reset the kerning chain. RATIFIED** | B (measures a string nobody draws) |
 | **(7)** | Range door on `measureWidest`? | **No range door; text + scale doors only. RATIFIED** | adding one (dead bytes in a hot body) |
 | **(8)** | `measureLine` signature | **`(text, start, end, scale = 1.0)`. RATIFIED** | a layout-buffer-taking form |
+| **(9)** | Renderer text door (F-42) | **A: `typeof text !== 'string'` -> return. RATIFIED** | B (a length-range door -- weaker, still throws on `null`), C (duck-type -- admits the object that hangs) |
 
-**RATIFIED count: 8. Unsettled count: 0. Undecided count: 0.**
+**RATIFIED count: 9. Unsettled count: 0. Undecided count: 0.**
 
 ## The accept/reject matrix -- one row per input, every row routed
 

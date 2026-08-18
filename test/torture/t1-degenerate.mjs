@@ -29,6 +29,16 @@
  *     below are INVERTED or TIGHTENED. `_measureRange` alone keeps NO door --
  *     it is an explicitly-unsafe internal (fork 3 A2) whose body is
  *     byte-for-byte the 1.3.0 body.
+ *   - As of M4a (F-42, decisions/0004 fork 9) the text door is no longer a
+ *     measure-family story: `draw` and `drawWrapped` carry the SAME
+ *     `typeof text !== 'string'` predicate. FIVE text-taking faces, ONE text
+ *     door, TWO fail signals by family -- the two text renderers draw nothing and
+ *     return, the three measure faces return NaN. The F-42 lane below sweeps all
+ *     five against the seven not-a-string inputs and asserts exactly those two
+ *     answers. `drawFast` takes a NUMBER and is deliberately absent from the
+ *     sweep. The unbounded {length: Infinity, charCodeAt} row is survivable in
+ *     process only because the door exists; the out-of-process hang proof is
+ *     T9 controls 14/15.
  *
  * The value arrays are module-level typed arrays; the layout buffers are
  * pre-built Float32Arrays. T1 makes no profiler call.
@@ -60,6 +70,23 @@ const DRAWFAST_EARLY = Float64Array.of(NaN, Infinity, -Infinity);
 const LAYOUT_OK = Float32Array.of(0, 3, 36, 0);           // one line, 'ABC'
 const LAYOUT_F04 = Float32Array.of(-1, 5, 40, 0);         // startIdx < 0 (F-04)
 const LAYOUT_F05 = Float32Array.of(0, 5, 40, 0);          // one line only, used with lineCount 3
+
+// F-42 (M4a, decisions/0004 fork 9): the seven not-a-string inputs the six-face
+// text-door sweep crosses. Built ONCE (harness rule 1), never inside the loop.
+//
+// !! DANGER -- the LAST row, {length: Infinity, charCodeAt}, is safe IN PROCESS
+// ONLY because draw/drawWrapped/measure* all carry `typeof text !== 'string'`.
+// Against a DOORLESS build draw(rec, that, ...) is an UNKILLABLE loop -- `len`
+// is Infinity and the line scan `while (lineEnd < len ...)` never terminates,
+// with NO watchdog in this tier. The out-of-process proof of the door lives in
+// T9 controls 14 and 15 (spawnSync + SIGKILL), exactly as the drawFast /
+// Number.MAX_VALUE column is deferred there. DO NOT run this tier against a
+// build with either door removed.
+const NOT_A_STRING = [
+    null, undefined, 123, [65], new String('A'),
+    { length: 2, charCodeAt() { return 65; } },
+    { length: Infinity, charCodeAt() { return 65; } },
+];
 
 function clean(label) {
     check(nanScan() === 0, () => 'T1/clean ' + label + ': nanScan ' + nanScan() + ' != 0');
@@ -173,6 +200,65 @@ export function run() {
         () => 'T1/M4: _measureRange(scale 0) is not 0 -- the internal grew a door');
     check(FONT_ASCII._measureRange('ABC', 0, 3, -1) === -baseW,
         () => 'T1/M4: _measureRange(scale -1) is not -width -- the internal grew a door');
+
+    // --- F-42 lane: the six-face x seven-input text-door sweep (M4a) -------------
+    // decisions/0004 fork (9). The table has exactly TWO answers now: every
+    // renderer draws 0 and returns; every measure face returns NaN. No raw
+    // TypeError anywhere. This is the assertion that distinguishes door form A
+    // (typeof) from form B (a length-range door): under B, draw(null) throws,
+    // draw(new String('A')) draws 1 and draw({length:2,charCodeAt}) draws 2.
+    for (let i = 0; i < NOT_A_STRING.length; i++) {
+        const T = NOT_A_STRING[i];
+        // Row 1 -- draw: no throw, 0 draws, no NaN, nothing dropped.
+        resetRec(ATLAS);
+        let threw = false;
+        try { FONT_ASCII.draw(rec, T, 0, 0, 1, 0); } catch { threw = true; }
+        check(!threw, () => 'T1/F-42 draw[' + i + ']: threw (door below const len, or door form B?)');
+        check(rec.calls === 0, () => 'T1/F-42 draw[' + i + ']: expected 0 draws, got ' + rec.calls);
+        check(nanScan() === 0, () => 'T1/F-42 draw[' + i + ']: nanScan ' + nanScan() + ' != 0');
+        check(rec.dropped === 0, () => 'T1/F-42 draw[' + i + ']: dropped ' + rec.dropped);
+        // Row 2 -- drawWrapped: same three, second body.
+        resetRec(ATLAS);
+        threw = false;
+        try { FONT_ASCII.drawWrapped(rec, T, LAYOUT_OK, 1, 100, 100, 0, 0, 1, 0, 0); } catch { threw = true; }
+        check(!threw, () => 'T1/F-42 drawWrapped[' + i + ']: threw');
+        check(rec.calls === 0, () => 'T1/F-42 drawWrapped[' + i + ']: expected 0 draws, got ' + rec.calls);
+        check(nanScan() === 0, () => 'T1/F-42 drawWrapped[' + i + ']: nanScan ' + nanScan() + ' != 0');
+        check(rec.dropped === 0, () => 'T1/F-42 drawWrapped[' + i + ']: dropped ' + rec.dropped);
+        // Rows 3-5 -- the measure family answers NaN (drawFast is NOT swept: it
+        // takes a number and must NOT carry a text door).
+        check(Number.isNaN(FONT_ASCII.measure(T)),
+            () => 'T1/F-42 measure[' + i + ']: ' + FONT_ASCII.measure(T) + ' is not NaN');
+        check(Number.isNaN(FONT_ASCII.measureWidest(T)),
+            () => 'T1/F-42 measureWidest[' + i + ']: ' + FONT_ASCII.measureWidest(T) + ' is not NaN');
+        check(Number.isNaN(FONT_ASCII.measureLine(T, 0, 2, 1)),
+            () => 'T1/F-42 measureLine[' + i + ']: ' + FONT_ASCII.measureLine(T, 0, 2, 1) + ' is not NaN');
+    }
+    // Non-vacuity twins -- without these every row above passes for a door that
+    // rejects EVERYTHING. A real string must still render / measure.
+    resetRec(ATLAS);
+    FONT_ASCII.draw(rec, 'ABC', 0, 0, 1, 0);
+    check(rec.calls === 3, () => 'T1/F-42 twin: draw("ABC") ' + rec.calls + ' != 3 (door rejects real strings?)');
+    check(rec.dx[0] === 0, () => 'T1/F-42 twin: draw("ABC") dx[0] ' + rec.dx[0] + ' != 0');
+    resetRec(ATLAS);
+    FONT_ASCII.drawWrapped(rec, 'ABC', LAYOUT_OK, 1, 100, 100, 0, 0, 1, 0, 0);
+    check(rec.calls === 3, () => 'T1/F-42 twin: drawWrapped("ABC") ' + rec.calls + ' != 3');
+    check(FONT_ASCII.measure('ABC', 1) === 36,
+        () => 'T1/F-42 twin: measure("ABC",1) ' + FONT_ASCII.measure('ABC', 1) + ' != 36 (fixture moved under the sweep)');
+    // Order row (A6) -- text door is ABOVE the buffer-length throw. null returns
+    // WITHOUT the F-05 RangeError (nothing to draw, no line count to honour); a
+    // real under-length string still throws it, naming 4 and 12.
+    resetRec(ATLAS);
+    let orderThrew = false;
+    try { FONT_ASCII.drawWrapped(rec, null, LAYOUT_F05, 3, 100, 100, 0, 0, 1, 0, 0); }
+    catch { orderThrew = true; }
+    check(!orderThrew, () => 'T1/F-42 order: drawWrapped(null, F05, 3) threw -- text door is BELOW the buffer throw');
+    check(rec.calls === 0, () => 'T1/F-42 order: drawWrapped(null,...) drew ' + rec.calls);
+    resetRec(ATLAS);
+    let stillThrew = false;
+    try { FONT_ASCII.drawWrapped(rec, 'HELLO', LAYOUT_F05, 3, 100, 100, 0, 0, 1, 0, 0); }
+    catch (e) { stillThrew = e instanceof RangeError && e.message.includes('4') && e.message.includes('12'); }
+    check(stillThrew, () => 'T1/F-42 order: drawWrapped("HELLO", F05, 3) did not still throw naming 4 and 12 (door ate the throw)');
 
     // --- FINDING lane: exactly four pinned-bad cases ----------------------------
     // Each is an EQUALITY on the exact count, so the pin fails in both directions.

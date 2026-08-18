@@ -166,19 +166,24 @@ test('draw() with x=-0 does not throw and settles to +0 through the +xoffset add
     assert.equal(rec.dx[0], 0);
 });
 
-// ---- adversarial case: a String OBJECT (not a primitive) as `text` --------
-// Nobody on the planning side flagged this: `text.length` and
-// `text.charCodeAt(i)` are both present on `String` objects via the
-// prototype, so `new String('ABC')` duck-types as a valid `text` argument
-// even though every fixture and every existing test passes a primitive.
-// This is not a finding -- it happens to work -- but it was UNVERIFIED.
+// ---- F-42 (M4a): a String OBJECT (not a primitive) as `text` --------------
+// This block once read "This is not a finding -- it happens to work -- but it
+// was UNVERIFIED", and asserted 3 draws. M4a proves that judgement WRONG. The
+// same duck-typing that let `new String('ABC')` "happen to work" -- `text.length`
+// and `text.charCodeAt` present via the prototype -- is exactly what let
+// `{length: Infinity, charCodeAt(){return 65}}` HANG both renderers (F-42, an S1
+// non-termination). The renderer text door is now `typeof text !== 'string'`
+// (decisions/0004 fork 9), the same predicate the measure family carries, so a
+// boxed String is rejected: draw() draws NOTHING and returns. Inverted in place,
+// never deleted -- the block that stated the latent defect must record that it
+// became a finding.
 
-test('draw() accepts a String OBJECT (not primitive) because length/charCodeAt duck-type', () => {
+test('draw() rejects a String OBJECT (not primitive): the typeof text door draws nothing (F-42)', () => {
     resetRec(ATLAS);
     // eslint-disable-next-line no-new-wrappers
     const boxed = new String('ABC');
     assert.doesNotThrow(() => FONT_ASCII.draw(rec, boxed, 0, 0, 1, 0));
-    assert.equal(rec.calls, 3);
+    assert.equal(rec.calls, 0);
     assert.equal(rec.dropped, 0);
     assert.equal(rec.imgMismatch, 0);
 });

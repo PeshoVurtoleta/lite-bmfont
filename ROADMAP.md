@@ -137,7 +137,7 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-16** | S3 | **Packaging gaps against the suite Law.** No `CHANGELOG.md`, no `LICENSE` file, no `engines` field, no torture gate, no `prepublishOnly` gate that can pass. `files[]` is `[BitmapFont.js, BitmapFont.d.ts, llms.txt]` -- the Law requires README to ship. The README carries an inline changelog instead of a `CHANGELOG.md`. | `package.json`, `ls` |
 | **F-17** | S2 | **Every "zero allocation" claim in README and llms.txt is unproven.** README asserts it in seven places; there is no `measureAllocs`, no `measureOps`, no gate, and no devDep on `lite-gc-profiler` or `lite-leak`. The claim may well be true -- nothing in the repo can tell. | `grep -n "allocat" README.md llms.txt`; `devDependencies` is `{vitest}` |
 | **F-18** | S3 | **`generateAtlas` is duplicated, as the roadmap's Session 3 predicts.** `demo/demo-lite-bmfont.html:261` defines a 40-line `generateAtlas` and calls it four times; `tripple` needs the same function. | `demo/demo-lite-bmfont.html:261,309,313,317,321` |
-| **F-19** | S3 | **Non-ASCII bytes in shipped `files[]`, violating the Law's ASCII-only rule** (U+00D7 and U+00B5 excepted). `BitmapFont.d.ts` is now CLEAN (de-Unicoded by M1: em dash, plus-minus, en dash in comments). Remaining debt: `BitmapFont.js` (10 lines, U+2014 em dashes), `README.md` (47: emoji, U+2192, U+2014, U+2026, en dash), `llms.txt` (10). Docs (`README.md`, `llms.txt`) are de-Unicodeable in any session. No single behaviour fix touches all the affected source lines (the file header at line 1, and the `drawWrapped` doc block at 242-275), so the source de-Unicoding rides M9's hardening pass alongside the F-14 prototype freeze rather than being smeared across the behaviour sessions. | `grep -c -P '[^\x00-\x7F]' BitmapFont.js BitmapFont.d.ts README.md llms.txt` -> `10 / 0 / 47 / 10` |
+| **F-19** | S3 | **Non-ASCII bytes in shipped `files[]`, violating the Law's ASCII-only rule** (U+00D7 and U+00B5 excepted). `BitmapFont.d.ts` is now CLEAN (de-Unicoded by M1: em dash, plus-minus, en dash in comments). Remaining debt: `BitmapFont.js` (10 lines -- U+2014 x10 plus one U+2026 at `:856`, so the char count is 11, not 10), `README.md` (47 lines: emoji, U+2192, U+2014, U+2026, en dash), `llms.txt` (10 lines: U+2014 x7, U+2026 x2, U+2013 x1). Docs (`README.md`, `llms.txt`) are de-Unicodeable in any session. No single behaviour fix touches all the affected source lines (the file header at line 1, and the `drawWrapped` doc block at 242-275), so the source de-Unicoding rides M9's hardening pass alongside the F-14 prototype freeze rather than being smeared across the behaviour sessions. | `grep -c -P '[^\x00-\x7F]' BitmapFont.js BitmapFont.d.ts README.md llms.txt` -> `10 / 0 / 47 / 10` |
 | **F-20** | S3 | **`draw()`/`drawFast()` center/right-align math is asserted only by directional inequality**, so an off-by-constant regression in the divisor is invisible to `npm test` and every wired torture tier. `drawWrapped()`'s align tests assert exact pixels (44, 88, 38) and are load-bearing; `draw`'s (`rec.dx[0] < 100`) are not. Closed prospectively by qa's `test/boundary.test.js`; the ported `BitmapFont.test.js` still carries the weak assertions. | scratch-edit `draw()`'s `... / 2` to `... / 3` -> `npm test` passes and `npm run torture` prints `ok`, exit 0 |
 | **F-21** | S3 | **T0 law 4 is vacuous -- the only kerning check in the torture gate never tests kerning (AR-02).** `FONT_KERN` kerns 3 pairs (A-B, B-A, A-A); the corpus is ASCII 33..126, so a random seam is 3/8836 = 0.034%. Under both shipped seeds ZERO eligible seams carry non-zero kerning, so law 4 degenerates to `left + right === full`. **Routed to M2**, which revises `t0-laws.mjs` and its corpus and builds the conservation law on top of it; fix by a seeded corpus planting A/B seams or a dense `FONT_KERN`, BEFORE the law leans on it. | default seed -> eligible 246, seams 0; seed 12345 -> eligible 247, seams 0. Deleting the kern term from `_measureRange` passes `npm run torture` clean |
 | **F-22** | S3 | **The documented word-wrap recipe does not type-check.** `README.md:124-125` and `llms.txt:75-76` read `font.glyphs[id * 7 + 6]` and `font.kerning[(prevId << 8) \| id]`; both are real `Int16Array` members at runtime and neither was declared in `BitmapFont.d.ts`. A TypeScript consumer copying the package's own answer to "compute the layoutBuffer yourself" cannot compile the primary integration path. Fixed in 1.2.2 (M1): `readonly glyphs` / `readonly kerning` declared, stride marked a cross-package contract. | `tsc` on the README recipe -> `Property 'glyphs' does not exist on type 'BitmapFont'` |
@@ -159,6 +159,8 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-38** | **S2** | **`measureLine`'s clamp has FOUR legs where `drawWrapped`'s has TWO, so the two disagree on a NaN `end` -- fork (3)'s own criterion, unclosed, on the exact value a failed layout produces.** `drawWrapped` clamps with `if (!(startIdx >= 0)) startIdx = 0;` and `if (!(endIdx <= tlen)) endIdx = tlen;` (`BitmapFont.js:919-920`) -- a NaN `endIdx` fails `<=`, becomes `tlen`, and the WHOLE line renders. `measureLine` adds `if (!(end >= 0)) end = 0;`, which fires first on NaN and drives `end` to 0, so it returns 0 px for a range the renderer draws in full. Measured on an advance-8 font: `[0, NaN)` -> `measureLine` **0** vs `drawWrapped` **4 quads (32)**; `[NaN, NaN)` -> 0 vs 32; `[1, NaN)` -> 0 vs 24. A `layoutBuffer` is a `Float32Array` and NaN is precisely what it holds when a layout pass fails or was never run, which is the caller this method exists for. The two surplus legs were added for symmetry and one of them is not symmetric: dropping `!(end >= 0) -> 0` makes the doors agree on NaN AND on negatives (a negative `end` then falls to `!(end > start)` and returns 0, matching the renderer's never-entered loop), while `!(start <= len) -> len` is harmless and can stay. Found by qa in M4, fixed in M4. Same shape as F-35, one method further on, and the reason it survived fork (3)'s ratification is that no tier enumerated a NaN `end`. | `measureLine('AAAA', 0, NaN, 1)` -> `0`; the same range through `drawWrapped` -> 4 drawImage calls |
 | **F-39** | S3 | **`measureWidest` floors its answer at 0, so it disagrees with `measure` and with its own oracle law on any font whose widest line is negative.** The body opens `let max = 0` and closes `return width > max ? width : max`, so a negative line width can never be returned. A negative `xadvance` is a valid `Int16` the constructor accepts in BOTH lanes -- `{ checked: true }` included, because a negative advance is neither lossy nor non-finite -- and negative kerning reaches the same state with non-negative advances. Measured: `xadvance: -5` gives `measure('AAA') === -15` and `measureWidest('AAA') === 0`; `xadvance: 0` with `kernings: [{first: 65, second: 65, amount: -3}]` gives `measure('AAA') === -6`, oracle max `-6`, `measureWidest` `0`. This falsifies assertion A3 (`measureWidest(s) === measure(s)` for newline-free `s`) and A5 (the allocating-oracle law) for that whole class, and both assertions are VACUOUS with respect to it because T5's corpus runs only `FONT_SNAP` and `FONT_SNAP_KERN`, which are all-positive by construction. Fix: initialise the accumulator to `-Infinity`; the empty string still returns 0 because the final comparison sees `width === 0`. Found by qa in M4, fixed in M4. | `xadvance: -5` -> `measure('AAA')` `-15`, `measureWidest('AAA')` `0` |
 | **F-40** | S3 | **The fork (4) amendment claims a constructed font cannot produce a NaN width from valid input; it can, so NaN is not an unambiguous fail signal.** `decisions/0004` and `SESSION-M4.md` 2.6 both record "every advance is a value out of an `Int16Array` multiplied by a finite scale, so a font that constructs cannot produce a NaN width from valid input", which is what makes NaN readable as "you gave me an argument I cannot use". Mixed-sign Int16 advances defeat it: with `xadvance: 32767` and `xadvance: -32768`, `measure('AB', Number.MAX_VALUE)` is **NaN** (`+Infinity + -Infinity`), indistinguishable from the door's fail signal, and `measure('A', Number.MAX_VALUE)` is **Infinity** -- a non-finite width from a scale the door ACCEPTS, since `Number.MAX_VALUE` passes `!(scale > 0 && scale < Infinity)`. Both behaviours are pre-existing (1.3.0 is identical) and neither is a semver delta; what is new in M4 is the record asserting they cannot happen. Recorded rather than fixed: narrowing the scale door to exclude `MAX_VALUE` would need a magnitude bound nobody has derived, and the honest repair is to state the limit. Same class as F-24 -- a record claiming a property the code does not have. Found by qa in M4; the claim is corrected in M4, the behaviour is left to M9 alongside F-08's storage half. | `chars` advances `32767` and `-32768`: `measure('AB', Number.MAX_VALUE)` -> `NaN`; `measure('A', Number.MAX_VALUE)` -> `Infinity` |
+| **F-42** | **S1** | **The F-34 hang is still reachable through `draw` and `drawWrapped`; M4 doored the measure family and left both renderers open.** `measure` (`:432`), `measureWidest` (`:467`) and `measureLine` (`:542`) each open with `typeof text !== 'string'`, and the comment at `:432` names the culprit exactly -- "`{length: Infinity, charCodeAt(){return 65}}` ... is exactly the input that hung 1.3.0 forever (F-34)". Two hundred lines below, `draw:628` and `drawWrapped:892` read `text.length` with no door at all. `draw` hangs in the line scan at `:657` (`while (lineEnd < len && text.charCodeAt(lineEnd) !== 10) lineEnd++`); `drawWrapped` hangs in the glyph walk at `:959`, because `tlen` is `Infinity` and the F-04 clamp leg `if (!(endIdx <= tlen)) endIdx = tlen;` **passes** an `Infinity` `endIdx` -- that clamp is sound only while `text.length` is finite. The 1.4.0 CHANGELOG's F-34 row reads "All three public faces now terminate", which is true of the three it means (the three MEASURE faces) and false of the package: **FIVE** public faces take `text` -- `measure`, `measureWidest`, `measureLine`, `draw`, `drawWrapped` -- two still hang, and the hanging pair is the one a caller reaches first. (`drawFast` is a renderer but takes a number; `_measureRange` is private and deliberately doorless per fork (3) A2. This row said SIX in its first draft, which was the coordinator's miscount and propagated into the M4a plan and four shipped files before M4a's reviewer caught it.) Beyond the hang the two families disagree on every non-string: `draw` RENDERS a boxed `String` and a duck-typed `{length: 2, charCodeAt}` (two glyphs), silently draws nothing for `123`, and throws a raw `TypeError` for `null`, `undefined` and `[65]` -- while all six of those return `NaN` from the measure family. So a caller who gates on `Number.isNaN(measureWidest(t))` is protected and a caller who simply calls `draw` is not. Found in the M5 precondition probe, 2026-08-18, against published 1.4.0. **Fixed in 1.4.1 (M4a)**: `draw` and `drawWrapped` gain the SAME `typeof text !== 'string'` door the measure family has carried since 1.4.0, one per CALL and zero per glyph, immediately above the scale door; both now draw nothing and return on a non-string. Five text-taking faces, one text door, two fail signals by family -- renderers draw nothing, measure faces return `NaN`. Proven out of process by T9 controls 14 and 15, each of which SIGKILLs a door-removed twin so the hang control is not vacuous (decisions/0004 fork 9). The two declared behaviour deltas (boxed `String` 1->0 glyphs; `null`/`undefined` raw `TypeError`->return) ship under CHANGELOG `Changed (behaviour)`. | out-of-process, 6 s SIGKILL: `draw(ctx, {length: Infinity, charCodeAt(){return 65}}, 0, 0)` -> `signal=SIGKILL ms=6004`; `drawWrapped(ctx, SAME, new Float32Array([0, Infinity, 8, 0]), 1, 100, 100, 0, 0)` -> `signal=SIGKILL ms=6003`; the same object through `measure` / `measureWidest` / `measureLine` -> `status=0 ms=22 RETURNED`. `draw(ctx, new String('A'), 0, 0)` -> 1 `drawImage`; `measureWidest(new String('A'))` -> `NaN` |
+| **F-43** | S3 | **Both shipped doc files state a test count that 1.4.0 itself falsified, and no gate can see it.** `llms.txt` Testing says "116 tests, 114 pass, 0 fail, 2 todo -- 85 in BitmapFont.test.js, 1 version-sync block in packaging.test.js, 27 in boundary.test.js, 3 in findings.test.js"; `README.md:418` says "**116 tests** (114 pass, 0 fail, 2 finding-watch todos". `npm test` reports **119 / 117 / 0 / 2**, with **88** in `BitmapFont.test.js` -- M4 added three assertions and rewrote the prose around these two sentences without touching either number, so the release gate passed with both files lying. Adjacent to F-14 (docs drift) but distinct: `packaging.test.js`'s sync block pins the VERSION string, which is why the drift that IS gated stayed correct and the drift that is not shipped. Nothing in `npm test` or the torture run reads either figure; closing this means a doc gate that does, not a careful re-edit. **Fixed in 1.4.1 (M4a)**: the two counts are DELETED from `README.md` and `llms.txt` and replaced with the gated statement -- `npm test` -> 0 failures, `npm run torture` -> exactly `ok`. Ratified in decisions/0004 fork 9: a count no gate can read is a liability, and pinning it behind a test that asserts its own suite's size is circular. The T8 docs-drift guard is deliberately NOT extended to counts. | `npm test` -> `tests 119 pass 117 todo 2`; per file `88 / 27 / 3 / 1`; `grep -n "116 tests" README.md llms.txt` -> two hits |
 
 (The F-12 and F-24 reproduction strings contain one non-ASCII character; it is
 written here as the JS escape `'A\u00C8A'` / `'A\u00C8B'` so this file stays
@@ -559,9 +561,9 @@ In-process controls, each of which must be detected:
 ## 4. Session order
 
 ```
-M0 --> M1 --> M2 --> M3 --> M4 ------------------------+
-       |      |                                        |
-       |      +--> M5 --> M6 ------------------------+ |
+M0 --> M1 --> M2 --> M3 --> M4 --> M4a ----------------+
+       |      |                     |                  |
+       |      +--------------------> M5 --> M6 ------+ |
        |                                             | |
        +--> M8 --------------------------------------+ |
                                                      | |
@@ -580,11 +582,21 @@ Why each edge exists:
   here.
 - **M2 blocks M6** for the reason stated in section 2: M6 makes `start`/`end`
   public, and F-04 is the negative-start failure in its exact hand-off shape.
+- **M4a blocks M5.** `layoutGlyphs` is a seventh public face that walks `text`,
+  and F-42 is the proof that this package installs a text door one family at a
+  time. Shipping the quad buffer over an undoored walk gives the hang a third
+  site on the day the buffer becomes a public format contract. M4a is also the
+  cheapest session in this document -- two predicates -- and an S1 hang has no
+  business waiting behind a feature.
 - **M5 blocks M6** because M6 adds range parameters to `layoutGlyphs`, which M5
   creates.
-- **M1 blocks M8.** `drawFastInt` is the same digit loop and the same scratch
-  buffer; shipping it before the magnitude door means writing the door twice, or
-  worse, once.
+- **M1 blocks M8, and that edge has been satisfied since 1.2.2.** `drawFastInt`
+  is the same digit loop and the same scratch buffer; shipping it before the
+  magnitude door would have meant writing the door twice, or worse, once. M1
+  shipped that door, so **M8 has been runnable ever since** -- its 1.8.0 label
+  was queue order and nothing else. Pulled forward to run after M4a
+  (2026-08-18); M5/M6/M7 each shift one minor later. Nothing in the graph
+  changes, because M8 never depended on them.
 - **M7 depends only on M0.** The atlas subpath touches no hot body and no core
   file. It can be done any time after the gate exists, and it is the best
   session to hand to someone who wants a self-contained win.
@@ -1587,6 +1599,203 @@ DONE WHEN
 ```
 
 ===============================================================================
+# M4a -- lite-bmfont v1.4.1 -- the renderer text door (the second hang)
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: 1.4.1
+status: done          # 2026-08-18; 119 tests (0 fail, 2 todo), torture ok; F-42 (S1 renderer hang) and F-43 closed in 1.4.1
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler"]
+findings: [F-42, F-43]
+frozen_baseline: v1.4.0 (bbf87d1, published 2026-08-18), BitmapFont.js sha256 2e1b03b25d9d605d60a83c58a45deeacfbbc83d87d434af9ba304b3c6e85316a, 1039 lines
+depends_on: [M4]
+blocks: [M5]
+---
+
+# lite-bmfont -- the door was installed on three of five faces
+
+PURPOSE
+  M4 closed F-34 by putting `typeof text !== 'string'` on `measure`,
+  `measureWidest` and `measureLine`, and the comment it left at `BitmapFont.js:432`
+  names the offending input by hand: `{length: Infinity, charCodeAt(){return 65}}`
+  "is exactly the input that hung 1.3.0 forever". Two hundred lines below that
+  comment, `draw:628` and `drawWrapped:892` read `text.length` with no door at
+  all, and the same object hangs both of them -- unkillably, SIGKILL at 6 s.
+  The 1.4.0 CHANGELOG says "All three public faces now terminate". Five public
+  faces take `text`. Two of them do not terminate, and they are the two a caller
+  reaches first.
+
+  This session gives "what is `text`?" ONE answer across all five.
+
+TRIGGERING SIGNAL
+  A HUD that renders `font.draw(ctx, state.label, ...)` where `state.label` came
+  out of a JSON parse, a `TextDecoder`, or another library's object. Nothing in
+  the type system stops it; nothing in the package stops it; the tab freezes and
+  the stack shows a `while` loop with no frame to blame.
+
+WHY IT COMES BEFORE M5
+  `layoutGlyphs(text, outBuffer, scale)` is a seventh face that walks `text`. Ship
+  it over an undoored walk and F-42 acquires a third site on the day the buffer
+  format becomes a public contract. M5 must not be the session that decides what
+  `text` is, because M5's reviewer is auditing a stride and an overflow policy.
+
+THE DECISIONS (record them before coding)
+
+  (1) WHAT IS THE RENDERER'S TEXT DOOR?
+      A. **`typeof text !== 'string'` -> return.** The same predicate the measure
+         family already carries three times. One answer for five faces.
+      B. A length RANGE door: `const len = text.length; if (!(len >= 0 && len <
+         Infinity)) return;`. Closes the hang and nothing else -- `draw(ctx, null)`
+         still throws a raw `TypeError`, a boxed `String` still renders where
+         `measureWidest` returns `NaN`, and a duck-typed `{length: 2, charCodeAt}`
+         still draws two glyphs.
+      C. Relax the measure family to a duck-type test so both sides accept the
+         same wide set. Rejected in writing in M4 and rejected again here: the
+         loose "has a length and a charCodeAt" test is precisely what admits the
+         object that never terminates. Do not reopen this without reading F-34.
+      Recommendation: **A**. B is a second door that A will have to replace, which
+      is the mistake the M1 -> M8 edge exists to prevent -- "shipping it before the
+      door means writing the door twice, or worse, once". A also deletes the raw
+      `TypeError` that M3 spent a whole session removing from the constructor, and
+      it costs one `typeof` per CALL, zero per glyph.
+      Declared deltas A carries, both of which belong in the CHANGELOG:
+        * `draw(ctx, new String('A'), ...)` renders 1 glyph today, 0 after.
+        * `draw(ctx, null, ...)` throws `TypeError` today, returns after.
+
+  (2) FAIL SIGNAL: RETURN OR THROW?
+      **Return.** M4's stated asymmetry is the rule: a renderer can decline to act,
+      a query cannot decline to answer. `draw`'s scale door at `:627` already
+      returns silently on `NaN`, `0` and a negative, and `draw(ctx, 123)` returns
+      silently today. Drawing nothing IS the closed state for a renderer (F-11).
+      The counter-argument, which someone will raise: turning a `TypeError` into
+      silence is a fail-OPEN direction and the Law says fail closed. Answer it in
+      the record rather than by changing the answer -- the closed state of a
+      renderer is an empty canvas, and a throw here would make `draw` the only
+      method in the package that reports a bad argument by throwing.
+
+  (3) DOOR ORDER.
+      Text first, then scale, matching the measure family. Unobservable for the
+      renderers (both paths return `undefined`), so choose it for uniformity: one
+      order, five faces, nothing to remember.
+
+  (4) VERSION: 1.4.1 OR 1.5.0?
+      **1.4.1.** Direct precedent: M1 shipped the `drawFast` magnitude door -- a
+      hang fix that also changed behaviour on out-of-range values -- as **1.2.2, a
+      patch**. Same shape, same severity, same kind of delta. 1.5.0 would shift
+      M5 through M8 one minor each and buy nothing. Both deltas from (1) go in the
+      CHANGELOG under `### Changed (behaviour)` regardless of the number.
+
+  Record all four as fork (9) of `decisions/0004-metrics-and-snapping.md`, not a
+  new ADR. The door being decided IS fork (4)'s door applied to three more faces;
+  splitting one policy across two records is how the two families drifted apart
+  in the first place.
+
+TASKS
+  - Amend `decisions/0004-metrics-and-snapping.md` with fork (9) BEFORE coding,
+    including C's second rejection and the two declared deltas.
+  - `draw` (`:626`): insert the text door ahead of `const len = text.length`.
+  - `drawWrapped` (`:875`): insert the same door ahead of `const tlen = text.length`.
+    Note WHY the existing F-04 clamp does not already cover this: the leg
+    `if (!(endIdx <= tlen)) endIdx = tlen;` PASSES an `Infinity` `endIdx` when
+    `tlen` is itself `Infinity`. The clamp is sound only while `text.length` is
+    finite, and nothing said so.
+  - `drawFast` takes a number and changes NOT AT ALL. Prove it by body sha.
+  - T1: a text-door sweep, one row per renderer, over the same seven inputs the
+    measure family is already swept with -- `null`, `undefined`, `123`, `[65]`,
+    `new String('A')`, `{length: 2, charCodeAt}`, `{length: Infinity, charCodeAt}`.
+  - T9: controls **14** and **15**. Delete the door from `draw` / `drawWrapped` in
+    a child process and the tier must fail. Out-of-process with a 6 s `SIGKILL`,
+    reusing M4's `t9-measure-hang-child.mjs` shape. **The control must self-test
+    the doorless child** -- assert the child ACTUALLY hangs -- exactly as control
+    13 does. A hang control that never hangs proves nothing, and this package has
+    F-20/F-21/F-26 in the ledger because someone shipped an assertion that could
+    not fail.
+  - F-43: the two stale counts. Recommendation is NOT to re-pin them: **delete the
+    absolute test counts from `README.md:418` and `llms.txt`** and state what is
+    gated instead. A number a reader cannot verify and no gate can check is a
+    liability; two of them drifted in a single session. If the count stays, it
+    needs a gate that reads the real total, and a test asserting its own suite's
+    size is circular -- say so in the record either way.
+  - No new T6 window. The door is a per-call predicate on four existing bodies;
+    re-measure windows A-D and prove the numbers did not move.
+
+HOT PATH
+  One `typeof` per CALL on two methods, zero per glyph, zero per line. If the
+  measured `draw` window in T6 moves at all, the door was written in the wrong
+  place -- inside a loop, or as a helper call.
+
+ASSERTIONS
+  - Out-of-process, 6 s `SIGKILL` budget: all FIVE public text faces return in
+    under 100 ms on `{length: Infinity, charCodeAt(){return 65}}`. Today `draw`
+    and `drawWrapped` are killed at 6 s; the other four return in ~22 ms.
+  - The five-face x seven-input table has exactly two answers: every renderer draws
+    0 and returns, every measure face returns `NaN`. No raw `TypeError` anywhere
+    in the table -- that assertion is what makes A distinguishable from B.
+  - **`'A'` is untouched.** T5's full fuzz corpus produces ctx columns
+    byte-identical to v1.4.0's recording. A door that also moved a real string is
+    the failure mode this session must be unable to hide.
+  - Body-sha freeze against `git show bbf87d1:BitmapFont.js`: `drawFast`,
+    `measure`, `measureWidest`, `measureLine`, `_measureRange`, `hasGlyph`,
+    `destroy` and the constructor are byte-identical. The whole diff is two
+    predicates and their comments.
+  - Controls 14 and 15 fail when the door is removed, and the doorless child is
+    proven to hang.
+  - `npm test` 0 fail; `node --expose-gc test/torture.mjs` prints `ok`, exit 0.
+  - T6 windows A-D: `maxBytesPerCall: 0` still, and the structural totals unmoved.
+
+NON-GOALS
+  No change to what a real string renders. No change to the measure family. No
+  new public method. NOT F-19's de-Unicoding, NOT F-37's transient-allocation
+  gate, NOT F-40's scale-magnitude bound (all M9). NOT F-26's guard falsifiability
+  (M6). Do not touch `draw`'s F-07 baseline arithmetic.
+
+DONE WHEN
+  no public face can be made to hang, proven by a control that itself hangs when
+  the door is deleted; the five-face x seven-input table has one answer per family
+  and no raw TypeError in it; T5's corpus is byte-identical to v1.4.0; the two
+  doc test counts are gone or gated
+
+PRECONDITION PROBE (run 2026-08-18 against published 1.4.0, bbf87d1)
+  Already measured -- do not rediscover it, and do not trust the line numbers
+  after the first insertion. Locate every site by CONTENT.
+
+  1. Hang, out-of-process, `{length: Infinity, charCodeAt(){return 65}}`:
+       draw          status=null signal=SIGKILL ms=6004
+       drawWrapped   status=null signal=SIGKILL ms=6003
+       measure       status=0    ms=22   RETURNED
+       measureWidest status=0    ms=21   RETURNED
+       measureLine   status=0    ms=21   RETURNED
+     `drawWrapped` with a REAL string and `endIdx = Infinity` returns in 21 ms --
+     the clamp works; it is `tlen` itself going infinite that defeats it.
+
+  2. The asymmetry, `draw` vs `measureWidest`:
+       'A'                      draw 1 glyph        measureWidest 8
+       new String('A')          draw 1 glyph        measureWidest NaN
+       123                      draw 0, silent      measureWidest NaN
+       [65]                     draw THREW TypeError measureWidest NaN
+       {length:2,charCodeAt}    draw 2 glyphs       measureWidest NaN
+       null / undefined         draw THREW TypeError measureWidest NaN
+
+  3. Sites, at v1.4.0 line numbers:
+       `_measureRange` :383   `measure` :432   `measureWidest` :467
+       `measureLine`   :542   `hasGlyph` :596  `draw` :626 (len at :628)
+       `drawFast`      :737   `drawWrapped` :875 (tlen at :892)
+     The two hang loops: `draw:657` `while (lineEnd < len && text.charCodeAt(lineEnd) !== 10) lineEnd++;`
+     and `drawWrapped:959` `for (let i = startIdx; i < endIdx; i++)`.
+
+  4. Current gate: `npm test` 119 tests / 117 pass / 0 fail / 2 todo;
+     `npm run torture` `ok`, exit 0, one TODO line (T8 = M7).
+     Per file: BitmapFont.test.js 88, boundary.test.js 27, findings.test.js 3,
+     packaging.test.js 1. `README.md:418` and `llms.txt` both still say 116/114.
+```
+
+===============================================================================
 # M5 -- lite-bmfont v1.5.0 -- glyph quads (`layoutGlyphs` + `drawQuads`)
 ===============================================================================
 
@@ -1600,8 +1809,11 @@ gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler"]
-findings: [F-03, F-12]
-depends_on: [M2]
+findings: []          # F-03 closed in M2, F-12 closed in M2/M3 -- this is a
+                      # feature session that closes no finding. It INHERITS the
+                      # M4a text door and the M4 measure family; re-verify both
+                      # in its precondition probe before writing a line.
+depends_on: [M2, M4a]
 blocks: [M6]
 ---
 
@@ -1616,7 +1828,12 @@ PURPOSE
   -- compute into a caller-owned buffer, then render it:
 
       font.layoutGlyphs(text, outBuffer, scale = 1) -> glyphCount
-      font.drawQuads(ctx, buffer, glyphCount, x, y, scale = 1)
+      font.drawQuads(ctx, buffer, first, count, x, y, scale = 1)
+
+  (This signature is the one THE DECISION below lands on. The brief originally
+  carried `drawQuads(ctx, buffer, glyphCount, x, y, scale)` here and the
+  `first`/`count` form in the recommendation -- two signatures in one document.
+  Corrected 2026-08-18; the subset form is the whole reason B was rejected.)
 
   Stride 6 per glyph: `[sx, sy, sw, sh, dx, dy]` -- source rect in the atlas,
   destination offset relative to the origin. Kerning and `xoffset`/`yoffset`
@@ -1956,15 +2173,24 @@ DONE WHEN
 ```markdown
 ---
 package: "@zakkster/lite-bmfont"
-version_target: 1.8.0
-status: planned
+version_target: 1.5.0  # was 1.8.0; PULLED FORWARD 2026-08-18 at the user's request.
+                       # M8 only ever depended on M1 (shipped 1.2.2), so its
+                       # position in the numbering was queue order, not a
+                       # constraint. It now takes the next minor and M5/M6/M7
+                       # each shift one later. M9 stays 2.0.0.
+status: next           # after M4a. Needs a precondition probe before the planner
+                       # sees it -- this brief predates M0 and has not been
+                       # re-baselined against the shipped code.
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler"]
-findings: [F-01, F-02]
-depends_on: [M1]
+findings: []           # CORRECTED 2026-08-18: was [F-01, F-02]; BOTH closed by M1
+                       # in 1.2.2. M8 closes no open finding -- it is a pure
+                       # feature session, and its reviewer should be told so.
+                       # Same staleness M5 carried ([F-03, F-12], also closed).
+depends_on: [M1]       # satisfied since 1.2.2 -- nothing blocks this session
 blocks: [M9]
 ---
 

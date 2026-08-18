@@ -195,6 +195,16 @@ export class BitmapFont {
      * A `scale` outside `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity` --
      * draws NOTHING and returns (F-11). An `align` outside `{0, 1, 2}` -- including
      * `NaN`, negatives and fractionals -- renders LEFT.
+     *
+     * A **non-string** `text` -- `null`, `undefined`, a number, an array, or a
+     * boxed `String` (`new String('A')`) -- draws NOTHING and returns (F-42).
+     * All FIVE text-taking faces carry the same `typeof text !== 'string'` door
+     * (`decisions/0004` fork 9): the two text renderers (`draw`, `drawWrapped`)
+     * answer a rejected `text` by drawing nothing, the three measure faces by
+     * returning `NaN`. `drawFast`
+     * takes a number and carries no text door. Silence is a renderer's closed
+     * state, not an error signal -- detect a bad `text` with
+     * `Number.isNaN(measureWidest(text))`.
      */
     draw(
         ctx: CanvasRenderingContext2D,
@@ -256,6 +266,11 @@ export class BitmapFont {
      *   `anchor` is the unchanged line-0 anchor `Math.round(y + base * scale)`
      *   plus, at `vAlign` 1/2, the separately rounded centring term. Glyph X is
      *   not snapped.
+     * - A **non-string** `text` draws NOTHING and returns (F-42), ahead of the
+     *   buffer-length `RangeError` -- there is nothing to draw, so there is no
+     *   line count to honour. Same `typeof text !== 'string'` door as `draw` and
+     *   the measure family; detect a bad `text` with
+     *   `Number.isNaN(measureWidest(text))`.
      */
     drawWrapped(
         ctx: CanvasRenderingContext2D,

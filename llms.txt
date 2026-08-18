@@ -15,7 +15,7 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0–255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.4.0'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.4.1'.
 
 ## Export: BitmapFontError (class extends RangeError)
 The one error the constructor throws (F-10). Extends RangeError, so a
@@ -130,6 +130,12 @@ draw(ctx, text, x, y, scale = 1, align = 0) -> void
   outside {0,1,2} (NaN, negatives, fractionals) renders LEFT. A `scale` outside
   (0, Infinity) -- NaN, 0, a negative, or Infinity -- draws NOTHING and returns
   (F-11). `x`/`y` is the BASELINE anchor of the first line.
+  A NON-STRING text -- null, undefined, a number, an array, a boxed String, or
+  {length: Infinity, charCodeAt} -- draws NOTHING and returns (F-42, 1.4.1): the
+  same `typeof text !== 'string'` door the measure family answers with NaN. Five
+  text-taking faces, one door; the two text renderers draw nothing, the three measure faces return NaN;
+  drawFast takes a number and has none. Detect a bad text with
+  Number.isNaN(measureWidest(text)).
   PIXEL-SNAPPED PER LINE ORIGIN IN X AND PER BASELINE IN Y -- that is the exact
   scope of the promise. EVERY baseline is snapped, not just the first (F-07,
   1.4.0): line i lands at Math.round(y) + Math.round(i * lineHeight * scale).
@@ -155,6 +161,8 @@ drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale
   from a caller-owned Float32Array.
   - `x`/`y` is the BOX TOP-LEFT corner (not a baseline).
   - A `scale` outside (0, Infinity) draws NOTHING and returns (F-11).
+  - A NON-STRING text draws NOTHING and returns (F-42, 1.4.1), ahead of the
+    buffer-length RangeError -- nothing to draw, no line count to honour.
   - `align`:  0=left,   1=center, 2=right; outside {0,1,2} renders LEFT
   - `vAlign`: 0=top,    1=middle, 2=bottom; outside {0,1,2} renders TOP
   - `layoutBuffer`: Float32Array, `lineCount * 4` floats:
@@ -238,10 +246,10 @@ font.drawWrapped(ctx, 'Hello world…', layout, n, 200, 100, 10, 10, 1, 1, 1); /
 See source file BitmapFont.js for full JSDoc API documentation.
 
 ## Testing
-- npm test -> node --expose-gc --test test/*.test.js: 116 tests, 114 pass, 0 fail,
-  2 todo -- 85 in BitmapFont.test.js, 1 version-sync block in packaging.test.js,
-  27 in boundary.test.js, 3 in findings.test.js (1 real F-07 regression test plus
-  2 finding-watch todos, F-14 and F-18). M4 closed F-07 / F-34 / F-35 / F-36 as
+- Gate: `npm test` -> 0 failures. `node --expose-gc test/torture.mjs` -> prints
+  exactly `ok`, exit 0. Test files: BitmapFont.test.js, boundary.test.js,
+  findings.test.js, packaging.test.js (version sync). Counts are not pinned in
+  docs -- nothing reads them, and they drifted in 1.4.0 (F-43). M4 closed F-07 / F-34 / F-35 / F-36 as
   real assertions and half-closed F-06 (measureWidest ships; measure's semantics
   stay M9's). F-08's storage half stays open (M9).
 - npm run torture -> node --expose-gc test/torture.mjs: prints exactly "ok", exit 0.

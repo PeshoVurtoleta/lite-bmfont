@@ -302,4 +302,60 @@ export function run() {
             }
         }
     }
+
+    // ---- M4a controls 14, 15 -- the RENDERER text doors (F-42) --------------
+    // Same shape as 11-13 but against a SEPARATE child: the renderer doors are
+    // `return;` not `return NaN;` and must not share the measure family's marker
+    // budget (t9-measure-hang-child.mjs's TEXT_DOOR expects exactly 3). The
+    // `door` lane is spawned ONCE and both controls read it, exactly as 11/12/13
+    // share one `shipped` parse. Shipped lane 6000 ms (the PROBE's SIGKILL
+    // budget); doorless SELF-TEST lanes 2000 ms (a body that has not terminated
+    // on an Infinity bound in 2 s never will, and 6 s twice adds 8 s of wall
+    // clock to learn nothing -- matches control 13's 2000).
+    const rchild = new URL('./t9-render-hang-child.mjs', import.meta.url).pathname;
+    const spawnRender = (mode, ms) => spawnSync(process.execPath, [rchild, mode],
+        { timeout: ms, killSignal: 'SIGKILL', encoding: 'utf8' });
+    {
+        const r = spawnRender('door', 6000);
+        if (r.status === 3) {
+            die('T9 control 14/15: could not reconstruct the door-removed body -- the markers moved; ' +
+                'update t9-render-hang-child.mjs. stderr: ' + (r.stderr || '').trim());
+        }
+        if (r.status !== 0 || r.signal !== null) {
+            die('T9 control 14/15: the shipped render child did not exit 0 (status=' + r.status +
+                ' signal=' + r.signal + ') stderr: ' + (r.stderr || '').trim());
+        }
+        const d = JSON.parse(r.stdout.trim());
+
+        // Control 14 -- draw's text door. real===1 is the NON-VACUITY twin: a
+        // door that rejects everything passes the three zeros and fails HERE.
+        if (!(d.hangDraw === 0 && d.boxed === 0 && d.nullish === 0 && d.real === 1)) {
+            die('T9 control 14: the shipped draw child returned ' + JSON.stringify(d) +
+                ' -- expected hangDraw 0, boxed 0, nullish 0, real 1');
+        }
+        // Control 15 -- drawWrapped's text door, read from the same child.
+        if (d.hangWrap !== 0) {
+            die('T9 control 15: the shipped drawWrapped child drew ' + d.hangWrap + ' on HANGY, expected 0');
+        }
+
+        // Control 14 SELF-TEST: the door-removed draw MUST be SIGKILLed. If it
+        // exits 0 the watchdog is not watching and the control is decorative.
+        const nd = spawnRender('nodraw', 2000);
+        if (nd.status === 3) {
+            die('T9 control 14: could not reconstruct the door-removed draw body -- the markers moved');
+        }
+        if (nd.signal !== 'SIGKILL') {
+            die('T9 control 14: the door-removed draw RETURNED (status=' + nd.status +
+                ' signal=' + nd.signal + ') -- the hang control is vacuous and F-42 is not actually gated');
+        }
+        // Control 15 SELF-TEST: the door-removed drawWrapped MUST be SIGKILLed.
+        const nw = spawnRender('nowrap', 2000);
+        if (nw.status === 3) {
+            die('T9 control 15: could not reconstruct the door-removed drawWrapped body -- the markers moved');
+        }
+        if (nw.signal !== 'SIGKILL') {
+            die('T9 control 15: the door-removed drawWrapped RETURNED (status=' + nw.status +
+                ' signal=' + nw.signal + ') -- the hang control is vacuous and F-42 is not actually gated');
+        }
+    }
 }

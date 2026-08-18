@@ -45,6 +45,24 @@ import {
     JSON_SNAP, JSON_SNAP_KERN, JSON_ASCII,
 } from './harness.mjs';
 
+// F-42 / M4a byte-identity pin (section 8.2). Sweep A already compares every
+// recorded dx/dy element-wise against an INDEPENDENT allocating reference; this
+// row folds every recorded dx and dy across the WHOLE 50k-tuple corpus into one
+// deterministic 32-bit checksum and pins it to a literal recorded from the
+// v1.4.0 build. The F-42 door returns early ONLY for non-strings, and the corpus
+// holds only real strings, so the door never fires here and this checksum is
+// byte-identical to v1.4.0's. It was cross-checked against the frozen 1.4.0 copy
+// BEFORE the door landed; the two agreed. If a future edit moves it -- a door
+// placed after cursorX, a `typeof text !== 'string' || !text.length` that eats a
+// first glyph, a "tidied" line scan -- the session has ALREADY regressed and
+// this literal must NOT be updated to match. The pin is guarded to the default
+// seed because the corpus and tuple stream are seed-dependent.
+const T5_DEFAULT_SEED = 0x9e3779b9;
+const T5_DXDY_CKSUM = 0xcecd9814;
+const _ckBuf = new ArrayBuffer(8);
+const _ckF64 = new Float64Array(_ckBuf);
+const _ckU32 = new Uint32Array(_ckBuf);
+
 // ---- the allocating reference renderer (8.3.1) -----------------------------
 // Records instead of drawing: it returns arrays, it never calls drawImage, and
 // it never touches `rec`. It may allocate -- T5 makes no measured window at all,
@@ -601,6 +619,7 @@ export function run() {
     // =====================================================================
     const SWEEP = 50000;
     let sweptGlyphs = 0, sweptMultiLine = 0, sweptFractionalY = 0;
+    let ckAcc = 0 >>> 0;                                  // F-42 byte-identity fold
     for (let i = 0; i < SWEEP; i++) {
         const fi = prng() % 3;
         const font = FONTS[fi];
@@ -639,6 +658,14 @@ export function run() {
         check(rec.imgMismatch === 0, () => 'T5/sweepA: imgMismatch ' + rec.imgMismatch + ' (i=' + i + ')');
         check(nanScan() === 0, () => 'T5/sweepA: nanScan ' + nanScan() + ' (i=' + i + ')');
 
+        // F-42 fold: every recorded dx/dy bit pattern into the running checksum.
+        for (let g = 0; g < rec.calls; g++) {
+            _ckF64[0] = rec.dx[g];
+            ckAcc = (Math.imul(ckAcc ^ _ckU32[0], 0x01000193) ^ _ckU32[1]) >>> 0;
+            _ckF64[0] = rec.dy[g];
+            ckAcc = (Math.imul(ckAcc ^ _ckU32[0], 0x01000193) ^ _ckU32[1]) >>> 0;
+        }
+
         // Y10 / A14 -- THE BROADEST DETECTOR IN THE SESSION. Every baseline the
         // reference used is an integer, and the exact dy equality above transfers
         // that to the library: a library that rounded only the first line would
@@ -660,6 +687,16 @@ export function run() {
         () => 'T5/sweepA: only ' + sweptMultiLine + ' multi-line tuples -- F-07 is barely exercised');
     check(sweptFractionalY > 10000,
         () => 'T5/sweepA: only ' + sweptFractionalY + ' fractional-y tuples -- the B1/B2 sub-fork is INVISIBLE');
+    // F-42 byte-identity pin. Guarded to the default seed (the corpus and tuple
+    // stream are seed-dependent). A moved checksum means a real string's dx or dy
+    // changed -- the one failure mode this session must be unable to hide. DO NOT
+    // edit T5_DXDY_CKSUM to match a regression (section 8.2).
+    if (process.env.T5_CKSUM_PRINT === '1') process.stderr.write('T5_DXDY_CKSUM ' + (ckAcc >>> 0) + ' 0x' + (ckAcc >>> 0).toString(16) + '\n');
+    if (SEED === T5_DEFAULT_SEED) {
+        check((ckAcc >>> 0) === (T5_DXDY_CKSUM >>> 0),
+            () => 'T5/F-42: dx/dy checksum 0x' + (ckAcc >>> 0).toString(16) + ' != pinned 0x' +
+                (T5_DXDY_CKSUM >>> 0).toString(16) + ' -- a real string moved. DO NOT update the literal to match.');
+    }
 
     // The long strings, drawn in drawWrapped slices of at most 512 chars, with
     // dropped asserted after each. A tier that silently drops recordings and

@@ -305,6 +305,15 @@ object (`new String('AA')`) is rejected and returns `NaN`. That is deliberate:
 the looser test admits `{length: Infinity, charCodeAt(){...}}`, which never
 terminates.
 
+Since 1.4.1 the **same text door guards all five text-taking faces** (F-42):
+`draw` and `drawWrapped` reject a non-string `text` -- `null`, `undefined`, a
+number, an array, a boxed `String`, or the `{length: Infinity, charCodeAt}`
+object that hung both renderers before 1.4.1 -- by drawing **nothing** and
+returning, while `measure`, `measureWidest` and `measureLine` return `NaN`.
+`drawFast` takes a number and carries no text door. A renderer's silence is not
+an error signal; to DETECT a bad `text`, gate on the measure family with
+`Number.isNaN(measureWidest(text))`.
+
 `NaN` is what the doors produce, and it is not unique in the absolute: a font
 with mixed-sign Int16 advances at an extreme but in-range `scale` can also
 produce `NaN` or `Infinity` by arithmetic. That behaviour is unchanged from
@@ -415,8 +424,10 @@ loaders and `catch` blocks.
 
 ## 🧪 Testing
 
-`npm test` runs **116 tests** (114 pass, 0 fail, 2 finding-watch todos: F-14,
-F-18) across `node:test`. `npm run torture` runs the ten-tier zero-GC gate
+`npm test` runs the full `node:test` suite and must report **0 failures**.
+`npm run torture` must print exactly `ok` and exit 0. Those two commands are
+the gate; absolute test counts are deliberately not published here, because a
+count no gate can read drifts silently (F-43). `npm run torture` runs the ten-tier zero-GC gate
 (`node --expose-gc test/torture.mjs`) and prints exactly `ok`; the descriptor door
 is proven by T3's 50-row abuse matrix and T9's control 10, and the pixel-snap
 promise by T5's allocating reference renderer plus two T9 controls that rebuild

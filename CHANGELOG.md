@@ -2,6 +2,51 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.4.1 -- 2026-08-18
+
+The renderer text door. `draw` and `drawWrapped` carried the two `text.length`
+reads that feed their unkillable line scans, but -- unlike the measure family
+since 1.4.0 -- neither rejected a non-string first. `{length: Infinity,
+charCodeAt(){return 65}}` has a numeric `length` and a `charCodeAt`, so `len`
+(and `tlen`) became `Infinity` and the scan never terminated: SIGKILL after 6 s,
+an S1 hang reachable from the public API (F-42). The fix is the SAME
+`typeof text !== 'string'` predicate the measure family already carries, one per
+CALL and zero per glyph, ahead of the scale door. Five text-taking faces now share
+one door and two fail signals by family: the two text renderers draw nothing and return,
+the measure family returns `NaN`. Design record: `decisions/0004-metrics-and-snapping.md`
+fork (9). No other logic in `BitmapFont.js` changed.
+
+### Fixed
+- **F-42 (S1):** `draw` and `drawWrapped` now TERMINATE on an unbounded
+  array-like `text`. `draw(ctx, {length: Infinity, charCodeAt(){return 65}})`
+  and the `drawWrapped` equivalent were SIGKILLed after 6 s in 1.4.0; both now
+  draw nothing and return in under 1 ms. Proven out of process by T9 controls 14
+  and 15, each of which also SIGKILLs a door-removed twin to prove the control is
+  not vacuous.
+- **F-43:** the two unverifiable absolute test counts were removed from
+  `README.md` and `llms.txt`. A count no gate can read drifts silently -- both
+  numbers were stale by 1.4.0. The gate is `npm test` reporting 0 failures and
+  `npm run torture` printing exactly `ok`.
+
+### Changed (behaviour)
+
+Both deltas change `draw`/`drawWrapped` ONLY on inputs that were already broken
+(one hung, one threw) or already unsupported, consistent with M1's `drawFast`
+magnitude door shipping as a patch (1.2.2).
+
+| Input | 1.4.0 | 1.4.1 |
+| --- | --- | --- |
+| `draw(ctx, new String('A'), ...)` / `drawWrapped` with a boxed `String` | renders **1 glyph** | renders **0** and returns |
+| `draw(ctx, null, ...)` / `draw(ctx, undefined, ...)` / `drawWrapped` with either | throws a raw **`TypeError`** | returns, draws **0** |
+
+The two rows cover four inputs. `[65]` is an instance of row 2 -- it threw a raw
+`TypeError` in 1.4.0 for the same reason `null` did (an internal `.length` read
+escaping), and now returns. `{length: 2, charCodeAt(){return 65}}` is an instance
+of row 1 -- it drew 2 glyphs in 1.4.0 for the same reason a boxed `String` drew,
+duck-typing, and now draws 0. A caller who relied on the old `TypeError` from
+`draw(ctx, null)` detects a bad `text` via `Number.isNaN(measureWidest(text))`,
+which is the measure family's fail signal.
+
 ## 1.4.0 -- 2026-08-18
 
 Metrics coherence and the pixel-snap promise. `measure()` sums across newlines
@@ -52,7 +97,7 @@ for a number, one threw a raw `TypeError`, and one never returned. Design record
 | ID | Sev | Finding | Reproduction | Fixed in |
 | --- | --- | --- | --- | --- |
 | **F-07** | S2 | **Only the first line was pixel-snapped in Y.** `draw` ran `cursorY = Math.round(y)` once and then accumulated `cursorY += lineHeight * scale` unrounded, so at any fractional step every line after the first landed off the pixel grid. `drawWrapped` had the identical shape. Every baseline is now snapped, from an exact per-line product rather than a running float: `Math.round(y) + Math.round(i * lineHeight * scale)`. | `draw(ctx,'A\nB\nC\nD\nE',0,0,1.1)` at `lineHeight` 17 -> baselines were `0, 18.7, 37.4, 56.1, 74.8`; now `0, 19, 37, 56, 75` | 1.4.0 |
-| **F-34** | **S1** | **The measure walk never terminated on an unbounded range, and the public `measure` could reach it.** The walk is `for (let i = start; i < end; i++)`; at `start === -Infinity` the increment never advances and the loop is unkillable. `measure` forwards `0` and `text.length`, so a real string was safe -- but `measure` had no text door, and an object with a numeric `length` and a `charCodeAt` reached it. All three public faces now terminate. | `measure({length: Infinity, charCodeAt(){return 65}})` -> was SIGKILL after 6 s; now returns `NaN`. `measureLine('AAAA', -Infinity, Infinity, 1)` -> `32` | 1.4.0 |
+| **F-34** | **S1** | **The measure walk never terminated on an unbounded range, and the public `measure` could reach it.** The walk is `for (let i = start; i < end; i++)`; at `start === -Infinity` the increment never advances and the loop is unkillable. `measure` forwards `0` and `text.length`, so a real string was safe -- but `measure` had no text door, and an object with a numeric `length` and a `charCodeAt` reached it. All three public faces now terminate. [corrected in 1.4.1: the three faces meant here are the three MEASURE faces; `draw` and `drawWrapped` are two further text-taking faces -- five in all -- and neither terminated until 1.4.1 (F-42)] | `measure({length: Infinity, charCodeAt(){return 65}})` -> was SIGKILL after 6 s; now returns `NaN`. `measureLine('AAAA', -Infinity, Infinity, 1)` -> `32` | 1.4.0 |
 | **F-35** | S2 | **The raw range walk and `drawWrapped` disagreed about a negative fractional index**, so a public range measure would have reported a width the renderer does not draw. `drawWrapped` clamps once, up front; the raw walk let `charCodeAt` truncate per iteration, and `charCodeAt(-0.5)` reads index 0 -- adding a glyph instead of rejecting one. `measureLine` clamps first -- and clamps ONLY, because `drawWrapped` does not pre-truncate either: it walks a fractional index and lets `charCodeAt` truncate per iteration. A door that rounded the bounds would report a width the renderer does not draw, which is the same defect one method over. | range `[-0.5, 2)` on `'AAAA'` at advance 8 -> `drawWrapped` draws 2 glyphs; the raw walk returned 24 (three glyphs); `measureLine` returns **16**. `[0.5, 2.7)` -> 3 glyphs and **24** from both | 1.4.0 |
 | **F-36** | S2 | **`measure` had neither a scale door nor a text door**, so M3's fail-closed policy was installed on the renderers only. One bad `scale` produced two different failure modes in one frame: the caller sized a box at a negative or zero width and `draw` silently declined to render. All three public measure faces now carry the same range door the three draw bodies carry, plus a `typeof text === 'string'` door. | `measure('AA', -1)` -> was `-16`; now `NaN`. `measure(123)` -> was `0`; now `NaN`. `measure(null)` -> was a raw `TypeError`; now `NaN` | 1.4.0 |
 | **F-06** | S2 (half) | **`measure()` sums across newlines while `draw()` aligns per line.** 1.4.0 adds `measureWidest` and documents `measure` as what it is -- a total advance, not a layout width. `measure`'s own return value is UNCHANGED; promoting it to the widest line is a silent numeric change and lands in 2.0.0. | `measure('AA\nAA')` -> `32` (unchanged); `measureWidest('AA\nAA')` -> `16` | 1.4.0 (half); 2.0.0 (semantics) |

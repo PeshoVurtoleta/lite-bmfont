@@ -612,6 +612,10 @@ export class BitmapFont {
      * `0, 8.8, 17.6, 26.4...`. Rounding X per glyph would break the advance
      * conservation law and cost bytes in the glyph loop.
      *
+     * A non-string `text` draws NOTHING and returns (F-42, decisions/0004 fork
+     * 9) -- the same `typeof` door the measure family answers with NaN. Detect
+     * a bad `text` via `Number.isNaN(measureWidest(text))`.
+     *
      * @param {CanvasRenderingContext2D} ctx
      * @param {string} text
      * @param {number} x      Baseline X (left/center/right anchor point per `align`)
@@ -624,6 +628,14 @@ export class BitmapFont {
      *   renders LEFT (decisions/0003 fork 6).
      */
     draw(ctx, text, x, y, scale = 1.0, align = 0) {
+        // F-42 text door. The SAME predicate the measure family has carried
+        // since 1.4.0 (measure/measureWidest/measureLine), returning instead of
+        // NaN because a renderer's closed state is an empty canvas (ROADMAP law
+        // 3, decisions/0004 fork 9). NOT an array-like test:
+        // {length: Infinity, charCodeAt(){return 65}} has a numeric length and a
+        // charCodeAt, and `len` then never bounds the line scan below -- SIGKILL
+        // at 6 s in 1.4.0. Per CALL, zero per glyph. Text first, then scale.
+        if (typeof text !== 'string') return;
         if (!(scale > 0 && scale < Infinity)) return;
         const len = text.length;
         if (len === 0) return;
@@ -858,6 +870,8 @@ export class BitmapFont {
      *
      * @param {CanvasRenderingContext2D} ctx
      * @param {string} text         Original text the layout buffer indexes into.
+     *   A non-string draws NOTHING and returns (F-42, decisions/0004 fork 9),
+     *   ahead of the F-05 buffer-length check -- there is nothing to draw.
      * @param {Float32Array} layoutBuffer  See format above.
      * @param {number} lineCount    Number of valid line entries in `layoutBuffer`.
      * @param {number} boxWidth     Container width (px at the rendered scale). Used for H-align.
@@ -873,6 +887,10 @@ export class BitmapFont {
      *   renders TOP (decisions/0003 fork 7).
      */
     drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale = 1.0, align = 0, vAlign = 0) {
+        // F-42 text door -- see draw()'s. Same predicate the measure family
+        // carries, returning (a renderer's closed state is an empty canvas).
+        // Text first, then scale; per CALL, zero per glyph.
+        if (typeof text !== 'string') return;
         if (!(scale > 0 && scale < Infinity)) return;
         // F-05 / the lineCount degenerates. Fork (1): CLAMP the index-like
         // value, THROW on the buffer length. Both are per CALL, zero per glyph.
@@ -889,6 +907,11 @@ export class BitmapFont {
             throw new RangeError('lite-bmfont: layoutBuffer holds ' + layoutBuffer.length +
                 ' floats, lineCount ' + n + ' needs ' + (n * 4));
         }
+        // F-42: this read is why the door above exists. The F-04 clamp leg
+        // `if (!(endIdx <= tlen)) endIdx = tlen;` is a test AGAINST tlen, so an
+        // Infinity tlen PASSES an Infinity endIdx straight through and the glyph
+        // walk never terminates. The clamp is sound only while text.length is
+        // finite; nothing said so before 1.4.1.
         const tlen = text.length;
 
         // `cursorY` tracks the baseline of the current line. The user passes `y` as the
@@ -1036,4 +1059,4 @@ export class BitmapFont {
 }
 export default BitmapFont;
 
-export const VERSION = '1.4.0';
+export const VERSION = '1.4.1';
