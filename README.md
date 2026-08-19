@@ -355,11 +355,15 @@ Zero-alloc number renderer with one decimal place.
 - `NaN`, `+Infinity`, `-Infinity` -> silently skipped (returns).
 - `|value| > DRAWFAST_MAX` (`1e21`) -> silently skipped (returns); draws nothing.
 - Negative values inside the door -> clamped to `0` (so `-5` renders `"0.0"`).
-- Decimal -> rounded to nearest tenth (`33.49 -> "33.5"`).
+- Decimal -> rounded to the nearest tenth, **exactly** (`8.45 -> "8.4"`, not
+  `"8.5"`): the tenth is derived by Fast2Sum, not a `value * 10` product, so the
+  guarantee holds at every magnitude (F-23 closed).
 - Requires `'0'`-`'9'` (codes 48-57) and `'.'` (code 46) in the atlas.
 
-Above 2^53 (9007199254740992) the rendered integer digits are approximate -- the
-value is scaled through a double before digit extraction. Exact below that. Values
+Above 2^53 (9007199254740992) every double is an integer and its digits are
+rendered **exactly** -- the true value of the double stored, which is **not**
+necessarily the literal you typed: `762638538843020900000` renders
+`"762638538843020853248.0"`, the double that literal actually became. Values
 outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` draw nothing. A `scale` outside
 `(0, Infinity)` draws **nothing** and returns (F-11), same as `draw`.
 
@@ -383,12 +387,19 @@ threshold it has not crossed.
 
 `DRAWFASTINT_MAX` is `Number.MAX_SAFE_INTEGER`, the **correctness** boundary, not
 `DRAWFAST_MAX`'s buffer boundary: above 2^53 a double is not integer-exact, so
-`drawFastInt` refuses the range instead of rendering approximate digits, and is
-exact by construction for every value it admits.
+`drawFastInt` refuses the range (above `DRAWFAST_MAX`, `drawFast` renders the
+double's exact integer value by decimal doubling), and is exact by construction
+for every value it admits.
 
-**Allocation caveat (F-44):** zero-alloc holds only for values below 2^31; larger
-values box one HeapNumber per call in the digit loop (`drawFast` has the same
-property, routed to a follow-up session).
+**Allocation (F-44 was a misdiagnosis):** the digit loop keeps its loop variables
+under 2^31 via a hi/lo split (`lo = n % 1e7`, `hi = (n - lo) / 1e7`), so the
+**body** boxes no HeapNumber in any V8 tier -- Smi discipline that also holds in
+the pre-warmup Ignition tier the throughput gates cannot reach. This does **not**
+make a large call zero-alloc: passing an argument above 2^31 (`2147483648`) boxes
+the double at the **call boundary**, about 16 B/call, and that cost is caller-side
+-- identical before and after, and removable by no change to this library.
+F-44's original claim of boxing *inside* the digit loop was wrong: the box is at
+the call site, not the loop. `drawFast` uses the same split for the same reason.
 
 **Which one do I want?** Counts, scores, coins, seconds -> `drawFastInt`. FPS,
 timers, fractional meters -> `drawFast`.

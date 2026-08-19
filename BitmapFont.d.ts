@@ -218,12 +218,16 @@ export class BitmapFont {
     /**
      * Zero-allocation number renderer. Renders `value` with one decimal place
      * (`33.4`). NaN/+/-Infinity return; negatives clamp to 0; decimal rounds to
-     * nearest tenth. Atlas must contain glyphs for `'0'`-`'9'` and `'.'`.
+     * the nearest tenth EXACTLY (`8.45` -> `"8.4"`, via Fast2Sum, not a
+     * `value * 10` product -- F-23 closed). Atlas must contain glyphs for
+     * `'0'`-`'9'` and `'.'`.
      *
-     * Above 2^53 (9007199254740992) the rendered integer digits are approximate --
-     * the value is scaled through a double before digit extraction. Exact below
-     * that. Values outside [-DRAWFAST_MAX, DRAWFAST_MAX] draw nothing. A `scale`
-     * outside `(0, Infinity)` draws NOTHING and returns (F-11), same as `draw`.
+     * Above 2^53 (9007199254740992) every double is an integer and its digits are
+     * rendered EXACTLY -- the true value of the double stored, NOT necessarily the
+     * literal you typed: `762638538843020900000` renders `"762638538843020853248.0"`,
+     * the double that literal became. Values outside [-DRAWFAST_MAX, DRAWFAST_MAX]
+     * draw nothing. A `scale` outside `(0, Infinity)` draws NOTHING and returns
+     * (F-11), same as `draw`.
      */
     drawFast(
         ctx: CanvasRenderingContext2D,
@@ -250,11 +254,14 @@ export class BitmapFont {
      * The ceiling is `DRAWFASTINT_MAX` (`Number.MAX_SAFE_INTEGER`), the
      * CORRECTNESS boundary rather than `drawFast`'s buffer boundary: above 2^53 a
      * double is not integer-exact, so `drawFastInt` refuses the range instead of
-     * rendering approximate digits. It is exact by construction for every value it
-     * admits. NaN, +/-Infinity and out-of-range magnitudes draw nothing and
-     * return; negatives clamp to 0 (`-5` renders `"0"`); a `scale` outside
-     * `(0, Infinity)` draws NOTHING and returns. Zero-allocation holds only below
-     * 2^31; larger values box one HeapNumber per call in the digit loop (F-44).
+     * rendering it. It is exact by construction for every value it admits. NaN,
+     * +/-Infinity and out-of-range magnitudes draw nothing and return; negatives
+     * clamp to 0 (`-5` renders `"0"`); a `scale` outside `(0, Infinity)` draws
+     * NOTHING and returns. The digit loop keeps its loop variables under 2^31 via
+     * a hi/lo split, so the BODY boxes no HeapNumber in any tier. A `value` above
+     * 2^31 still costs ~16 B/call boxed at the CALL boundary -- caller-side,
+     * identical before and after, removable by no library change (F-44 was a
+     * misdiagnosis of that box as per-iteration).
      *
      * `ctx.drawImage` MUST NOT re-enter the font: `drawFast` and `drawFastInt`
      * share one 24-byte scratch buffer, and a re-entrant ctx corrupts the outer
@@ -337,9 +344,11 @@ export const DRAWFAST_MAX: number;
  * Largest magnitude drawFastInt renders: Number.MAX_SAFE_INTEGER
  * (9007199254740991, 16 digits). Both endpoints inclusive. The CORRECTNESS
  * boundary, not the buffer boundary -- above 2^53 a double is not integer-exact,
- * so drawFastInt refuses rather than render approximate digits (contrast
- * DRAWFAST_MAX, which ships those digits as a documented approximation).
- * Zero-allocation holds only below 2^31; larger admitted values box one
- * HeapNumber per call in the digit loop (F-44).
+ * so drawFastInt refuses the range (contrast DRAWFAST_MAX, above which drawFast
+ * renders the double's EXACT integer value by decimal doubling).
+ * The digit loop keeps its loop variables under 2^31 via a hi/lo split, so the
+ * body boxes no HeapNumber in any tier; a value above 2^31 still costs ~16 B/call
+ * boxed at the call boundary (caller-side, identical before and after -- F-44 was
+ * misdiagnosed as per-iteration boxing).
  */
 export const DRAWFASTINT_MAX: number;

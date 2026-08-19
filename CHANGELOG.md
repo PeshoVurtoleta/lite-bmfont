@@ -2,6 +2,58 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.7.0 -- 2026-08-19
+
+`drawFast` renders exact digits at every magnitude. F-23 (inexact digit
+extraction, both bands) is fixed. F-44 (the alleged Smi-cliff boxing) closes as a
+MISDIAGNOSIS -- its stated mechanism was wrong, see below. Decision record:
+`decisions/0007-drawfast-exact-digits.md`.
+
+The tenth now comes from a Fast2Sum recovery of `f * 10` instead of a
+`Math.round(value * 10)` product, and integers at or above 2^53 are rendered by
+emitting the mantissa's digits and doubling them in place -- so the digits are
+the exact value of the double, computed without a float multiply. Validated end
+to end against a BigInt oracle on 400,023 values spanning both regimes and their
+boundary: 0 mismatches, the 24-byte scratch filling to exactly 24 of 24 at
+`DRAWFAST_MAX`.
+
+### Changed (behaviour)
+- **`drawFast` decimal rounding is now exact at a tenth-tie.** Near a half-tenth
+  the old `value * 10` product rounded the wrong way; the Fast2Sum tenth does
+  not. `drawFast(ctx, 8.45, ...)` renders `"8.4"` (was `"8.5"`);
+  `drawFast(ctx, 999999.95, ...)` renders `"999999.9"` (was `"1000000.0"`). This
+  makes the published "rounded to nearest tenth" guarantee hold; a caller cannot
+  have pinned the old off-by-one-tenth.
+- **`drawFast` integer digits above 2^53 are now the exact value of the double.**
+  `drawFast(ctx, 762638538843020900000, ...)` renders `"762638538843020853248.0"`
+  (was `"762638538843020800088.0"`); `drawFast(ctx, 4858154237736017000, ...)`
+  renders `"4858154237736016896.0"` (was `"4858154237736017846.0"`). Note the
+  consequence: a caller who writes the literal `762638538843020900000` now sees
+  the digits of the double that literal actually became, not the literal typed --
+  exact, but not the shortest round-trip. The docs previously disowned these
+  digits as approximate.
+
+### Fixed
+- **F-23 (inexact digit extraction), both bands.** See above; re-routed here by
+  `decisions/0005` fork 1.
+
+### Corrected (finding attribution)
+- **F-44 was a misdiagnosis, not a boxing bug this release removes.** F-44
+  claimed `drawFast`/`drawFastInt` boxed a HeapNumber *inside* the digit loop
+  (`temp % 10`, `Math.floor(temp / 10)`) above 2^31, at ~16 B/call. Measured old
+  vs new: **15.93 B/call before, 15.93 B/call after** on a 16-digit cycle -- the
+  split changed nothing observable. The ~16 B/call is the CALLER boxing the
+  argument at the call boundary (every double above 2^31 is boxed to be passed);
+  it is caller-side, identical before and after, and removable by no change to
+  this library. On the OLD code a constant argument already measured ~0 B/call,
+  so the digit loop never boxed. The hi/lo split is KEPT for two real reasons --
+  source-level Smi discipline that also holds in the pre-warmup Ignition tier the
+  optimized-tier gates cannot see, and the throughput Smi-knee of
+  `decisions/0005` section 0.4b -- but neither is an allocation fix.
+- `drawFast`'s regime-B path gains a T6 allocation window (window H) that gates
+  gross per-call allocation (a BigInt-doubling mutant measures ~40.8 MB vs a
+  ~6.2 MB shipped transient floor and is rejected).
+
 ## 1.6.1 -- 2026-08-19
 
 The ASCII-only Law acquires an executable witness, and the four files that

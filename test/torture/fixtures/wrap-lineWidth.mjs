@@ -24,7 +24,7 @@
 // t2-layout.mjs so _measureRange(slice) === the emitted lineWidth by construction.
 export { JSON_ASCII as FONT } from '../harness.mjs';
 
-export const PEER_VERSION = '1.2.2';
+export const PEER_VERSION = '1.3.0';
 export const PARAGRAPH = 'AAA BBB CCC DDD';
 export const BOX_WIDTH = 200;
 export const LINE_HEIGHT = 20;

@@ -122,7 +122,7 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 
 | ID | Sev | Finding | Reproduction |
 | --- | --- | --- | --- |
-| **F-01** | **S1** | **`drawFast` HANGS FOREVER on any finite value above ~1.797e307.** The top guard rejects `Infinity`, but the very next line computes `value * 10`, which overflows to `Infinity` for `value > MAX_VALUE/10`. Then `intPart = Math.floor(Infinity/10) = Infinity`, and the digit loop is `do { ... temp = Math.floor(temp/10) } while (temp > 0)` -- `Infinity/10` is `Infinity`, so the condition is never false. This is an unkillable infinite loop inside a per-frame render call. In a browser it freezes the tab; there is no stack overflow to catch. The package's headline use case is a per-frame HUD counter fed by caller arithmetic. | `drawFast(ctx, Number.MAX_VALUE, 0, 0)` -> never returns; child process killed by SIGTERM after 6s |
+| **F-01** | **S1** | **`drawFast` HANGS FOREVER on any finite value above ~1.797e307.** The top guard rejects `Infinity`, but the very next line computes `value * 10`, which overflows to `Infinity` for `value > MAX_VALUE/10`. Then `intPart = Math.floor(Infinity/10) = Infinity`, and the digit loop is `do { ... temp = Math.floor(temp/10) } while (temp > 0)` -- `Infinity/10` is `Infinity`, so the condition is never false. This is an unkillable infinite loop inside a per-frame render call. In a browser it freezes the tab; there is no stack overflow to catch. The package's headline use case is a per-frame HUD counter fed by caller arithmetic. | `drawFast(ctx, Number.MAX_VALUE, 0, 0)` -> never returns; child process killed by SIGTERM after 6s **[M8b 1.7.0 update: this hang mechanism no longer exists -- decisions/0007 fork 6 DELETED `value * 10`, so every loop in the new body is bounded by a finite exponent and Number.MAX_VALUE now RETURNS. F-01 stays closed by the M1 magnitude door, but the door's justification shifts from "prevents this hang" to "prevents silent scratch truncation"; T9 control 9 is re-derived from a hang proof into a corruption proof accordingly.]** |
 | **F-02** | **S1** | **`_charScratch` is 24 bytes and `drawFast` overruns it silently from 1e22 up.** Layout is 1 decimal digit + `'.'` + N integer digits, so 22 integer digits exactly fills it. At 1e21 the output is still correct (24 glyphs). At 1e22 `len` keeps incrementing past 24 while the `Uint8Array` writes are discarded; the render loop then reads `buf[i] === undefined`, `glyphs[undefined*7+6]` is `undefined`, and `cursorX` becomes `NaN` for every glyph. It still issues 24 `drawImage` calls per frame, all at `NaN` coordinates. No throw, no warning. | `drawFast(ctx, 1e22, 0, 0)` -> 24 drawImage calls, every dst x is `NaN`; `1e21` -> correct `"1000000000000000000000.0"` |
 | **F-03** | **S1** | **The NaN guard polarity is inverted between the measure path and both draw paths.** `_measureRange` uses `if (id >= 0 && id < 256)` -- `NaN` fails it, fail-closed, correct. `draw()` and `drawWrapped()` use `if (id < 0 \|\| id >= 256) continue;` -- `NaN` fails *that* too, so the glyph is **accepted**. The same predicate, written two ways, with opposite behaviour on the one value that matters. Downstream, `glyphs[NaN*7+6]` is `undefined` and `cursorX += undefined * scale` poisons the cursor for the rest of the line. | `(NaN >= 0 && NaN < 256)` -> `false` (rejects); `(NaN < 0 \|\| NaN >= 256)` -> `false` (accepts) |
 | **F-04** | **S1** | **A `startIdx < 0` in the layout buffer renders an entire line at `NaN`.** `charCodeAt(-1)` is `NaN`, which passes the F-03 guard, so every glyph on that line is drawn at `NaN` x. This is the exact hand-off shape from lite-text-layout (roadmap Session 2 makes it the public contract), and it is the same failure class as lite-bvh B-03: one bad value enters once and the output is silently wrong with no signal. Note a *fractional* start is harmless -- `charCodeAt(0.5)` truncates -- so the bug is not uniform across bad indices, which makes it harder to spot. | `drawWrapped(ctx, 'HELLO', new Float32Array([-1,5,40,0]), 1, ...)` -> 5 drawImage calls, all dst x `NaN`. Same buffer with start `0` -> `0,8,16,24,32` |
@@ -144,7 +144,7 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-20** | S3 | **`draw()`/`drawFast()` center/right-align math is asserted only by directional inequality**, so an off-by-constant regression in the divisor is invisible to `npm test` and every wired torture tier. `drawWrapped()`'s align tests assert exact pixels (44, 88, 38) and are load-bearing; `draw`'s (`rec.dx[0] < 100`) are not. Closed prospectively by qa's `test/boundary.test.js`; the ported `BitmapFont.test.js` still carries the weak assertions. | scratch-edit `draw()`'s `... / 2` to `... / 3` -> `npm test` passes and `npm run torture` prints `ok`, exit 0 |
 | **F-21** | S3 | **T0 law 4 is vacuous -- the only kerning check in the torture gate never tests kerning (AR-02).** `FONT_KERN` kerns 3 pairs (A-B, B-A, A-A); the corpus is ASCII 33..126, so a random seam is 3/8836 = 0.034%. Under both shipped seeds ZERO eligible seams carry non-zero kerning, so law 4 degenerates to `left + right === full`. **Routed to M2**, which revises `t0-laws.mjs` and its corpus and builds the conservation law on top of it; fix by a seeded corpus planting A/B seams or a dense `FONT_KERN`, BEFORE the law leans on it. | default seed -> eligible 246, seams 0; seed 12345 -> eligible 247, seams 0. Deleting the kern term from `_measureRange` passes `npm run torture` clean |
 | **F-22** | S3 | **The documented word-wrap recipe does not type-check.** `README.md:124-125` and `llms.txt:75-76` read `font.glyphs[id * 7 + 6]` and `font.kerning[(prevId << 8) \| id]`; both are real `Int16Array` members at runtime and neither was declared in `BitmapFont.d.ts`. A TypeScript consumer copying the package's own answer to "compute the layoutBuffer yourself" cannot compile the primary integration path. Fixed in 1.2.2 (M1): `readonly glyphs` / `readonly kerning` declared, stride marked a cross-package contract. | `tsc` on the README recipe -> `Property 'glyphs' does not exist on type 'BitmapFont'` |
-| **F-23** | S2 | **`drawFast`'s digit loop is inexact in two bands (originally routed to M8, which was believed to reopen the body).** **[RE-ROUTED 2026-08-18 to M8b by decisions/0005 fork 1: P-4 proved M8's `drawFastInt` shares NO arithmetic with `drawFast` -- only the 24-byte scratch buffer -- so M8 does not reopen `drawFast`. M8 shipped `drawFastInt` (1.5.0) with `drawFast` byte-frozen; F-23's fix moves to M8b (1.6.0, status next), a MINOR with both bands as declared `### Changed (behaviour)` rows. See the M8 amendment in decisions/0001.]** Band 1 (`\|value\| < 2^53`): off-by-one-tenth on near-ties -- `Math.round(value * 10)` rounds the float product, not the real value, breaking the documented "rounded to nearest tenth" guarantee. Band 2 (`2^53 < \|value\| <= 1e21`): the integer digits themselves are wrong and silent -- the value is scaled through a double before extraction, so it prints digits the value does not have. 15,858/191,255 in-door samples diverge (1,738 band 1, 14,120 band 2). The 1.2.2 door ceiling `DRAWFAST_MAX = 1e21` is the buffer boundary; 2^53 is the correctness boundary, chosen deliberately (see `decisions/0001`). Ground truth is a bit-exact mantissa oracle; `toFixed(1)` is exact below 1e21, the plan's `BigInt(Math.round(v*10))` oracle was rejected because it shares the library's float multiply. | `drawFast(ctx, 8.45, 0, 0)` -> `"8.5"` (exact `8.4`); `drawFast(ctx, 762638538843020900000, 0, 0)` -> `"762638538843020800088.0"` (exact `762638538843020853248.0`) |
+| **F-23** | S2 | **`drawFast`'s digit loop is inexact in two bands (originally routed to M8, which was believed to reopen the body).** **[RE-ROUTED 2026-08-18 to M8b by decisions/0005 fork 1: P-4 proved M8's `drawFastInt` shares NO arithmetic with `drawFast` -- only the 24-byte scratch buffer -- so M8 does not reopen `drawFast`. M8 shipped `drawFastInt` (1.5.0) with `drawFast` byte-frozen; F-23's fix moves to M8b (1.6.0, status next), a MINOR with both bands as declared `### Changed (behaviour)` rows. See the M8 amendment in decisions/0001.]** Band 1 (`\|value\| < 2^53`): off-by-one-tenth on near-ties -- `Math.round(value * 10)` rounds the float product, not the real value, breaking the documented "rounded to nearest tenth" guarantee. Band 2 (`2^53 < \|value\| <= 1e21`): the integer digits themselves are wrong and silent -- the value is scaled through a double before extraction, so it prints digits the value does not have. 15,858/191,255 in-door samples diverge (1,738 band 1, 14,120 band 2). The 1.2.2 door ceiling `DRAWFAST_MAX = 1e21` is the buffer boundary; 2^53 is the correctness boundary, chosen deliberately (see `decisions/0001`). Ground truth is a bit-exact mantissa oracle; `toFixed(1)` is exact below 1e21, the plan's `BigInt(Math.round(v*10))` oracle was rejected because it shares the library's float multiply. **CLOSED in 1.7.0 (M8b) by decisions/0007:** band 1 now derives the tenth by Fast2Sum (no `value * 10` product), band 2 renders the double's exact integer value by decimal doubling. Validated against a BigInt oracle on 400,023 values, 0 mismatches; the six T4 pins now assert `s === ex`. `8.45` -> `"8.4"`, `762638538843020900000` -> `"762638538843020853248.0"`. | `drawFast(ctx, 8.45, 0, 0)` -> `"8.5"` (exact `8.4`); `drawFast(ctx, 762638538843020900000, 0, 0)` -> `"762638538843020800088.0"` (exact `762638538843020853248.0`) |
 | **F-24** | S3 | **The harness oracle's pinned missing-glyph policy is NOT what the implementation does, and M2's centrepiece law is a three-way equality against that oracle.** `harness.mjs:314` documents "a character with no descriptor entry advances by ZERO **and does not become the kerning `prev`**", claiming it pins "today's implementation behaviour". The second half is false: all three walk sites (`BitmapFont.js:86`, `:168`, `:357`) set `prevId = id` for any id in `[0, 256)` regardless of whether the descriptor covered it, so an unmapped glyph DOES break the kerning chain in the library and does NOT in the oracle. Invisible under every shipped fixture because `JSON_KERN` kerns only mapped ids -- the same vacuity shape as F-21. Wire T0's law as written and it fails on day one for a reason that is not F-03/F-04/F-05/F-12. The underlying question -- does a missing glyph break the kerning chain? -- is a second, independent policy fork that M2's decision (2) does not ask. | font `{65:adv 12, 66:adv 12}`, `kern(65,66) = -5`, text `'A\u00C8B'`: `_measureRange` -> `24`, `oracleAdvance` -> `19` |
 | **F-25** | S2 | **`_measureRange` treats `\n` as a renderable glyph and runs the kerning chain THROUGH it; `draw` skips it and resets the chain.** `draw` special-cases `id === 10` (`BitmapFont.js:135`) and sets `prevId = -1`; `_measureRange` has no newline case at all, so `10` passes the `[0, 256)` guard, contributes `glyphs[10*7+6]` to the width, and stays in the kerning chain across the line break. Distinct from F-06, which is about summing line widths -- this is the newline character itself carrying advance and kerning. Silent under every shipped fixture (id 10 unmapped -> advance 0, kerning 0), so it surfaces only against a descriptor that maps id 10 (some exporters emit one) or kerns against it. M2 owns T0's newline residual assertion and must state which of the two walks is correct before it can assert the residual exactly. **Third face, measured 2026-08-17:** `drawWrapped` has no `id === 10` case at all, so against a descriptor mapping id 10 it RENDERS the newline as a visible glyph mid-line -- 3 draw calls where `draw` makes 2 on separate lines. Section 3's T0 law "drawWrapped with a one-line layout covering `[0, len)` produces the byte-identical `dx` column that `draw` produces" is therefore false for any font mapping id 10, which is a precondition of M2's centrepiece that nobody stated. | descriptor maps `{id: 10, xadvance: 7}`: `measure('A\nA')` -> `31`, `draw` dx -> `[0, 0]`, `drawWrapped` over `[0,3)` dx -> `[0, 12, 19]` |
 | **F-26** | S3 | **The F-03 guard reshape in `draw` and `drawWrapped` is unfalsifiable through the public API, and M2 shipped it anyway -- deliberately.** Revert BOTH reshaped guards to the NaN-accepting `if (id < 0 \|\| id >= 256) continue;` and `npm test` (93 blocks) and `npm run torture` (10 tiers) both stay green. The reason is structural: `draw` has no range parameters, so `charCodeAt` over `[0, len)` can never yield NaN; and after M2's H13 per-line clamp, `drawWrapped`'s indices can no longer reach the guard as NaN either. **The load-bearing F-04 fix is the clamp, not the reshape** -- reverting `if (!(startIdx >= 0)) startIdx = 0;` reddens T2 row 9 instantly. The third site, `_measureRange`, IS falsifiable, because it takes `start`/`end` as parameters: T0 law 11 kills its inversion. So one of three sites is pinned behaviourally and two are pinned only by DONE WHEN rows 7/8, which are a source-text gate a human runs, not something `npm test` or CI can see. **Routed to M6**, which promotes `start`/`end` to the public surface and thereby creates the first NaN-capable call path into `draw`'s guard; M6 must add the behavioural kill and this row closes there. Recorded rather than "fixed" because the honest options today are a synthetic test of a private path or nothing, and F-20/F-21 are both in this ledger because someone preferred a comfortable assertion to an absent one. | revert both guards -> `npm test` exit 0, `npm run torture` -> `ok` exit 0. Invert `_measureRange`'s -> `torture: FAIL -- T0.law11: _measureRange("A",0,2) NaN != 12 (NaN id leaked past the guard)` |
@@ -164,10 +164,10 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-40** | S3 | **The fork (4) amendment claims a constructed font cannot produce a NaN width from valid input; it can, so NaN is not an unambiguous fail signal.** `decisions/0004` and `SESSION-M4.md` 2.6 both record "every advance is a value out of an `Int16Array` multiplied by a finite scale, so a font that constructs cannot produce a NaN width from valid input", which is what makes NaN readable as "you gave me an argument I cannot use". Mixed-sign Int16 advances defeat it: with `xadvance: 32767` and `xadvance: -32768`, `measure('AB', Number.MAX_VALUE)` is **NaN** (`+Infinity + -Infinity`), indistinguishable from the door's fail signal, and `measure('A', Number.MAX_VALUE)` is **Infinity** -- a non-finite width from a scale the door ACCEPTS, since `Number.MAX_VALUE` passes `!(scale > 0 && scale < Infinity)`. Both behaviours are pre-existing (1.3.0 is identical) and neither is a semver delta; what is new in M4 is the record asserting they cannot happen. Recorded rather than fixed: narrowing the scale door to exclude `MAX_VALUE` would need a magnitude bound nobody has derived, and the honest repair is to state the limit. Same class as F-24 -- a record claiming a property the code does not have. Found by qa in M4; the claim is corrected in M4, the behaviour is left to M9 alongside F-08's storage half. | `chars` advances `32767` and `-32768`: `measure('AB', Number.MAX_VALUE)` -> `NaN`; `measure('A', Number.MAX_VALUE)` -> `Infinity` |
 | **F-42** | **S1** | **The F-34 hang is still reachable through `draw` and `drawWrapped`; M4 doored the measure family and left both renderers open.** `measure` (`:432`), `measureWidest` (`:467`) and `measureLine` (`:542`) each open with `typeof text !== 'string'`, and the comment at `:432` names the culprit exactly -- "`{length: Infinity, charCodeAt(){return 65}}` ... is exactly the input that hung 1.3.0 forever (F-34)". Two hundred lines below, `draw:628` and `drawWrapped:892` read `text.length` with no door at all. `draw` hangs in the line scan at `:657` (`while (lineEnd < len && text.charCodeAt(lineEnd) !== 10) lineEnd++`); `drawWrapped` hangs in the glyph walk at `:959`, because `tlen` is `Infinity` and the F-04 clamp leg `if (!(endIdx <= tlen)) endIdx = tlen;` **passes** an `Infinity` `endIdx` -- that clamp is sound only while `text.length` is finite. The 1.4.0 CHANGELOG's F-34 row reads "All three public faces now terminate", which is true of the three it means (the three MEASURE faces) and false of the package: **FIVE** public faces take `text` -- `measure`, `measureWidest`, `measureLine`, `draw`, `drawWrapped` -- two still hang, and the hanging pair is the one a caller reaches first. (`drawFast` is a renderer but takes a number; `_measureRange` is private and deliberately doorless per fork (3) A2. This row said SIX in its first draft, which was the coordinator's miscount and propagated into the M4a plan and four shipped files before M4a's reviewer caught it.) Beyond the hang the two families disagree on every non-string: `draw` RENDERS a boxed `String` and a duck-typed `{length: 2, charCodeAt}` (two glyphs), silently draws nothing for `123`, and throws a raw `TypeError` for `null`, `undefined` and `[65]` -- while all six of those return `NaN` from the measure family. So a caller who gates on `Number.isNaN(measureWidest(t))` is protected and a caller who simply calls `draw` is not. Found in the M5 precondition probe, 2026-08-18, against published 1.4.0. **Fixed in 1.4.1 (M4a)**: `draw` and `drawWrapped` gain the SAME `typeof text !== 'string'` door the measure family has carried since 1.4.0, one per CALL and zero per glyph, immediately above the scale door; both now draw nothing and return on a non-string. Five text-taking faces, one text door, two fail signals by family -- renderers draw nothing, measure faces return `NaN`. Proven out of process by T9 controls 14 and 15, each of which SIGKILLs a door-removed twin so the hang control is not vacuous (decisions/0004 fork 9). The two declared behaviour deltas (boxed `String` 1->0 glyphs; `null`/`undefined` raw `TypeError`->return) ship under CHANGELOG `Changed (behaviour)`. | out-of-process, 6 s SIGKILL: `draw(ctx, {length: Infinity, charCodeAt(){return 65}}, 0, 0)` -> `signal=SIGKILL ms=6004`; `drawWrapped(ctx, SAME, new Float32Array([0, Infinity, 8, 0]), 1, 100, 100, 0, 0)` -> `signal=SIGKILL ms=6003`; the same object through `measure` / `measureWidest` / `measureLine` -> `status=0 ms=22 RETURNED`. `draw(ctx, new String('A'), 0, 0)` -> 1 `drawImage`; `measureWidest(new String('A'))` -> `NaN` |
 | **F-43** | S3 | **Both shipped doc files state a test count that 1.4.0 itself falsified, and no gate can see it.** `llms.txt` Testing says "116 tests, 114 pass, 0 fail, 2 todo -- 85 in BitmapFont.test.js, 1 version-sync block in packaging.test.js, 27 in boundary.test.js, 3 in findings.test.js"; `README.md:418` says "**116 tests** (114 pass, 0 fail, 2 finding-watch todos". `npm test` reports **119 / 117 / 0 / 2**, with **88** in `BitmapFont.test.js` -- M4 added three assertions and rewrote the prose around these two sentences without touching either number, so the release gate passed with both files lying. Adjacent to F-14 (docs drift) but distinct: `packaging.test.js`'s sync block pins the VERSION string, which is why the drift that IS gated stayed correct and the drift that is not shipped. Nothing in `npm test` or the torture run reads either figure; closing this means a doc gate that does, not a careful re-edit. **Fixed in 1.4.1 (M4a)**: the two counts are DELETED from `README.md` and `llms.txt` and replaced with the gated statement -- `npm test` -> 0 failures, `npm run torture` -> exactly `ok`. Ratified in decisions/0004 fork 9: a count no gate can read is a liability, and pinning it behind a test that asserts its own suite's size is circular. The T8 docs-drift guard is deliberately NOT extended to counts. | `npm test` -> `tests 119 pass 117 todo 2`; per file `88 / 27 / 3 / 1`; `grep -n "116 tests" README.md llms.txt` -> two hits |
-| **F-44** | S2 | **The zero-allocation guarantee holds only below 2^31: both number renderers box one HeapNumber per call above the Smi cliff, and no shipped gate could see it.** The Law "zero allocation on any hot path" and the README/llms.txt "zero-GC" headline are the package positioning, and both are true only while the digit-loop variable stays a Smi. Above 2^31 an integer-valued double is a boxed HeapNumber, so `temp % 10` and `Math.floor(temp / 10)` each allocate a fresh box; measured deterministically at ~16 B/call (one box per call). This is the same cliff decisions/0005 section 0.4b documents for THROUGHPUT (the 11-digit knee where `temp` leaves Smi range) -- there it costs time, here it costs allocation, one mechanism. **`drawFastInt` (M8) and `drawFast` (M1) BOTH have it; `drawFast` is PRE-EXISTING, carried since it was written, and no gate ever saw it** -- T6 window B drives a 5-digit cycle (10000+) that never leaves Smi range, the retention lanes cannot see transient garbage (F-37), and the profiler maxBytesPerCall lane is itself a retention lane. M8 window G, pointed at a 16-digit cycle for the first time, is what surfaced it. `DRAWFASTINT_MAX = Number.MAX_SAFE_INTEGER` DELIBERATELY admits the 16-digit regime, so the ceiling and this caveat are linked: the constant that makes drawFastInt exact by construction is the same one that admits the allocating range. Severity **S2, the same shape as F-23**: a DOCUMENTED guarantee -- the headline zero-allocation claim -- is broken across a range the API explicitly admits. Not a crash and not a wrong pixel, but a positioning promise that is false for every value above 2^31 (2,147,483,648). **The boundary is 2^31 exactly, not an approximation** -- measured sharp: 2^31-300 allocates 0.00 B/call, 2^31+1 allocates 15.99. Values in (9e8, 2^31) are still Smi and still zero-alloc. It is not S3 because it contradicts the package lead selling point over a supported input range, not a stale count or an internal record. Found by the coder in M8 while re-calibrating T6 window G for the B2 blocker, 2026-08-19; boundary confirmed sharp by the coordinator. **NOT M8 to fix**: M8 is frozen on `drawFast` by decisions/0005 fork (1) and A7, and any repair here reopens the exact body that freeze exists to keep shut. **Routed to M8b**, which already owns `drawFast` digit extraction (F-23) and must reopen both loops anyway -- a Smi-safe integer path (an int32 fast lane below 2^31, or documenting the boundary as the honest repair if no allocation-free 16-digit algorithm exists) belongs in the one session that rewrites the arithmetic. Recorded, not fixed. | correct code, NO mutation, `allocVolume(fn)` = 20000-call warmup then 200000 calls sampling `process.memoryUsage().heapUsed` every 1024, summing positive deltas. drawFastInt 5-digit (10000+, Smi) 74,984 B / 0.4 B-per-call; 9-digit (1e8+, Smi) 27,128 B / 0.1; 11-digit (1e10+, boxed) 3,190,208 B / 16.0; 16-digit (1e15+, boxed) 3,206,720 B / 16.0; drawFast 5-digit 24,200 B / 0.1; drawFast 16-digit 3,178,544 B / 15.9. Cycle: 256 doubles `base+i`; `hot=(i)=>{rec.calls=0; FONT_NUM.drawFastInt(rec, cyc[i&255], 0, 0)}` |
+| **F-44** | S2 | **The zero-allocation guarantee holds only below 2^31: both number renderers box one HeapNumber per call above the Smi cliff, and no shipped gate could see it.** The Law "zero allocation on any hot path" and the README/llms.txt "zero-GC" headline are the package positioning, and both are true only while the digit-loop variable stays a Smi. Above 2^31 an integer-valued double is a boxed HeapNumber, so `temp % 10` and `Math.floor(temp / 10)` each allocate a fresh box; measured deterministically at ~16 B/call (one box per call). This is the same cliff decisions/0005 section 0.4b documents for THROUGHPUT (the 11-digit knee where `temp` leaves Smi range) -- there it costs time, here it costs allocation, one mechanism. **`drawFastInt` (M8) and `drawFast` (M1) BOTH have it; `drawFast` is PRE-EXISTING, carried since it was written, and no gate ever saw it** -- T6 window B drives a 5-digit cycle (10000+) that never leaves Smi range, the retention lanes cannot see transient garbage (F-37), and the profiler maxBytesPerCall lane is itself a retention lane. M8 window G, pointed at a 16-digit cycle for the first time, is what surfaced it. `DRAWFASTINT_MAX = Number.MAX_SAFE_INTEGER` DELIBERATELY admits the 16-digit regime, so the ceiling and this caveat are linked: the constant that makes drawFastInt exact by construction is the same one that admits the allocating range. Severity **S2, the same shape as F-23**: a DOCUMENTED guarantee -- the headline zero-allocation claim -- is broken across a range the API explicitly admits. Not a crash and not a wrong pixel, but a positioning promise that is false for every value above 2^31 (2,147,483,648). **The boundary is 2^31 exactly, not an approximation** -- measured sharp: 2^31-300 allocates 0.00 B/call, 2^31+1 allocates 15.99. Values in (9e8, 2^31) are still Smi and still zero-alloc. It is not S3 because it contradicts the package lead selling point over a supported input range, not a stale count or an internal record. Found by the coder in M8 while re-calibrating T6 window G for the B2 blocker, 2026-08-19; boundary confirmed sharp by the coordinator. **NOT M8 to fix**: M8 is frozen on `drawFast` by decisions/0005 fork (1) and A7, and any repair here reopens the exact body that freeze exists to keep shut. **Routed to M8b**, which already owns `drawFast` digit extraction (F-23) and must reopen both loops anyway -- a Smi-safe integer path (an int32 fast lane below 2^31, or documenting the boundary as the honest repair if no allocation-free 16-digit algorithm exists) belongs in the one session that rewrites the arithmetic. Recorded, not fixed. **MISDIAGNOSED -- corrected in 1.7.0 (M8b) by decisions/0007:** F-44 closes because its STATED MECHANISM WAS WRONG, not because anything was removed. The claim was that `temp % 10` / `Math.floor(temp / 10)` box a HeapNumber INSIDE the digit loop above 2^31, ~16 B/call. Measured 2026-08-19 (M8b, and independently by the reviewer): old vs new is 15.93 vs 15.93 B/call on a 16-digit cycle -- the hi/lo split changed nothing observable -- and on the OLD code a CONSTANT argument already measured ~0 B/call, so the old digit loop never boxed either. The ~16 B/call is the CALLER boxing the >2^31 argument at the call boundary (one box per CALL, flat in digit count: old code 10-digit 15.89, 16-digit 15.89); it is caller-side, identical before and after, and removable by no change to this library. The hi/lo split is KEPT for source-level Smi discipline (which holds in the pre-warmup Ignition tier T6 cannot reach) and the throughput Smi-knee (decisions/0005 0.4b), not as an allocation fix. T6 window H gates gross regime-B allocation (a BigInt-doubling mutant measures ~40.8 MB vs a ~6.2 MB shipped transient floor). | correct code, NO mutation, `allocVolume(fn)` = 20000-call warmup then 200000 calls sampling `process.memoryUsage().heapUsed` every 1024, summing positive deltas. drawFastInt 5-digit (10000+, Smi) 74,984 B / 0.4 B-per-call; 9-digit (1e8+, Smi) 27,128 B / 0.1; 11-digit (1e10+, boxed) 3,190,208 B / 16.0; 16-digit (1e15+, boxed) 3,206,720 B / 16.0; drawFast 5-digit 24,200 B / 0.1; drawFast 16-digit 3,178,544 B / 15.9. Cycle: 256 doubles `base+i`; `hot=(i)=>{rec.calls=0; FONT_NUM.drawFastInt(rec, cyc[i&255], 0, 0)}` |
 | **F-45** | S2 | **`drawWrapped` re-scales a width the producer already scaled, so every centre/right-aligned wrapped line is mispositioned at any `scale != 1`.** `BitmapFont.js:1123-1124` computes `cursorX += (boxWidth - lineWidth * scale) / 2` (and the `align === 2` twin) on the Law at ROADMAP section 3 item 1: the buffer is `[startIdx, endIdx, lineWidth@scale1, flags]` and "`@zakkster/lite-text-layout` emits exactly that shape". **That claim is false.** `LiteTextLayout/TextLayout.js:442-443` accumulates `advance += kerning * scale` and `advance += xadvance * scale`, `:515` re-seeds `cursorX = xadvance * scale`, and that `cursorX` is what lands in the `lineWidth` slot; its drift-guarded RANGE-CONTRACT (`TextLayout.js:289`, pinned byte-identical across four surfaces) states "lineWidth is at **the rendered scale**". `boxWidth` is already rendered px by bmfont's own doc (`BitmapFont.js:1027`). So the two operands disagree by a factor of `scale`. Closed form: the centre error is `lineWidth * (scale - 1) / 2`, the right error `lineWidth * (scale - 1)`. **Invisible to the whole suite because no test renders `drawWrapped` with `align` 1 or 2 at `scale != 1`** -- `t2-layout.mjs` fixes scale at 1 in its helper (`:48`) and every direct call (`:189,196,239,249,252`), and every non-unit-scale call in the repo (`scale 1.1`) passes `align = 0`. At `scale = 1` the double-scale is identically invisible, which is why it shipped. Reported by the `@zakkster/lite-text-layout` TL5 session (its "detector passes at scale 0.5, 1 and 2" assertion fails against bmfont 1.5.0) and filed here because the defect is bmfont's; independently reproduced by the coordinator, 2026-08-19, and the producer's convention confirmed BY EXECUTION rather than by reading: `computeWrap` run at 0.5/1/2 on an advance-10 font emits `w=75` for a 15-glyph line at 0.5x and `w=140` for a 7-glyph line at 2x -- render scale on every line at every scale. End to end at 2x with centre align, `drawWrapped` puts the first glyph at **-40**, off the left edge of the box, where the per-line `draw` oracle puts it at 30. **Fixed in 1.6.0 (M2a)**: adopted the producer's convention (`lineWidth@render-scale`) and dropped the `* scale` on both align terms (`BitmapFont.js:1128-1131`, pure per-LINE deletion, glyph loop byte-identical to `8348bd0`). All five `lineWidth` doc sites now say render scale; decisions/0006 records D-1/D-2/D-3. Coverage that hid it for three versions is closed: T2 now runs a `{0.5,1,2} x {align 0,1,2}` matrix against the per-line `draw` oracle, a frozen `computeWrap` fixture (lane 1, always runs) plus a `spawnSync` drift guard (lane 2, dies on producer drift, TODO when the peer is unwired), and T6 window C2 gates the align path at zero bytes. Repaired cells (first glyph dst x, `'AAA BBB CCC DDD'`, box 200): scale 0.5 centre 80->60, right 160->119; scale 2 centre -56->22, right -112->44; every scale-1 cell and every align-0 cell byte-unchanged. `draw` is NOT affected -- it measures its own glyphs and reads no buffer `lineWidth` (verified: 0 occurrences in its body). | advance-10 font, `'ABCD'`, `layout = [0, 4, 40*scale, 0]`, `boxWidth = 200`. First glyph dst x, `drawWrapped` vs the `draw` oracle: scale 0.5 align 1 -> `95` vs `90` (+5); scale 0.5 align 2 -> `190` vs `180` (+10); scale 1 -> identical both aligns; scale 2 align 1 -> `20` vs `60` (**-40**); scale 2 align 2 -> `40` vs `120` (**-80**). Every delta equals the closed form exactly |
 
-| **F-46** | S3 | **The suite Law's ASCII-only rule is enforced by nothing, and three of the six shipped files break it -- the main source file among them.** `../CLAUDE.md` Law reads "ASCII-only source (U+00D7 and U+00B5 excepted)". Measured by a full walk of the repo (excluding `node_modules` and `.git`), 2026-08-19 against published 1.6.0: **75 non-ASCII characters ship inside the npm tarball** -- `README.md` **56** (15 U+2014 em dash, 11 U+2192 arrow, 3 U+2026 ellipsis, 3 U+2013 en dash, and 24 emoji-region code points -- 21 pictograph glyphs plus 3 U+FE0F variation selectors -- over 18 distinct values, U+1F524 / U+1F680 / U+1FAB6 / U+1F5D2 among them; the punctuation above accounts for the other 32), `BitmapFont.js` **10** (9 U+2014, 1 U+2026 at `:1019`), `llms.txt` **9** (6 U+2014, 2 U+2026, 1 U+2013). `demo/demo-lite-bmfont.html` carries **1,121** more -- 1,062 U+2550 and 48 U+2500 in comment banners, 9 U+2014, 2 U+00B7 in visible markup -- but is absent from `package.json` `files[]`, so it breaks the Law without reaching a consumer. **Neither excepted code point appears anywhere in the repo**: all 1,196 characters are outside the exception, so the exception carries no weight here and the rule is simply unmet. Everything else is CLEAN -- `BitmapFont.d.ts`, `CHANGELOG.md`, `ROADMAP.md`, `LICENSE`, every file under `test/` and `decisions/`, and all nine `SESSION-*.md` -- which is the diagnostic detail: the discipline has held in every file authored since M0 and failed only in the three that predate it, the exact profile a missing gate produces rather than a lapse in care. **No character is behavioural.** The single one inside a source string position is `BitmapFont.js:1019`, and it is in a JSDoc sentence describing the ellipsis flag; the flag's implementation appends three ASCII '.' (code 46) and is untouched -- verified by reading the body, not inferred from the comment. Same class as F-14 and F-43 (a documented property no gate reads), but the property is the LAW rather than a count, and unlike F-43 the honest repair is a gate rather than a deletion: "every byte of every shipped file is < 0x80, except U+00D7 and U+00B5" is byte-checkable in one pass with no judgement in it. **Routed to M2b (1.6.1).** | full-repo `python3` walk: `README.md` 56, `BitmapFont.js` 10, `llms.txt` 9, `demo/demo-lite-bmfont.html` 1121, every other file 0; `grep -n "ascii\|ASCII\|charCodeAt\|0x7f" test/packaging.test.js` -> **0 hits**, so no gate exists to fail |
+| **F-46** | S3 | **The suite Law's ASCII-only rule is enforced by nothing, and three of the six shipped files break it -- the main source file among them.** `../CLAUDE.md` Law reads "ASCII-only source (U+00D7 and U+00B5 excepted)". Measured by a full walk of the repo (excluding `node_modules` and `.git`), 2026-08-19 against published 1.6.0: **75 non-ASCII characters ship inside the npm tarball** -- `README.md` **56** (15 U+2014 em dash, 11 U+2192 arrow, 3 U+2026 ellipsis, 3 U+2013 en dash, and 24 emoji-region code points -- 21 pictograph glyphs plus 3 U+FE0F variation selectors -- over 18 distinct values, U+1F524 / U+1F680 / U+1FAB6 / U+1F5D2 among them; the punctuation above accounts for the other 32), `BitmapFont.js` **10** (9 U+2014, 1 U+2026 at `:1019`), `llms.txt` **9** (6 U+2014, 2 U+2026, 1 U+2013). `demo/demo-lite-bmfont.html` carries **1,121** more -- 1,062 U+2550 and 48 U+2500 in comment banners, 9 U+2014, 2 U+00B7 in visible markup -- but is absent from `package.json` `files[]`, so it breaks the Law without reaching a consumer. **Neither excepted code point appears anywhere in the repo**: all 1,196 characters are outside the exception, so the exception carries no weight here and the rule is simply unmet. Everything else is CLEAN -- `BitmapFont.d.ts`, `CHANGELOG.md`, `ROADMAP.md`, `LICENSE`, every file under `test/` and `decisions/`, and all nine `SESSION-*.md` -- which is the diagnostic detail: the discipline has held in every file authored since M0 and failed only in the three that predate it, the exact profile a missing gate produces rather than a lapse in care. **No character is behavioural.** The single one inside a source string position is `BitmapFont.js:1019`, and it is in a JSDoc sentence describing the ellipsis flag; the flag's implementation appends three ASCII '.' (code 46) and is untouched -- verified by reading the body, not inferred from the comment. Same class as F-14 and F-43 (a documented property no gate reads), but the property is the LAW rather than a count, and unlike F-43 the honest repair is a gate rather than a deletion: "every byte of every shipped file is < 0x80, except U+00D7 and U+00B5" is byte-checkable in one pass with no judgement in it. **CLOSED in 1.6.1 (M2b, `fd5aa35`).** The census went 1,196 -> **0** across all 39 tracked files, and the repair is a gate, not a sweep: `test/packaging.test.js` enumerates scope from `git ls-files` (never a filename list), reads each file as a Buffer, and fails closed on a broken enumeration, a NUL byte or invalid UTF-8 -- so a new TRACKED file carrying a non-ASCII byte reddens `npm test` on the day it is added, with no test edit. Proven non-vacuous in the wild: the 1.6.1 commit moved `decisions/0008-ascii-gate.md` from untracked to tracked, the scope went 38 -> 39 files, and the gate scanned the new file with no edit. `decisions/0008`. | full-repo `python3` walk: `README.md` 56, `BitmapFont.js` 10, `llms.txt` 9, `demo/demo-lite-bmfont.html` 1121, every other file 0; `grep -n "ascii\|ASCII\|charCodeAt\|0x7f" test/packaging.test.js` -> **0 hits**, so no gate exists to fail |
 
 | **F-47** | S3 | **`README.md` is not built on the blueprint the suite Law names, and the divergence is structural, not cosmetic.** The Docs Law in `../CLAUDE.md` says every README follows `LiteSepforge/README.md` "same spine, in order". Measured against it: bmfont has **no one-line blockquote tagline** under the title (the blueprint's line 3; bmfont goes straight from `# @zakkster/lite-bmfont` to the badge block), **no table of contents**, **no "What you get"**, **no `<details>` deep-dive** (blueprint has **2**, bmfont has **0**), **no Composability section with an end-to-end pipeline**, **no `<details>` Zero-GC design notes with an allocation table**, **no "Design decisions worth knowing"**, **no "What this is not"**, and **no Ecosystem section** -- nine of the spine's rows absent. In their place sit four headings the spine does not have: `What is lite-bmfont?` (where the spine wants the positioning H2 "The X the ecosystem was missing"), `Comparison`, `LLM-Friendly Documentation` and `Changelog`. Every H2 carries a leading emoji, which the blueprint has none of -- the same 24 emoji-region code points F-46 counts, so the two findings overlap on the emoji and nowhere else: F-46 is satisfied by deleting them, F-47 is not. The file also disagrees with ITSELF on the arrow convention the Law fixes as `->`: **11 U+2192 and 17 ASCII `->`, mixed inside one API reference** -- `measure(text, scale?) U+2192 number` at `:240` sits eleven lines above `measureWidest(text, scale?) -> number` at `:251`. That split is the dating evidence: sections written later followed the Law and nothing went back for the earlier ones, the identical profile F-46 shows across files. The peer `LiteTextLayout/README.md` and the blueprint itself both measure **0** non-ASCII, so bmfont is the outlier in the suite and not the norm. **NOT routed to M2b.** M2b is a mechanical byte sweep with a gate behind it and a proof that no executable byte moved; a spine rewrite is an authoring session with different risk, different review, and no byte-level acceptance test, and folding it in would destroy M2b's one clean claim. Filed for its own session, unscheduled. | `grep -n "^#\{1,3\} " README.md` -> 30 headings, 21 of the blueprint's spine rows unmatched; `grep -c "<details>" README.md` -> **0** vs blueprint **2**; `grep -n -i "table of contents\|Composability\|Design decisions\|What this is not\|^## Ecosystem" README.md` -> **0 hits**; `README.md` line 2 is blank where the blueprint's line 3 is the tagline; U+2192 x11 vs `->` x17 in one file |
 
@@ -588,27 +588,43 @@ M2b appears in no arrow above on purpose: it carries `depends_on: []` and
 `blocks: []`, touches no executable byte, and could have been done at any point
 since M0. It has a position in ship order and no position in lineage.
 
-SHIP ORDER is not lineage order. Shipped: M0..M4a, M8 (1.5.0), M2a (1.6.0).
-M2a depended on M2 but was scheduled ahead of M8b because it BLOCKED a peer
-package (`@zakkster/lite-text-layout` TL5); its brief is filed next to M8b's, in
-ship order, not next to M2's. Next: **M2b** (1.6.1, F-46) -- a PATCH that
-installs the ASCII gate the Law has never had, taken first because it is cheap,
-behaviour-free, and because M8b rewrites the very comment block that carries 9
-of the 10 offending characters in `BitmapFont.js`; gating first means M8b writes
-into a file that already enforces the rule, instead of re-editing after. Then
-**M8b** (1.7.0, F-23 + F-44).
+SHIP ORDER is not lineage order. Shipped: M0..M4a, M8 (1.5.0), M2a (1.6.0),
+M2b (1.6.1). M2a depended on M2 but was scheduled ahead of M8b because it
+BLOCKED a peer package (`@zakkster/lite-text-layout` TL5); its brief is filed
+next to M8b's, in ship order, not next to M2's. M2b (1.6.1, F-46) shipped the
+ASCII gate the Law had never had, taken before M8b because it is cheap,
+behaviour-free, and because M8b rewrites the very comment block that carried
+9 of the 10 offending characters in `BitmapFont.js`. That ordering paid:
+**M8b's T20 ("strip the 11 non-ASCII characters") is now DISCHARGED before the
+session opens**, and M8b
+authors into a file that already enforces the rule instead of being re-edited
+after. Next: **M8b** (1.7.0, F-23 + F-44), re-baselined onto `fd5aa35` --
+see `SESSION-M8b.md` section 0.7.
 
-VERSION TARGETS COLLIDE AND ARE NOT RESERVATIONS EITHER. M7 (unscheduled) also
-carries `version_target: 1.7.0`, which M8b now holds. Whichever is PLANNED first
-takes the number and the other is re-stamped at plan time. Do not renumber an
-unscheduled session speculatively -- that is how M8b's 1.6.0 became wrong.
+VERSION TARGETS COLLIDE AND ARE NOT RESERVATIONS EITHER. Whichever session is
+PLANNED first takes the number; the other is re-stamped at plan time. Do not
+renumber an unscheduled session speculatively -- that is how M8b's 1.6.0 became
+wrong. Current state of the three unscheduled sessions:
+
+| session | stamped | reality |
+|---|---|---|
+| M5 | `1.5.0` | CONSUMED by M8 on 2026-08-18. Left stale deliberately; re-stamp at plan time. |
+| M6 | `unassigned` | was `1.6.0`, CONSUMED by M2a. Cleared 2026-08-19 rather than guessed. |
+| M7 | `1.7.0` | COLLIDES with M8b, which holds it and is planned. |
+
+A stamped-but-consumed number is worse than none: it reads as a reservation and
+it is not one. M6 now carries `unassigned` for exactly that reason.
 
 DECISION NUMBERS ARE ISSUED AT PLAN TIME, NOT RESERVED. The reservations below
 are stale: M6 reserves `0006-range-parameters.md`, M7 `0007-atlas-subpath.md`,
 M8 `0008-drawfastint.md` -- but M8 shipped `0005-drawfastint.md`. Issued so far:
-0001-0006 shipped (0006 = M2a), **0007 = M8b**. M2b issues **0008** -- it is
-planned AFTER M8b was, so it takes the next free number, not the next ship-order
-one; decision numbers follow plan order and ship order is free to differ. M6, M7
+0001-0006 and 0008 shipped (0006 = M2a, **0008 = M2b**), **0007 = M8b, issued
+but not yet written** -- so 0008 ships BEFORE 0007 exists. That gap is recorded,
+not closed: renumbering 0007 to make filenames sort by ship date would be the
+reservation habit this very rule condemns, in tidier clothes. M2b issued 0008
+because it is planned AFTER M8b was, so it takes the next free number, not the
+next ship-order one; decision numbers follow plan order and ship order is free
+to differ. M6, M7
 and M9 re-issue when planned.
 
 Why each edge exists:
@@ -1985,38 +2001,81 @@ DONE WHEN
 ```
 
 ===============================================================================
-# M6 -- lite-bmfont v1.6.0 -- range-addressable text
+# M6 -- lite-bmfont vUNASSIGNED -- range-addressable text (RE-SCOPED 2026-08-19)
 ===============================================================================
 
 ```markdown
 ---
 package: "@zakkster/lite-bmfont"
-version_target: 1.6.0
-status: planned
+version_target: unassigned   # was 1.6.0, CONSUMED by M2a on 2026-08-19. Not
+                             # renumbered speculatively -- see the ledger rule
+                             # "decision numbers and version targets are issued
+                             # at PLAN time, not reserved". A guessed number is
+                             # how M8b's 1.6.0 became wrong.
+status: planned              # RE-SCOPED 2026-08-19; see AMENDMENT below. Most
+                             # of the original scope has shipped or moved.
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-text-layout"]
-findings: [F-04]
-depends_on: [M2, M5]
+findings: []                 # was [F-04]. F-04 CLOSED in 1.2.3 (M2). The
+                             # "why it comes after M2" argument below is
+                             # discharged, not pending.
+depends_on: [M5]             # was [M2, M5]. M2 shipped 1.2.3.
 blocks: [M9]
 ---
 
 # lite-bmfont -- close the last allocation in the lite-text-layout pipeline
 
-TRIGGERING SIGNAL (unchanged from the original roadmap)
+## AMENDMENT 2026-08-19 -- read this before the body below
+
+Raised by the `@zakkster/lite-text-layout` TL5 session and verified here against
+the shipped source, not against the brief's own prose. THREE of this session's
+premises expired while it sat unscheduled:
+
+1. **The measure half ALREADY SHIPPED, by a design that contradicts this brief.**
+   The body below plans `measure(text, scale, start, end)`. `decisions/0004:253`
+   ratified the opposite -- "Options: **A** leave `measure` alone and add the
+   missing two" -- and 1.4.0 shipped `measureLine(text, start, end, scale)`
+   (`BitmapFont.js:569`) plus `measureWidest`. Note the argument ORDER differs
+   too. Taken literally this task would RE-OPEN a ratified ADR, which is why it
+   is struck below rather than quietly edited.
+2. **Its version is gone.** `1.6.0` was consumed by M2a (F-45) on 2026-08-19.
+3. **Its motivation is discharged.** The TRIGGERING SIGNAL was "every line needs
+   `text.slice()` per frame". `measureLine` removed the measure-side slice in
+   1.4.0 and `drawWrapped` renders each `[start, end)` straight out of the
+   layout buffer with no slice at all. lite-text-layout TL5 runs the wrapped
+   pipeline at 0 bytes/frame with NO range-aware single-line `draw`.
+
+What SURVIVES is one item, and it is now a convenience rather than a necessity:
+range parameters on single-line `draw`. No shipped consumer needs it; TL5's
+render path is `drawWrapped`. Keep-or-cut is a REAL decision to be taken when
+this is scheduled, on convenience grounds, and recorded as such -- not inherited
+as a default from a motivation that no longer holds.
+
+`layoutGlyphs` is NOT this session's to add: it is M5's deliverable (source
+count today: 0 occurrences), and M6 only ADDS ranges to it. That half is
+contingent on M5 shipping first.
+
+M5 is untouched by this amendment and stands on its own batching justification.
+(Its own `version_target: 1.5.0` is separately stale -- consumed by M8 -- and is
+left for its plan time under the same no-speculative-renumbering rule.)
+
+TRIGGERING SIGNAL (DISCHARGED -- kept for the record, see AMENDMENT item 3)
   Wrapped animated text. `computeWrap` reports `[startIdx, endIdx]` into the
   ORIGINAL string; without range parameters every line needs `text.slice()`,
   which allocates once per line per frame.
 
-PURPOSE
-  Add `start`/`end` to `measure`, `draw` and `layoutGlyphs`. The internal
-  `_measureRange` already does exactly this, so it is mostly promoting an
-  existing private capability to the public surface.
+PURPOSE (RE-SCOPED)
+  ~~Add `start`/`end` to `measure`, `draw` and `layoutGlyphs`.~~ Add `start`/`end`
+  to single-line `draw` ONLY, if the convenience case is made at plan time. The
+  `measure` half shipped as `measureLine` in 1.4.0; the `layoutGlyphs` half
+  belongs to M5.
 
-  This makes the lite-text-layout contract allocation-free end to end, which is
-  the whole point of that package's output format.
+  The original claim -- "this makes the lite-text-layout contract
+  allocation-free end to end" -- is FALSE as of 1.4.0/1.6.0: that pipeline is
+  already allocation-free through `measureLine` and `drawWrapped`.
 
 WHY IT COMES AFTER M2 (this is the load-bearing sentence of the session)
   F-04 is a negative `startIdx` producing a whole line of NaN draws, and this
@@ -2047,11 +2106,20 @@ THE DECISION (record it before coding)
   (`start > end`) renders nothing rather than something surprising.
 
 TASKS
-  - Write decisions/0006-range-parameters.md BEFORE coding, with B's rejection
-    and its per-frame allocation count.
-  - `measure(text, scale, start, end)`, `draw(ctx, text, x, y, scale, align,
-    start, end)`, `layoutGlyphs(text, outBuffer, scale, start, end)`. Defaults
-    `start = 0`, `end = text.length`, so every existing call site is unchanged.
+  - Write the range-parameters decision record BEFORE coding, with B's rejection
+    and its per-frame allocation count. NUMBER ISSUED AT PLAN TIME -- the old
+    reservation `decisions/0006-range-parameters.md` is void: 0006 shipped as
+    `0006-layout-buffer-scale.md` (M2a) and 0008 as `0008-ascii-gate.md` (M2b).
+  - ~~`measure(text, scale, start, end)`~~ **SUPERSEDED -- do not implement.**
+    Shipped instead as `measureLine(text, start, end, scale)` in 1.4.0 per
+    `decisions/0004:253`. Implementing the struck signature would re-open a
+    ratified ADR and would give the package two range-measure surfaces with
+    different argument orders.
+  - `draw(ctx, text, x, y, scale, align, start, end)` -- the only live item.
+  - ~~`layoutGlyphs(text, outBuffer, scale, start, end)`~~ contingent on M5
+    shipping `layoutGlyphs` at all (source count today: 0).
+    Defaults `start = 0`, `end = text.length`, so every existing call site is
+    unchanged.
   - Normalize both indices with the M2 idiom -- the SAME code path, not a copy.
     If M2's normalization is not already factored so this session can reuse it,
     factoring it is part of this session and must not add a per-glyph frame.
@@ -2077,7 +2145,8 @@ ASSERTIONS
     column set to `draw(ctx, text.slice(i, j), x, y, s, a)` for 50k seeded
     (string, i, j) pairs -- including i === j, i > j, i < 0, j > length,
     i or j NaN or fractional. The slicing version is the allocating oracle.
-  - `measure(t, s, i, j) === measure(t.slice(i, j), s)` over the same corpus.
+  - ~~`measure(t, s, i, j) === measure(t.slice(i, j), s)`~~ MOOT: this is the
+    shipped `measureLine` law, already gated by T5 since 1.4.0.
   - Rendering a 12-line wrapped paragraph line by line, 100,000 frames:
     `measureAllocs` reports `maxBytesPerCall: 0`, and `checkNoGc` reports
     `maxMajor: 0`, `maxPauseMs <= 4`, `maxArrayBuffersGrowth: 0`.
@@ -2098,7 +2167,14 @@ NON-GOALS
 DONE WHEN
   range draw is byte-identical to the slice() oracle across the fuzz corpus;
   a 12-line paragraph renders at 0 bytes/frame with the oracle's number
-  recorded beside it; the negative-start case is proven fixed in both directions
+  recorded beside it. (The old third clause -- "the negative-start case is
+  proven fixed in both directions" -- is DISCHARGED: F-04 closed in 1.2.3 and
+  T2 has gated the clamp since. It is not a DONE WHEN for this session.)
+
+  FIRST, THOUGH: the keep-or-cut decision from the AMENDMENT. If range-`draw`
+  cannot be justified against a real consumer at plan time, the honest DONE WHEN
+  is `status: superseded` with the reasoning written down, not a session that
+  ships an API nothing asked for.
 ```
 
 ===============================================================================
@@ -2566,7 +2642,9 @@ DONE WHEN
 ---
 package: "@zakkster/lite-bmfont"
 version_target: 1.6.1
-status: next           # filed 2026-08-19 by the post-1.6.0 sweep. Taken BEFORE
+status: done           # shipped 2026-08-19 (published, commit fd5aa35); 121
+                       # tests (119 pass, 0 fail, 2 todo), torture ok. F-46
+                       # CLOSED. Filed by the post-1.6.0 sweep, taken BEFORE
                        # M8b deliberately: M8b rewrites the drawFast comment
                        # block that holds 9 of BitmapFont.js's 10 offenders, so
                        # gating first means M8b authors into an enforced file
@@ -2787,6 +2865,22 @@ PRECONDITION PROBE (run 2026-08-19 by the coordinator, before the planner)
        boundary, it removes it for drawFast. The same hi/lo split removes it
        from drawFastInt. Do NOT let F-44 be closed by documentation alone
        without first disproving this.
+
+       SUPERSEDED 2026-08-19 by M8b, exactly as this row's last sentence
+       demanded -- F-44 was NOT closed by documentation, it was DISPROVED by
+       measurement. The measurement above stands: the split does keep every
+       loop variable Smi (max intermediate 898,871,303 < 2^31), and that is
+       why the split shipped. The INFERENCE drawn from it does not. "Zero-alloc
+       at ALL magnitudes" and "it removes it for drawFast" are false: old and
+       new both measure 15.93 B/call on a 16-digit cycle, and on the OLD code a
+       CONSTANT argument already measured ~0 B/call, so the digit loop never
+       boxed. The ~16 B/call is the caller boxing the argument at the call
+       boundary and no change to this library removes it. Loop-variable
+       magnitude (what P-6 measured) and call-boundary boxing (what F-44
+       counted) are two different things; P-6 proved the first and was read as
+       proving the second. Status: F-44 row `:167`, MISDIAGNOSED. Kept verbatim
+       above because a dated probe is evidence, and evidence is not edited when
+       it turns out to have been read wrong.
 
   P-7  CONFIRMED, NO HEADROOM. The exact form of DRAWFAST_MAX is
        "1000000000000000000000.0" = 24 chars, and `_charScratch` is 24 bytes.

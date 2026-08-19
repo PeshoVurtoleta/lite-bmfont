@@ -30,12 +30,16 @@ export const DRAWFAST_MAX = 1e21;
  * buffer boundary -- 24 bytes would hold 24 digits, but above 2^53 a double
  * is not integer-exact and `v % 10` returns arithmetic noise. Rendering 18
  * confident digits of a number that only has 16 is a lie. Contrast
- * DRAWFAST_MAX, which IS the buffer boundary and ships F-23 band 2 as a
- * documented approximation; the two constants answer the same principle
- * applied to different facts (decisions/0005, decisions/0001).
- * This ceiling admits the boxing regime: zero-allocation holds only below 2^31,
- * and larger admitted values box one HeapNumber per call in the digit loop
- * (F-44, shared with drawFast, routed to M8b).
+ * DRAWFAST_MAX, which IS the buffer boundary: above 2^53 `drawFast` renders the
+ * double's EXACT integer value by decimal doubling (F-23 closed, decisions/0007),
+ * so its extra digits are true, not noise -- the two constants answer the same
+ * principle applied to different facts (decisions/0005, decisions/0007).
+ * The digit loop keeps its loop variables inside Smi range (lo = n % 1e7,
+ * hi = (n - lo) / 1e7, both under 2^31), so the BODY boxes no HeapNumber in any
+ * V8 tier. This does NOT make a >2^31 call zero-alloc: passing an argument above
+ * 2^31 boxes the double at the call boundary (~16 B/call), a caller-side cost
+ * identical before and after and removable by no change here. F-44's original
+ * "boxing inside the digit loop" mechanism was a misdiagnosis (decisions/0007).
  * Both endpoints INCLUSIVE, so
  * Math.max(-DRAWFASTINT_MAX, Math.min(DRAWFASTINT_MAX, v)) always renders.
  */
@@ -750,12 +754,14 @@ export class BitmapFont {
         }
     }
 
-    // CROSS-REFERENCE (decisions/0005 fork 1). `drawFast`'s digit loop and
+    // CROSS-REFERENCE (decisions/0007 fork 3). `drawFast`'s digit loops and
     // `drawFastInt`'s (below, after this method's closing brace) are DELIBERATE
-    // DUPLICATES and MUST NOT be merged: this one is NOT exact at DRAWFAST_MAX
-    // (F-23 band 2, re-routed to M8b), the other IS exact by construction at
-    // DRAWFASTINT_MAX. This method is byte-frozen at 1.4.1 until M8b; do not edit
-    // inside it. (Comment sits above the JSDoc, outside the body-sha range A7.)
+    // DUPLICATES and MUST NOT be merged. The old reason ("one is exact, the other
+    // is not") EXPIRED when M8b made both exact. The new reason: `drawFast` now
+    // carries two regimes and a decimal digit; `drawFastInt` carries neither. A
+    // merged helper would push a regime branch and a tenth-computation into a body
+    // whose door guarantees neither is reachable -- bytes in a hot body for a
+    // branch that never fires. (Comment sits above the JSDoc, outside range A7.)
     /**
      * Zero-GC number renderer. Draws a non-negative number with one decimal place
      * (e.g. 33.4) directly from char codes -- no string allocation on the hot path.
@@ -766,7 +772,14 @@ export class BitmapFont {
      *   it IS renderable -- the door is inclusive at both ends. Pre-clamp with
      *   Math.max(-DRAWFAST_MAX, Math.min(DRAWFAST_MAX, v)).
      * - Negative values inside the door: clamped to 0 (so -5 renders "0.0").
-     * - Decimal: rounded to nearest tenth (33.49 -> 33.5).
+     * - Decimal: rounded to the nearest tenth, EXACTLY (8.45 -> 8.4, not 8.5).
+     *   The tenth is derived by Fast2Sum, not a `value * 10` product, so the
+     *   nearest-tenth guarantee now holds at every magnitude (F-23, decisions/0007).
+     * - Above 2^53 every double is an integer and its digits are rendered
+     *   EXACTLY -- the true value of the double stored, which is NOT necessarily
+     *   the literal you typed: 762638538843020900000 renders
+     *   "762638538843020853248.0", because that is the double 762638538843020900000
+     *   actually became (decisions/0007 fork 1). This is exact, not approximate.
      *
      * Requires the font atlas to contain glyphs for ASCII '0'-'9' (48-57) and '.' (46).
      *
@@ -795,29 +808,81 @@ export class BitmapFont {
         if (!(scale > 0 && scale < Infinity)) return;
         if (value < 0) value = 0;
 
-        // Multiply once on the original value to avoid float-subtraction error
-        // (e.g. (1.4 - 1) * 10 can produce 3.999... and floor to "1.3").
-        const scaled = Math.round(value * 10);
-        const intPart = Math.floor(scaled / 10);
-        const decPart = scaled - intPart * 10;
-
         const buf = this._charScratch;
         let len = 0;
 
-        // 1. Decimal digit (e.g. '4' -> 52)
-        buf[len++] = 48 + decPart;
-        // 2. Decimal point ('.' -> 46)
-        buf[len++] = 46;
-        // 3. Integer digits, written backwards
-        let temp = intPart;
-        do {
-            buf[len++] = 48 + (temp % 10);
-            temp = Math.floor(temp / 10);
-            // Unconditional structural backstop. The door makes this unreachable
-            // TODAY; "unreachable" is a claim about today's code, and a silent
-            // 24-call NaN storm is what happens when the claim expires. Stays a
-            // do..while: a plain while renders ".0" for value 0.
-        } while (temp > 0 && len < buf.length);
+        if (value < 9007199254740992) {
+            // REGIME A -- the tenth is exact without a rounded product. f*8 and
+            // f*2 are exact (powers of two); Fast2Sum recovers f*10 = s + err
+            // exactly, and err breaks the tie that `Math.round(value * 10)` got
+            // wrong (F-23 band 1).
+            let i = Math.floor(value);
+            const f = value - i;
+            const a = f * 8, b = f * 2;
+            const s = a + b;
+            const err = b - (s - a);
+            let d = Math.floor(s);
+            if ((s - d) + err >= 0.5) d += 1;
+            if (d === 10) { d = 0; i += 1; }
+            buf[len++] = 48 + d;
+            buf[len++] = 46;
+            // hi/lo split: both operands stay under 2^31, so the digit loop
+            // holds Smi discipline in every tier (F-44 was misdiagnosed as
+            // per-iteration boxing; the real >2^31 box is caller-side, at the
+            // call boundary, and no body change removes it).
+            const lo = i % 1e7;
+            const hi = (i - lo) / 1e7;
+            let temp = lo;
+            if (hi > 0) {
+                for (let k = 0; k < 7 && len < buf.length; k++) {
+                    buf[len++] = 48 + (temp % 10);
+                    temp = (temp - temp % 10) / 10;
+                }
+                temp = hi;
+            }
+            do {
+                buf[len++] = 48 + (temp % 10);
+                temp = (temp - temp % 10) / 10;
+                // do..while: a plain while renders ".0" for value 0.
+            } while (temp > 0 && len < buf.length);
+        } else {
+            // REGIME B -- every double at or above 2^53 is an integer, so the
+            // tenth is 0 by construction. value = mant * 2^e with mant < 2^53;
+            // halving is exact. Emit mant's digits, then double the DECIMAL
+            // digits e times in place. e <= 17 for every value the door admits.
+            buf[len++] = 48;
+            buf[len++] = 46;
+            let mant = value, e = 0;
+            while (mant > 9007199254740992) { mant /= 2; e++; }
+            const lo = mant % 1e7;
+            const hi = (mant - lo) / 1e7;
+            let temp = lo;
+            if (hi > 0) {
+                for (let k = 0; k < 7 && len < buf.length; k++) {
+                    buf[len++] = 48 + (temp % 10);
+                    temp = (temp - temp % 10) / 10;
+                }
+                temp = hi;
+            }
+            do {
+                buf[len++] = 48 + (temp % 10);
+                temp = (temp - temp % 10) / 10;
+            } while (temp > 0 && len < buf.length);
+            // Double in place on the CHAR CODES already in the scratch: no
+            // second array, so the constructor does not move (A7).
+            for (let dbl = 0; dbl < e; dbl++) {
+                let carry = 0;
+                for (let k = 2; k < len; k++) {
+                    const xd = (buf[k] - 48) * 2 + carry;
+                    if (xd >= 10) { buf[k] = 48 + xd - 10; carry = 1; }
+                    else { buf[k] = 48 + xd; carry = 0; }
+                }
+                // Structural backstop. The door makes overflow unreachable
+                // TODAY -- DRAWFAST_MAX fills the scratch to exactly 24 of 24
+                // bytes, with no headroom (P-7). Fail closed, do not truncate.
+                if (carry) { if (len >= buf.length) return; buf[len++] = 49; }
+            }
+        }
 
         // Measure (iterating backwards through the scratch = forwards through the number)
         let width = 0;
@@ -883,8 +948,11 @@ export class BitmapFont {
      * `ctx.drawImage` MUST NOT re-enter the font (shared-scratch contract, see
      * the file header and decisions/0005 fork 2).
      *
-     * Zero-allocation holds only for values below 2^31; larger values box one
-     * HeapNumber per call in the digit loop (F-44).
+     * The digit loop keeps its loop variables inside Smi range (lo = n % 1e7,
+     * hi = (n - lo) / 1e7, both under 2^31), so the BODY boxes no HeapNumber in
+     * any tier. A value above 2^31 still costs ~16 B/call boxed at the CALL
+     * boundary -- caller-side, identical before and after, removable by no library
+     * change (F-44 was misdiagnosed as per-iteration boxing; decisions/0007).
      *
      * @param {CanvasRenderingContext2D} ctx
      * @param {number} value
@@ -912,7 +980,7 @@ export class BitmapFont {
         // Rounding would also reintroduce F-23 band 1 here: Math.floor(v + 0.5)
         // near 2^53 adds a quantity below the ulp. Math.trunc is exact for every
         // admitted value.
-        let temp = Math.trunc(value);
+        let n = Math.trunc(value);
 
         // SHARED with drawFast (decisions/0005 fork 2). Safe because neither body
         // is re-entrant; ctx.drawImage must not call back into the font. T9
@@ -924,16 +992,32 @@ export class BitmapFont {
         // a call frame on two hot paths to save twelve source lines is ROADMAP
         // law 6 inverted. DO NOT harmonise the two loops either -- THIS one is
         // exact by construction because the door admits only integer-exact
-        // doubles (|n| <= 2^53-1 => n % 10 and Math.floor(n / 10) are both exact,
-        // by induction over the loop). drawFast's is NOT exact above 2^53 (F-23
-        // band 2, routed to M8b). Carrying drawFast's `value * 10` in here would
-        // destroy that property.
+        // doubles (|n| <= 2^53-1 => n % 10 is exact, by induction). drawFast now
+        // carries two regimes and a decimal digit this body never needs
+        // (decisions/0007 fork 3).
+        // hi/lo split: lo = n % 1e7 and hi = (n - lo) / 1e7 are both under 2^31,
+        // so every loop variable stays inside Smi range -- the body boxes no
+        // HeapNumber in any tier (source-level Smi discipline; also the throughput
+        // Smi-knee of decisions/0005 0.4b). It does NOT zero the ~16 B/call a
+        // >2^31 argument costs at the call boundary: that box is caller-side and
+        // unchanged by this split (F-44 was misdiagnosed). n <= 2^53-1 so hi is at
+        // most 900719925 < 2^31.
         // The bound is an unconditional structural backstop: the door makes it
         // unreachable TODAY, and "unreachable" is a claim about today's code.
         // do..while, not while: value 0 must render "0" (one glyph).
+        const lo = n % 1e7;
+        const hi = (n - lo) / 1e7;
+        let temp = lo;
+        if (hi > 0) {
+            for (let k = 0; k < 7 && len < buf.length; k++) {
+                buf[len++] = 48 + (temp % 10);
+                temp = (temp - temp % 10) / 10;
+            }
+            temp = hi;
+        }
         do {
             buf[len++] = 48 + (temp % 10);
-            temp = Math.floor(temp / 10);
+            temp = (temp - temp % 10) / 10;
         } while (temp > 0 && len < buf.length);
 
         // Measure (iterating backwards through the scratch = forwards through the number)
@@ -1222,4 +1306,4 @@ export class BitmapFont {
 }
 export default BitmapFont;
 
-export const VERSION = '1.6.1';
+export const VERSION = '1.7.0';

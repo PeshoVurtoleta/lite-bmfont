@@ -91,7 +91,6 @@ function decode() {
 }
 
 const inDoor = (v) => v >= -DRAWFAST_MAX && v <= DRAWFAST_MAX;
-const tenths = (s) => BigInt(s.replace('.', ''));   // "8.5" -> 85n
 
 // The three helpers are PARAMETERISED BY METHOD (drawName), not duplicated:
 // they are cold test helpers, and the DO-NOT-EXTRACT rule of decisions/0005 is
@@ -191,6 +190,35 @@ export function run() {
     spell(9.99, '10.0', 'row 8 9.99');
     spell(1e6, '1000000.0', 'row 8 1e6');
 
+    // -- A3 (re-derived, M8b): the regime seam and branch coverage -----------
+    // The two regimes are output-IDENTICAL across a large overlap. Measured
+    // (M8b): forcing regime A across [2^53, ~1.15e18) reproduces regime B
+    // byte-for-byte -- 0 divergences below 1152957424055785000. So the boundary
+    // at 2^53 is a CONSERVATIVE choice, NOT a correctness cliff, and its exact
+    // position is not observable through output anywhere near the seam. The old
+    // A3 mutation (`<` -> `<=` on the regime test) therefore cannot redden and is
+    // RETIRED. What IS load-bearing, and pinned here:
+    //
+    // 1. The seam values themselves are exact against the BigInt oracle.
+    spell(2 ** 53 - 2, oracleExact(2 ** 53 - 2), 'A3 seam 2^53-2');
+    spell(2 ** 53,     oracleExact(2 ** 53),     'A3 seam 2^53');
+    spell(2 ** 53 + 2, oracleExact(2 ** 53 + 2), 'A3 seam 2^53+2');
+    //
+    // 2. BRANCH COVERAGE via observable side channels (not a source read):
+    //  - regime A is REACHED: a sub-2^53 NON-integer renders a non-zero tenth,
+    //    which regime B (tenth hardcoded to 0) cannot produce. 8.45 -> "8.4";
+    //    were regime B entered it would spell "8.0". KILLS a boundary lowered to 0.
+    spell(8.45, '8.4', 'A3 regime-A reached (non-zero tenth; regime B would spell "8.0")');
+    //  - regime B is REACHED: 1152957424055785000 is the smallest value where
+    //    regime A's two-chunk hi/lo split loses precision -- forced through regime
+    //    A it spells "1152957424045784960.0", but regime B's decimal doubling
+    //    spells the exact "1152957424055784960.0". Rendering it exactly proves
+    //    regime B ran. This is the RE-SPECIFIED A3 mutation: RAISE the regime
+    //    boundary above 1.15e18 (e.g. `value < 2e18`) and this value routes to
+    //    regime A, mis-renders, and this row reddens. Verified red in a sandbox.
+    spell(1152957424055785000, oracleExact(1152957424055785000),
+        'A3 regime-B reached (regime A mis-renders this; only doubling spells it exact)');
+
     // -- Rows 9-15: the rejected set -----------------------------------------
     // KILLS row 9: guard written with || instead of &&, or a bare `value > MAX` (NaN passes >).
     reject(NaN, 'row 9 NaN');
@@ -213,69 +241,67 @@ export function run() {
     reject(-1e22, 'row 15 -1e22');
     reject(-Number.MAX_VALUE, 'row 15 -MAX_VALUE');
 
-    // -- F-23 band 1 (|v| < 2^53): off-by-one-tenth on near-ties -------------
-    // Pinned as CURRENT behaviour (both-directions): the library is WRONG, and the
-    // two independent oracles AGREE on the right answer. M8's fix flips these.
-    for (const [v, today] of [[8.45, '8.5'], [999999.95, '1000000.0']]) {
+    // -- F-23 band 1 (|v| < 2^53): the tenth is now EXACT (decisions/0007 fork 1,
+    // Fast2Sum). The library CONFORMS to its published "rounded to nearest tenth"
+    // guarantee, and matches both independent oracles. `was` is the pre-M8b value
+    // the fix moved, quoted so a regression names what it broke.
+    for (const [v, was] of [[8.45, '8.5'], [999999.95, '1000000.0']]) {
         const s = libSpell(v);
         const ex = oracleExact(v);
-        check(s === today, () => 'T4 F-23 band1: ' + v + ' now renders "' + s + '", pinned "' + today + '" (M8b will change this -- re-routed by decisions/0005 fork 1)');
+        check(s === ex, () => 'T4 F-23 band1: ' + v + ' renders "' + s + '", exact "' + ex + '" -- M8b closed the near-tie rounding (was "' + was + '" before decisions/0007 fork 1)');
         check(oracleFixed(v) === ex, () => 'T4 F-23 band1: toFixed and exact disagree on ' + v + ' -- an oracle is wrong');
-        check(s !== ex, () => 'T4 F-23 band1: ' + v + ' unexpectedly renders the exact "' + ex + '" -- re-routed fix (decisions/0005 fork 1) landed early? re-open the pin');
     }
 
-    // -- F-23 band 2 (2^53 < |v| <= 1e21): wrong integer digits, silent ------
-    for (const [v, today] of [[762638538843020900000, '762638538843020800088.0'], [4858154237736017000, '4858154237736017846.0']]) {
+    // -- F-23 band 2 (2^53 < |v| <= 1e21): the integer digits are now EXACT --
+    // the true value of the double, by decimal doubling (decisions/0007 fork 1).
+    // A caller who writes 762638538843020900000 now sees the digits of the double
+    // it actually became: exact, not the literal typed.
+    for (const [v, was] of [[762638538843020900000, '762638538843020800088.0'], [4858154237736017000, '4858154237736017846.0']]) {
         const s = libSpell(v);
         const ex = oracleExact(v);
-        check(s === today, () => 'T4 F-23 band2: ' + v + ' now renders "' + s + '", pinned "' + today + '" (M8b will change this -- re-routed by decisions/0005 fork 1)');
+        check(s === ex, () => 'T4 F-23 band2: ' + v + ' renders "' + s + '", exact "' + ex + '" -- M8b closed band 2 (was "' + was + '" before decisions/0007 fork 1)');
         check(oracleFixed(v) === ex, () => 'T4 F-23 band2: toFixed and exact disagree on ' + v + ' -- an oracle is wrong');
-        check(s !== ex, () => 'T4 F-23 band2: ' + v + ' unexpectedly renders the exact "' + ex + '" -- re-routed fix (decisions/0005 fork 1) landed early? re-open the pin');
     }
 
-    // -- Rows 16-18: the 10,000 seeded sweep ---------------------------------
-    // 436 of 10,000 (4.4%) land above the ceiling by construction, so both lanes run.
+    // -- Rows 16-18: the seeded sweep, now at EXACT equality (M8b-T11) --------
+    // ~4.4% land above the ceiling by construction, so both lanes run.
     //
-    // DIVISION OF LABOUR. The library's digits diverge from exact wherever
-    // `value * 10` loses precision -- near-ties at any magnitude (band 1) and
-    // systematically above 2^53 (band 2, F-23). There is NO clean magnitude
-    // predicate for "the library is exact here"; oracleExact is the only truth.
-    // So the FIXED sweep and the F-23 pins own tenth-level rounding EXACTLY, and
-    // this seeded sweep owns broad coverage of the digit MACHINERY (order, count,
-    // base). Its per-value bound tolerates the library's float drift -- which is
-    // at most ~ulp(value*10) in tenths -- but a digit reversal, a dropped digit,
-    // or a wrong radix moves the value by orders of magnitude and dies here.
-    const next = makePrng(SEED);
-    for (let i = 0; i < 10000; i++) {
-        const exp = (next() % 44) - 21;
-        const mant = (next() / 2 ** 32) * 10;
-        let v = mant * 10 ** exp;
-        if ((next() & 3) === 0) v = -v;
+    // M8b made drawFast exact at EVERY magnitude (decisions/0007): regime A's
+    // Fast2Sum tenth carries no `value * 10` product to drift, and regime B
+    // renders the double's true integer value by decimal doubling. So this sweep
+    // no longer tolerates a float-drift bound -- ANY divergence from oracleExact
+    // is a defect, exactly as drawFastInt's sweep already demanded. It is run
+    // over TWO seeds so the exact-equality claim is sampled across two
+    // independent value streams; a tolerance-free sweep that saw only one stream
+    // would still be a real gate, but two makes a reintroduced drift far harder
+    // to slip past on a lucky seed.
+    for (const sweepSeed of [SEED, (SEED ^ 0x2545f491) >>> 0]) {
+        const next = makePrng(sweepSeed);
+        for (let i = 0; i < 10000; i++) {
+            const exp = (next() % 44) - 21;
+            const mant = (next() / 2 ** 32) * 10;
+            let v = mant * 10 ** exp;
+            if ((next() & 3) === 0) v = -v;
 
-        if (!inDoor(v)) {
-            // Row 18: a door that rejects only SOME out-of-range values (tested on
-            // intPart/scaled after the multiply rather than on value) fails here.
-            reject(v, 'sweep reject');
-            continue;
-        }
+            if (!inDoor(v)) {
+                // Row 18: a door that rejects only SOME out-of-range values (tested
+                // on intPart/scaled after the multiply rather than on value) fails here.
+                reject(v, 'sweep reject');
+                continue;
+            }
 
-        const s = libSpell(v);
-        const ex = oracleExact(v);
-        if (s !== ex) {
-            // Row 16: the divergence must be float-shaped. `exT >> 44` is ~2^-44
-            // relative (thousands of ulps of headroom over the library's real
-            // drift), `+ 2` covers a near-tie crossing a power of 10 at small
-            // magnitudes. A structural mutation blows past both.
-            const exT = tenths(ex);
-            let d = tenths(s) - exT;
-            if (d < 0n) d = -d;
-            check(d <= (exT >> 44n) + 2n,
-                () => 'T4 row 16 (sweep): SEED=' + SEED + ' i=' + i + ' v=' + v + ' drew "' + s + '", exact "' + ex + '" -- diff ' + d + ' tenths exceeds the float-drift bound (replay: TORTURE_SEED=' + SEED + ' npm run torture)');
-        }
-        // Row 17: the two independent oracles must agree below 1e21 -- guards
-        // against oracleExact and the library drifting together (0 failures measured).
-        if (Math.abs(v) < 1e21) {
-            check(oracleFixed(v) === ex, () => 'T4 row 17 (sweep): SEED=' + SEED + ' i=' + i + ' v=' + v + ' toFixed "' + oracleFixed(v) + '" != exact "' + ex + '"');
+            const s = libSpell(v);
+            const ex = oracleExact(v);
+            // Row 16: EXACT equality, no drift tolerance. A digit reversal, a
+            // dropped digit, a wrong radix, OR any residual drift from a
+            // reintroduced `value * 10` dies here.
+            check(s === ex,
+                () => 'T4 row 16 (sweep): SEED=' + sweepSeed + ' i=' + i + ' v=' + v + ' drew "' + s + '", exact "' + ex + '" -- EXACT equality required, no drift (replay: TORTURE_SEED=' + SEED + ' npm run torture)');
+            // Row 17: the two independent oracles must agree below 1e21 -- guards
+            // against oracleExact and the library drifting together.
+            if (Math.abs(v) < 1e21) {
+                check(oracleFixed(v) === ex, () => 'T4 row 17 (sweep): SEED=' + sweepSeed + ' i=' + i + ' v=' + v + ' toFixed "' + oracleFixed(v) + '" != exact "' + ex + '"');
+            }
         }
     }
 

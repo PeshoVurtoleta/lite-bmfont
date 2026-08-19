@@ -15,7 +15,7 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0-255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.6.1'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.7.0'.
 
 ## Export: BitmapFontError (class extends RangeError)
 The one error the constructor throws (F-10). Extends RangeError, so a
@@ -35,11 +35,16 @@ so Math.max(-DRAWFAST_MAX, Math.min(DRAWFAST_MAX, v)) is always renderable.
 Number.MAX_SAFE_INTEGER (9007199254740991, 16 digits) -- the largest magnitude
 drawFastInt can render. This is the CORRECTNESS boundary, NOT the buffer boundary:
 above 2^53 a double is not integer-exact and v % 10 returns noise, so drawFastInt
-refuses the range instead of rendering approximate digits (contrast DRAWFAST_MAX,
-which ships those digits as a documented approximation -- the two constants answer
-the same principle applied to different facts). It is exact by construction for
-every value it admits. Zero-allocation holds only below 2^31; larger admitted
-values box one HeapNumber per call in the digit loop (F-44, shared with drawFast).
+refuses the range instead of rendering it (contrast DRAWFAST_MAX, above which
+drawFast renders the double's EXACT integer value by decimal doubling -- the two
+constants answer the same principle applied to different facts). It is exact by
+construction for every value it admits. The digit loop keeps its loop variables
+inside Smi range (lo = n % 1e7, hi = (n - lo) / 1e7, both under 2^31), so the
+BODY boxes no HeapNumber in any V8 tier -- shared with drawFast. This does not
+make a >2^31 call zero-alloc: passing an argument above 2^31 (2147483648) boxes
+the double at the call boundary, ~16 B/call, a caller-side cost identical before
+and after this library and removable by no change to it. F-44's "boxing inside
+the digit loop" was a misdiagnosis; the box is caller-side (decisions/0007).
 BOTH endpoints inclusive, so
 Math.max(-DRAWFASTINT_MAX, Math.min(DRAWFASTINT_MAX, v)) always renders.
 
@@ -159,10 +164,13 @@ drawFast(ctx, value, x, y, scale = 1, align = 0) -> void
   - NaN / +Infinity / -Infinity -> returns silently
   - |value| > DRAWFAST_MAX (1e21) -> returns silently, draws nothing
   - Negative values inside the door -> clamped to 0 (so -5 renders "0.0")
-  - Decimal rounded to nearest tenth (33.49 -> "33.5")
-  - Above 2^53 (9007199254740992) the rendered integer digits are approximate --
-    the value is scaled through a double before digit extraction. Exact below
-    that. Values outside [-DRAWFAST_MAX, DRAWFAST_MAX] draw nothing.
+  - Decimal rounded to the nearest tenth, EXACTLY (8.45 -> "8.4", not "8.5"):
+    the tenth comes from Fast2Sum, not a value * 10 product (F-23 closed)
+  - Above 2^53 (9007199254740992) every double is an integer and its digits are
+    rendered EXACTLY -- the true value of the double stored, which is NOT
+    necessarily the literal you typed: 762638538843020900000 renders
+    "762638538843020853248.0", the double that literal became. Values outside
+    [-DRAWFAST_MAX, DRAWFAST_MAX] draw nothing.
   - A `scale` outside (0, Infinity) draws NOTHING and returns (F-11), same as draw
   - Atlas must contain glyphs for '0'-'9' (48-57) and '.' (46)
   - Built for per-frame HUDs (FPS, score, timer) -- does NOT allocate a string
@@ -177,8 +185,11 @@ drawFastInt(ctx, value, x, y, scale = 1, align = 0) -> void
     '.' (46) glyph drawFast requires, so a digits-only atlas can use this method.
   - Ceiling is DRAWFASTINT_MAX (Number.MAX_SAFE_INTEGER), the CORRECTNESS boundary
     not the buffer boundary; exact by construction for every admitted value.
-  - Zero-allocation holds only below 2^31; larger values box one HeapNumber per
-    call in the digit loop (F-44, shared with drawFast).
+  - The digit loop keeps its loop variables inside Smi range (lo = n % 1e7,
+    hi = (n - lo) / 1e7, both under 2^31), so the BODY boxes no HeapNumber in any
+    tier. A >2^31 argument still costs ~16 B/call boxed at the CALL boundary --
+    caller-side, identical before and after, removable by no library change
+    (F-44 was a misdiagnosis; shared with drawFast).
   - NaN / +/-Infinity / |value| > DRAWFASTINT_MAX -> returns silently, draws nothing
   - Negative values inside the door -> clamped to 0 (so -5 renders "0")
   - A `scale` outside (0, Infinity) draws NOTHING and returns (F-11), same as draw

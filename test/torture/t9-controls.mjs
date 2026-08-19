@@ -25,7 +25,7 @@ import {
     rec, resetRec, nanScan, runOpsGate, runAllocGate, die,
     oracleAdvance, FONT_ASCII, FONT_NUM, JSON_ASCII, ATLAS,
 } from './harness.mjs';
-import { BitmapFont, BitmapFontError } from '../../BitmapFont.js';
+import { BitmapFont, BitmapFontError, DRAWFASTINT_MAX } from '../../BitmapFont.js';
 import { createLeakTracker } from '@zakkster/lite-leak';
 import { spawnSync } from 'node:child_process';
 
@@ -148,27 +148,55 @@ export function run() {
         if (r8good.verdict !== 'pass') die('T9 control 8: the zero-retention twin did not pass the retained-bytes gate');
     }
 
-    // Control 9 -- the magnitude door (ROADMAP section 3 control 6). Runs OUT OF
-    // PROCESS: with the door removed this body never returns, and no in-process
-    // watchdog, throw or timeout can stop it. spawnSync's timeout is the only
-    // mechanism; its default kill signal is SIGTERM. timeout(1) is not on this host.
+    // Control 9 -- the magnitude door, re-derived as a CORRUPTION control
+    // (decisions/0007 fork 6). M8b deleted `value * 10`, so the pre-door body no
+    // longer HANGS on Number.MAX_VALUE: every loop is bounded by a finite
+    // exponent, so it decomposes (e = 971) and RETURNS. A hang control would now
+    // be vacuous. What the door still prevents is SILENT SCRATCH TRUNCATION --
+    // door-removed, MAX_VALUE fills the shared 24-byte scratch with a truncated
+    // (wrong) digit string; the shipped body rejects it before the scratch is
+    // touched. Runs OUT OF PROCESS because the reconstruction imports a mutated
+    // copy of the module. The load-bearing observable is scratch-touched vs not.
     {
         const child = new URL('./t9-hang-child.mjs', import.meta.url).pathname;
-        const hang = spawnSync(process.execPath, [child, 'hang', 'Number.MAX_VALUE'],
+        const corrupt = spawnSync(process.execPath, [child, 'corrupt', 'Number.MAX_VALUE'],
             { timeout: 2000, encoding: 'utf8' });
-        if (hang.status === 3) die('T9 control 9: could not reconstruct the pre-door body -- the markers moved; update t9-hang-child.mjs');
-        if (hang.signal !== 'SIGTERM') {
-            die('T9 control 9: the door-removed body returned (signal=' + hang.signal +
-                ' status=' + hang.status + ') -- the hang control is vacuous');
+        if (corrupt.status === 3) die('T9 control 9: could not reconstruct the door-removed body -- the markers moved; update t9-hang-child.mjs');
+        // It MUST return. A SIGTERM (timeout) here would mean it hung -- which the
+        // new finite-exponent body cannot do; that would signal value*10 crept back.
+        if (corrupt.signal !== null || corrupt.status !== 0) {
+            die('T9 control 9: the door-removed body did not RETURN (signal=' + corrupt.signal +
+                ' status=' + corrupt.status + ') -- M8b made every loop finite; a non-return means value*10 is back');
         }
+        const cm = /^calls=(\d+) touched=(\d) digits=(.+)$/.exec(corrupt.stdout.trim());
+        if (!cm) die('T9 control 9: corrupt child output unparseable: ' + JSON.stringify(corrupt.stdout.trim()));
+        const corruptCalls = cm[1], corruptTouched = cm[2], corruptDigits = cm[3];
+        // G-3: the regime-B carry backstop (`if (len >= buf.length) return`) must
+        // fire, so door-removed MAX_VALUE fills the scratch but RETURNS without
+        // drawing -- calls=0. Drop that guard from the shipped body and the same
+        // reconstruction draws 24 corrupted glyphs (calls=24), which reddens here.
+        // This is the ONLY coverage of that backstop: the door hides it in normal
+        // operation, so only the door-removed leg reaches it.
+        if (corruptCalls !== '0') die('T9 control 9: door-removed MAX_VALUE DREW ' + corruptCalls + ' glyphs (expected 0) -- the regime-B carry backstop `if (len >= buf.length) return` is missing, so truncated digits render instead of failing closed (G-3)');
+        // The door-removed body must have WRITTEN the scratch with a 24-byte
+        // truncated number -- MAX_VALUE has ~309 true digits, only 24 fit.
+        if (corruptTouched !== '1') die('T9 control 9: door-removed MAX_VALUE left the scratch canary intact -- no corruption produced, control vacuous (A7)');
+        if (!/^\d+\.\d$/.test(corruptDigits) || corruptDigits.length !== 24) {
+            die('T9 control 9: door-removed MAX_VALUE scratch is not a 24-byte truncated number: ' + JSON.stringify(corruptDigits));
+        }
+
         const door = spawnSync(process.execPath, [child, 'door', 'Number.MAX_VALUE'],
             { timeout: 2000, encoding: 'utf8' });
         if (door.status !== 0 || door.signal !== null) {
             die('T9 control 9: the SHIPPED body did not return on Number.MAX_VALUE -- the door is broken');
         }
-        if (door.stdout.trim() !== 'calls=0') {
-            die('T9 control 9: shipped drawFast(MAX_VALUE) drew ' + door.stdout.trim() + ', expected calls=0');
+        // Shipped: rejected at the door BEFORE the scratch is touched.
+        if (door.stdout.trim() !== 'calls=0 touched=0') {
+            die('T9 control 9: shipped drawFast(MAX_VALUE) reported "' + door.stdout.trim() + '", expected "calls=0 touched=0" (door must reject before touching the scratch)');
         }
+        // The proof: door removed corrupts the scratch (touched=1), door present
+        // leaves it untouched (touched=0). Identical would make the control vacuous.
+        if (corruptTouched === '0') die('T9 control 9: door-removed and door-present left the scratch identical -- corruption control vacuous (A7)');
     }
 
     // Control 10 -- the descriptor door (T3, M3). The door must bite BOTH ways:
@@ -404,35 +432,46 @@ export function run() {
     }
 
     // ---- M8 control 17 -- the digit-loop divergence detector -----------------
-    // drawFast and drawFastInt DUPLICATE the digit loop (decisions/0005: they may
-    // not be merged -- one is exact above 2^53, the other is not). This control
-    // is BEHAVIOURAL, not a source diff: for integers spanning 1..16 digits,
-    // drawFastInt(n) must decode to drawFast(n) with the trailing ".0" removed.
-    // Reddens on a digit-order inversion, a radix mistake, a dropped digit, or an
-    // off-by-one in EITHER loop's bound -- the strings diverge.
+    // drawFast and drawFastInt DUPLICATE the digit loop (decisions/0007 fork 3:
+    // they may not be merged -- drawFast now carries two regimes and a decimal
+    // digit drawFastInt never needs). This control is BEHAVIOURAL, not a source
+    // diff. For every value drawFast(n) must decode to the EXACT integer digits of
+    // the double n plus a trailing ".0" (oracle: BigInt of that exact integer).
+    // Where n is also within drawFastInt's door (<= DRAWFASTINT_MAX), drawFastInt(n)
+    // must decode to the same digits WITHOUT the ".0". Reddens on a digit-order
+    // inversion, a radix mistake, a dropped digit, or an off-by-one in EITHER
+    // loop's bound.
     //
-    // BAND-2 EXCLUSION (F-23, decisions/0001). The set stops well below where
-    // drawFast's `value * 10` overflows the 53-bit significand. Empirically
-    // drawFast is ALREADY inexact at 2^53 - 1 (it renders "...990", because
-    // 10*(2^53-1) is not representable) -- that is drawFast's KNOWN defect, NOT a
-    // loop divergence, so admitting it would give a failure that is F-23 wearing
-    // control 17's message. When M8b fixes F-23 this set extends to DRAWFAST_MAX
-    // (an M8b DONE-WHEN row). Every value below is verified drawFast-exact.
+    // M8b closed F-23 (decisions/0007), so the SET now reaches DRAWFAST_MAX: the
+    // old band-2 exclusion -- which stopped the set below where `value * 10`
+    // overflowed the 53-bit significand -- is gone. The regime-B values
+    // (2^53 .. 1e21) exercise drawFast's decimal-doubling loop, which drawFastInt
+    // never runs; 1e21 fills the scratch to exactly 24 bytes, so a `- 1` off-by-one
+    // on either regime-B bound drops its last digit and dies here.
     {
         const SET = [1, 7, 9, 10, 42, 99, 100, 512, 999, 1000, 65535, 12345,
             100000, 999999, 1000000, 16777216, 2147483647, 2147483648, 4294967296,
-            100000000000, 999999999999, 900000000000000, 1000000000000000, 4503599627370496];
+            100000000000, 999999999999, 900000000000000, 1000000000000000, 4503599627370496,
+            9007199254740991, 9007199254740992, 1e18, 1e20, 5e20, 1e21];
         let s = '';
         const cctx = { drawImage(img, sx, sy, sw) { s += String.fromCharCode(sw === 4 ? 46 : 48 + sx / 10); } };
         for (let i = 0; i < SET.length; i++) {
             const n = SET[i];
-            s = ''; FONT_NUM.drawFastInt(cctx, n, 0, 0);
-            const viaInt = s;
+            // n is an integer-valued double; BigInt(n) is its exact value.
+            const want = BigInt(n).toString() + '.0';
             s = ''; FONT_NUM.drawFast(cctx, n, 0, 0);
-            const viaFast = s.slice(0, -2);   // strip the ".0"
-            if (viaInt !== viaFast) {
-                die('T9 control 17: n=' + n + ' drawFastInt -> "' + viaInt + '" but drawFast -> "' +
-                    viaFast + '.0" -- the two duplicated digit loops diverged');
+            const viaFast = s;
+            if (viaFast !== want) {
+                die('T9 control 17: n=' + n + ' drawFast -> "' + viaFast + '", exact "' + want +
+                    '" -- drawFast digit loop diverged from the exact value');
+            }
+            if (n <= DRAWFASTINT_MAX) {
+                s = ''; FONT_NUM.drawFastInt(cctx, n, 0, 0);
+                const viaInt = s;
+                if (viaInt !== viaFast.slice(0, -2)) {
+                    die('T9 control 17: n=' + n + ' drawFastInt -> "' + viaInt + '" but drawFast -> "' +
+                        viaFast + '" -- the two duplicated digit loops diverged');
+                }
             }
         }
     }

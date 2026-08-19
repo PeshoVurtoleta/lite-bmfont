@@ -57,6 +57,17 @@ const INT16_CYCLE = (() => {
     for (let i = 0; i < 256; i++) a[i] = 1e15 + i;    // 16 digits, <= MAX_SAFE
     return a;
 })();
+// REGB_CYCLE: 256 doubles 1e20 + 16384*i -- ALL >= 2^53, so drawFast takes its
+// REGIME B path (decisions/0007): mantissa by halving, digits by the hi/lo Smi
+// split, then decimal doubling in place (e ~ 14 here). All render 23 glyphs
+// ("<21 digits>.0"), a clean multiple for the rec.total equality. Window B's
+// 5-digit cycle is regime A and cannot exercise this path -- window H exists for
+// exactly the reason window G exists for drawFastInt (M8b-T13).
+const REGB_CYCLE = (() => {
+    const a = new Float64Array(256);
+    for (let i = 0; i < 256; i++) a[i] = 1e20 + 16384 * i;   // >= 2^53, 21 digits
+    return a;
+})();
 
 /** DCE guard for windows D, E and F (no drawImage side effect to anchor them). */
 let sink = 0;
@@ -113,6 +124,19 @@ const VOL_MAX = 1000000;
 // 25% below the mutant. This is NOT VOL_MAX widened -- it is a SEPARATE lane
 // whose correct-code floor is 3.2 MB, not 76 KB, because the arithmetic boxes.
 const VOL16_MAX = 4750000;
+// Window H ONLY (M8b, F-44 / regime B). drawFast's regime B does transient work
+// the scavenger reclaims -- the mantissa halving loop creates large doubles, and
+// the caller boxes the >2^31 argument once per call -- so its allocVolume floor
+// is NOT zero. Measured on this host (7 reps each, 20,000-iteration warmup, the
+// 1e20 REGB_CYCLE, e ~ 14):
+//   shipped regime-B body:            6.19-6.30 MB
+//   BigInt in the doubling loop (A8): 40.8-41.0 MB
+// REGB_MAX (15 MB) sits 2.4x above the shipped floor and 2.7x below the mutant.
+// It gates GROSS per-call allocation (BigInt/String arithmetic in the doubling
+// loop), NOT the transient floor -- the standard runOpsGate/runAllocGate lanes
+// PASS on the BigInt mutant because its garbage is collectable, exactly the F-37
+// blindness window G documents. Environment sensitive, hence the wide margin.
+const REGB_MAX = 15000000;
 
 function allocVolume(fn) {
     for (let i = 0; i < VOL_WARMUP; i++) fn(i);
@@ -413,5 +437,43 @@ export function run() {
             'drawFastInt 16-digit (worst case) ' + nsFastInt16.toFixed(2) + ' ns/call; ' +
             'digit-matched: drawFastInt(1234)=' + nsInt4.toFixed(2) + ' ns/4glyphs vs ' +
             'drawFast(123.4)=' + nsFast5.toFixed(2) + ' ns/5glyphs\n');
+    }
+
+    // --- Window H (M8b): drawFast() on a REGIME-B cycle, 23 glyphs --------------
+    // drawFast's REGIME B (value >= 2^53) renders the double's exact integer value
+    // by decimal doubling (decisions/0007) -- a path window B (5-digit, regime A)
+    // never reaches. Without this window a regime-B allocation is invisible: the
+    // same blindness M8's window G closed for drawFastInt.
+    //
+    // The standard lanes (runOpsGate deep + runAllocGate maxBytesPerCall:0) are the
+    // A-F-comparable baseline. They PASS on a BigInt-doubling mutant because its
+    // garbage is transient and scavenged (the F-37 blindness). The A8 detector is
+    // allocVolume: BigInt in the doubling loop turns the shipped ~6.2 MB transient
+    // floor into ~40.8 MB, and REGB_MAX (15 MB) sits between. The 6.2 MB floor is
+    // mantissa-halving and argument-boxing garbage the scavenger reclaims -- NOT
+    // zero -- so this window gates GROSS per-call allocation, not that floor.
+    {
+        const OPS = 200000, WARMUP = 5000, GLYPHS = 23;
+        resetRec(ATLAS); resetTotals();
+        // A8 twin: the driven values MUST be regime B (>= 2^53), or window B's
+        // 5-digit regime-A cycle silently answers for this window.
+        check(REGB_CYCLE[0] >= 9007199254740992 && REGB_CYCLE[255] >= 9007199254740992,
+            () => 'T6/H: REGB_CYCLE is not entirely regime B (>= 2^53) -- window B would answer for it');
+        const hot = (i) => {
+            rec.calls = 0;
+            FONT_NUM.drawFast(rec, REGB_CYCLE[i & 255], 0, 0);
+        };
+        const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+        check(rec.total === (OPS + WARMUP) * GLYPHS,
+            () => 'T6/H: rec.total ' + rec.total + ' != ' + ((OPS + WARMUP) * GLYPHS));
+        structural(FONT_NUM, 'H');
+        gateOps(report, summary, 'H');
+        const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
+        gateAlloc(aReport, result, 'H');
+        const volH = allocVolume(hot);
+        check(volH <= REGB_MAX,
+            () => 'T6/H: drawFast regime-B allocated ' + volH + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + REGB_MAX + ') -- gross per-call allocation in the' +
+                ' doubling loop, most likely BigInt or String arithmetic (A8)');
     }
 }
