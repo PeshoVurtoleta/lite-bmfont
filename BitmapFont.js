@@ -1,4 +1,4 @@
-/** @zakkster/lite-bmfont — Zero-GC Bitmap Font Renderer */
+/** @zakkster/lite-bmfont -- Zero-GC Bitmap Font Renderer */
 
 /**
  * SHARED-SCRATCH CONTRACT (decisions/0005 fork 2). `ctx.drawImage` must not
@@ -758,7 +758,7 @@ export class BitmapFont {
     // inside it. (Comment sits above the JSDoc, outside the body-sha range A7.)
     /**
      * Zero-GC number renderer. Draws a non-negative number with one decimal place
-     * (e.g. 33.4) directly from char codes — no string allocation on the hot path.
+     * (e.g. 33.4) directly from char codes -- no string allocation on the hot path.
      *
      * - NaN, +Infinity, -Infinity: silently skipped (returns).
      * - |value| > DRAWFAST_MAX (1e21): silently skipped (returns). 1e21 is the
@@ -980,16 +980,16 @@ export class BitmapFont {
     /**
      * Render pre-laid-out wrapped text into a bounding box, with horizontal
      * and vertical alignment. The caller supplies a typed-array layout describing
-     * which character ranges belong to which line — no string splitting, no array
+     * which character ranges belong to which line -- no string splitting, no array
      * allocation per frame.
      *
-     * **Layout buffer format** — `lineCount` consecutive 4-tuples of Float32:
+     * **Layout buffer format** -- `lineCount` consecutive 4-tuples of Float32:
      *
-     *     [0] startIdx  — start char index into `text` (inclusive)
-     *     [1] endIdx    — end char index into `text` (exclusive)
+     *     [0] startIdx  -- start char index into `text` (inclusive)
+     *     [1] endIdx    -- end char index into `text` (exclusive)
      *     [2] lineWidth  - pixel width of this line **at the RENDERED scale**
      *                      (compared directly against boxWidth; F-45)
-     *     [3] flags     — 0 = normal line; 1 = append "..." ellipsis after content
+     *     [3] flags     -- 0 = normal line; 1 = append "..." ellipsis after content
      *
      * **Contract, enforced (1.2.3):**
      *
@@ -1016,7 +1016,7 @@ export class BitmapFont {
      *   sequence plus `Math.round(base * scale)`. Glyph X is not snapped.
      *
      * The ellipsis flag is for layout engines that truncated a line and want the
-     * renderer to append "…" without paying for a separate string. Requires
+     * renderer to append "..." without paying for a separate string. Requires
      * ASCII '.' (code 46) in the atlas.
      *
      * @param {CanvasRenderingContext2D} ctx
@@ -1067,7 +1067,7 @@ export class BitmapFont {
 
         // `cursorY` tracks the baseline of the current line. The user passes `y` as the
         // container's top edge, so we shift down by `base * scale` so the first line's
-        // visual TOP — not its baseline — lands at `y` when vAlign=0.
+        // visual TOP -- not its baseline -- lands at `y` when vAlign=0.
         let cursorY = Math.round(y + this.base * scale);
 
         // Zero-loop vertical alignment
@@ -1222,4 +1222,4 @@ export class BitmapFont {
 }
 export default BitmapFont;
 
-export const VERSION = '1.6.0';
+export const VERSION = '1.6.1';

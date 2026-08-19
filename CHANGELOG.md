@@ -2,6 +2,48 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.6.1 -- 2026-08-19
+
+The ASCII-only Law acquires an executable witness, and the four files that
+predate the discipline are swept clean -- 1,196 non-ASCII code points, 75 of them
+inside the published tarball. No runtime behaviour changes: the sweep touches
+only comments, prose and demo text, proven line-by-line against the
+transliteration table -- every differing line is the original with only the
+declared substitution applied, the sole exceptions being the two version literals
+(`BitmapFont.js`, `llms.txt`) that any release moves. F-46. Decision record:
+`decisions/0008-ascii-gate.md`.
+
+### Changed
+- **`test/packaging.test.js` gains an ASCII-only gate.** It enumerates every
+  tracked file via `git ls-files` -- never a filename list, never
+  `package.json` files[] -- reads each one as a Buffer with NO binary skip at
+  all: a NUL byte or a strict-UTF-8 decode failure is itself a gate FAILURE (the
+  package tracks zero binaries, so a skip would only open a bypass -- an
+  extension allowlist slips a renamed text file past, a NUL sniff slips a UTF-16
+  text file past). It then reports `path:line:col
+  U+XXXX` for every code point >= 0x80 other than the two Law exceptions
+  (U+00D7, U+00B5). It fails closed: a git error, a non-zero status, an empty
+  enumeration or a read throw is a FAILURE, asserted before any byte is judged.
+  A new TRACKED file carrying a non-ASCII byte reddens the gate the day it is
+  added, with no edit to the test. Scope is deliberately `git ls-files`:
+  untracked working-tree files are not scanned, so the rule binds what the repo
+  actually carries rather than whatever happens to be sitting on one machine.
+
+### Docs
+- Swept `BitmapFont.js`, `llms.txt`, `README.md` and
+  `demo/demo-lite-bmfont.html` to ASCII: em/en dashes, arrows and ellipses
+  transliterated (`--`, `-`, `->`, `...`), the demo's box-drawing banners to
+  `=`/`-`, the demo's two visible U+00B7 separators to the `&middot;` entity
+  (source ASCII, rendered page unchanged), and the 21 README heading/bullet
+  emoji deleted toward the blueprint README shape.
+- **Corrected a self-contradiction in the ellipsis-flag docs.** `README.md`,
+  `BitmapFont.js:1019` and `llms.txt` described the wrap flag as appending the
+  U+2026 ellipsis GLYPH; the implementation appends three ASCII `.` (code 46),
+  as `BitmapFont.js:72`/`:992` already stated. The prose now matches the code.
+  The `llms.txt` runnable snippet's `'Hello world<ellipsis>'` string became
+  `'Hello world...'`, the first version of that example the ASCII-only atlas can
+  actually render.
+
 ## 1.6.0 -- 2026-08-19
 
 `drawWrapped` and its canonical producer shipped contradictory contracts for one

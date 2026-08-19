@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>@zakkster/lite-bmfont — Zero-GC Arcade Text</title>
+    <title>@zakkster/lite-bmfont -- Zero-GC Arcade Text</title>
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Outfit:wght@300;500;800&display=swap"
           rel="stylesheet">
     <style>
@@ -37,7 +37,7 @@
             flex-direction: column
         }
 
-        /* ── TOP BAR ── */
+        /* -- TOP BAR -- */
         .topbar {
             height: 48px;
             display: flex;
@@ -86,7 +86,7 @@
             color: var(--pink)
         }
 
-        /* ── SCENE TABS ── */
+        /* -- SCENE TABS -- */
         .tabs {
             display: flex;
             gap: 0;
@@ -118,7 +118,7 @@
             border-bottom-color: var(--green)
         }
 
-        /* ── MAIN CANVAS AREA ── */
+        /* -- MAIN CANVAS AREA -- */
         .stage {
             flex: 1;
             position: relative;
@@ -149,7 +149,7 @@
             background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, .6) 100%);
         }
 
-        /* ── BOTTOM GUIDE ── */
+        /* -- BOTTOM GUIDE -- */
         .guide {
             height: 56px;
             display: flex;
@@ -240,8 +240,8 @@
 
 <div class="guide">
     <div class="guide-left">
-        <kbd>Click</kbd> canvas to interact &nbsp;·&nbsp; <kbd>1-6</kbd> switch scenes &nbsp;·&nbsp; All text rendered
-        via <kbd>font.draw()</kbd> — zero GC
+        <kbd>Click</kbd> canvas to interact &nbsp;&middot;&nbsp; <kbd>1-6</kbd> switch scenes &nbsp;&middot;&nbsp; All text rendered
+        via <kbd>font.draw()</kbd> -- zero GC
     </div>
     <div class="guide-right">
         <code>npm i @zakkster/lite-bmfont</code>
@@ -249,15 +249,15 @@
 </div>
 
 <script type="module">
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     //  NPM IMPORTS
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     import {BitmapFont} from 'https://cdn.jsdelivr.net/npm/@zakkster/lite-bmfont/+esm';
     import {Viewport} from 'https://cdn.jsdelivr.net/npm/lite-viewport/+esm';
 
-    // ═══════════════════════════════════════════════════════════
-    //  ATLAS GENERATOR — creates a full ASCII mock BMFont at runtime
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
+    //  ATLAS GENERATOR -- creates a full ASCII mock BMFont at runtime
+    // ===========================================================
     function generateAtlas(size, fontCSS, fillColor, shadowColor) {
         const chars = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
         const c = document.createElement('canvas');
@@ -302,9 +302,9 @@
         return {atlas: c, json};
     }
 
-    // ═══════════════════════════════════════════════════════════
-    //  FONT BANK — multiple styled fonts from one generator
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
+    //  FONT BANK -- multiple styled fonts from one generator
+    // ===========================================================
     const fontMain = (() => {
         const {atlas, json} = generateAtlas(36, "bold 36px 'Fira Code', monospace", '#39ff85', '#001a0a');
         return new BitmapFont(atlas, json);
@@ -322,9 +322,9 @@
         return new BitmapFont(atlas, json);
     })();
 
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     //  VIEWPORT + CANVAS
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     let W = 0, H = 0;
@@ -336,9 +336,9 @@
         }
     });
 
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     //  SHARED SoA PARTICLE POOL (damage numbers, trails, etc.)
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     const MAX = 2000;
     const px = new Float32Array(MAX), py = new Float32Array(MAX);
     const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
@@ -377,9 +377,9 @@
 
     const fonts = [fontMain, fontAccent, fontSmall, fontPink];
 
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     //  MOUSE STATE
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     let mx = -999, my = -999;
     canvas.addEventListener('pointermove', e => {
         const r = canvas.getBoundingClientRect();
@@ -397,9 +397,9 @@
         if (n >= 1 && n <= 6) setScene(['damage', 'wave', 'score', 'typewriter', 'trail', 'stress'][n - 1]);
     });
 
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     //  SCENES
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     let activeScene = 'damage';
     let drawCount = 0;
 
@@ -447,16 +447,16 @@
     const twPhrases = [
         'ZERO GARBAGE COLLECTION.',
         'EVERY GLYPH FROM A TYPED ARRAY.',
-        'NO STRING.SPLIT() — EVER.',
+        'NO STRING.SPLIT() -- EVER.',
         'O(1) KERNING VIA INT16 LUT.',
         'BITMAP FONT RENDERING AT 60FPS.',
         'CHARCODEAT() + DRAWIMAGE() = SPEED.',
     ];
     let twPhraseIdx = 0;
 
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     //  RENDER LOOP
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     let last = performance.now(), frameCount = 0, fpsTimer = 0, fpsVal = 60;
 
     function loop(now) {
@@ -495,7 +495,7 @@
             ctx.stroke();
         }
 
-        // ── Scene-specific rendering ──
+        // -- Scene-specific rendering --
         if (activeScene === 'damage') renderDamage(dt, now);
         else if (activeScene === 'wave') renderWave(dt, now);
         else if (activeScene === 'score') renderScore(dt, now);
@@ -503,7 +503,7 @@
         else if (activeScene === 'trail') renderTrail(dt, now);
         else if (activeScene === 'stress') renderStress(dt, now);
 
-        // ── Particles (shared across scenes) ──
+        // -- Particles (shared across scenes) --
         for (let i = count - 1; i >= 0; i--) {
             vy[i] += 600 * dt;
             px[i] += vx[i] * dt;
@@ -529,7 +529,7 @@
         document.getElementById('gc').textContent = '0 allocs';
     }
 
-    // ── SCENE: Damage Numbers ──
+    // -- SCENE: Damage Numbers --
     function renderDamage(dt, now) {
         ctx.globalAlpha = .12;
         fontPink.draw(ctx, 'CLICK TO DEAL DAMAGE', W / 2, H / 2 - 30, .8, 1);
@@ -544,7 +544,7 @@
         }
     }
 
-    // ── SCENE: Wave Text ──
+    // -- SCENE: Wave Text --
     function renderWave(dt, now) {
         const msg = 'ZERO-GC BITMAP TEXT';
         const baseX = W / 2 - fontMain.measure(msg, 1) / 2;
@@ -557,7 +557,7 @@
             drawCount++;
         }
         ctx.globalAlpha = .25;
-        fontSmall.draw(ctx, 'per-character wave + fade — still zero allocation in draw()', W / 2, H / 2 + 50, .9, 1);
+        fontSmall.draw(ctx, 'per-character wave + fade -- still zero allocation in draw()', W / 2, H / 2 + 50, .9, 1);
         ctx.globalAlpha = 1;
         drawCount++;
 
@@ -573,7 +573,7 @@
         ctx.globalAlpha = 1;
     }
 
-    // ── SCENE: Score Counter ──
+    // -- SCENE: Score Counter --
     function renderScore(dt, now) {
         scoreDisplay += (scoreVal - scoreDisplay) * dt * 8;
         const display = Math.round(scoreDisplay).toString().padStart(8, '0');
@@ -583,7 +583,7 @@
 
         ctx.globalAlpha = .3;
         fontSmall.draw(ctx, 'SCORE', W / 2, H / 2 - 80, 1, 1);
-        fontSmall.draw(ctx, 'click to add points — font.draw() with padStart, zero alloc', W / 2, H / 2 + 30, .8, 1);
+        fontSmall.draw(ctx, 'click to add points -- font.draw() with padStart, zero alloc', W / 2, H / 2 + 30, .8, 1);
         ctx.globalAlpha = 1;
         drawCount += 2;
 
@@ -598,7 +598,7 @@
         ctx.globalAlpha = 1;
     }
 
-    // ── SCENE: Typewriter ──
+    // -- SCENE: Typewriter --
     function renderTypewriter(dt, now) {
         if (twText === '' || twIdx >= twText.length + 30) {
             twText = twPhrases[twPhraseIdx % twPhrases.length];
@@ -622,12 +622,12 @@
         }
 
         ctx.globalAlpha = .15;
-        fontSmall.draw(ctx, '> rendering char-by-char — zero string allocation', 40, H / 2 + 40, .8, 0);
+        fontSmall.draw(ctx, '> rendering char-by-char -- zero string allocation', 40, H / 2 + 40, .8, 0);
         ctx.globalAlpha = 1;
         drawCount++;
     }
 
-    // ── SCENE: Mouse Trail ──
+    // -- SCENE: Mouse Trail --
     function renderTrail(dt, now) {
         ctx.globalAlpha = .1;
         fontMain.draw(ctx, 'MOVE YOUR MOUSE', W / 2, H / 2 - 20, 1, 1);
@@ -644,11 +644,11 @@
         }
     }
 
-    // ── SCENE: Stress Test ──
+    // -- SCENE: Stress Test --
     function renderStress(dt, now) {
         ctx.globalAlpha = .2;
         fontMain.draw(ctx, count + ' LIVE STRINGS', W / 2, 40, .7, 1);
-        fontSmall.draw(ctx, 'click to spawn 50 — push it to 2000', W / 2, 75, .7, 1);
+        fontSmall.draw(ctx, 'click to spawn 50 -- push it to 2000', W / 2, 75, .7, 1);
         ctx.globalAlpha = 1;
         drawCount += 2;
 
@@ -660,9 +660,9 @@
         }
     }
 
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     //  BOOT
-    // ═══════════════════════════════════════════════════════════
+    // ===========================================================
     requestAnimationFrame(loop);
 </script>
 </body>
