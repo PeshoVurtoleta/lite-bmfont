@@ -12,12 +12,13 @@
  *     T2  layout-buffer matrix (M2) T3  descriptor door (M3)
  *     T4  numeric door + oracle (M1) T5  reference-renderer fuzz (M4)
  *     T6  the zero-alloc gate (M0)  T7  soak + retention (M0)
+ *     T8  packaging + docs-drift (M7)
  *     T9  controls (must be able to fail, M0/M4)
  *
- * T8 (packaging, M7) is the last REGISTERED but empty tier -- it prints one
- * `torture: TODO -- ...` line to stderr and returns. A registered-empty tier is a
- * visible TODO; an unregistered one is a forgotten one. M4 filled T5, so the run
- * now carries exactly ONE TODO line, down from two.
+ * T8 (packaging / docs-drift, M7) is FILLED: pack contents, a DOM-free import of
+ * both entry points through the exports map in a clean child, and the docs-drift
+ * guard. Every registered tier now does real work, so the run carries ZERO TODO
+ * lines.
  *
  * lite-gc-profiler is one-measurement-at-a-time, so tiers run STRICTLY
  * SEQUENTIALLY -- never nested, never concurrent.

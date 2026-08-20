@@ -446,6 +446,38 @@ Renders a pre-laid-out `Float32Array` of lines into a box. See the **Wrapped Tex
 ### `destroy() -> void`
 Releases the atlas reference and typed arrays.
 
+## Atlas generation (subpath `@zakkster/lite-bmfont/atlas`)
+
+A COLD, boot-time helper for synthesizing a runnable mock BMFont atlas from a CSS
+font -- the demo's font source, now shipped so you do not have to copy it. It is
+the ONE allocating function in the package (one canvas + one descriptor + ~95
+char entries per call); a RATIFIED exception (`decisions/0009`), called once per
+theme at boot, never in a frame loop, and not precedent for allocating elsewhere.
+The core `BitmapFont.js` never imports it, so the main module stays DOM-free and
+`sideEffects: false`.
+
+```js
+import { generateAtlas } from '@zakkster/lite-bmfont/atlas';
+import { BitmapFont } from '@zakkster/lite-bmfont';
+
+const { atlas, json } = generateAtlas(36, "bold 36px monospace", '#39ff85', '#001a0a');
+const font = new BitmapFont(atlas, json);
+```
+
+#### `generateAtlas(size, fontCSS, fillColor, shadowColor?) -> { atlas, json }`
+- `size`: integer px in `[4, 512]` (feeds `common.base`; the lower bound is derived from `cellH - 4 >= 1`, not picked)
+- `fontCSS`: a CSS `font` shorthand, e.g. `"bold 36px monospace"`
+- `fillColor`: glyph fill color
+- `shadowColor`: optional drop-shadow color
+
+Fails closed with a named `AtlasError`, never a bare `Error`/`TypeError`: a
+missing DOM (`globalThis.document.createElement`), a null/unusable
+`getContext('2d')`, and a hostile DOM whose
+`createElement`/`getContext`/`measureText`/`fillText` throws are all re-thrown as
+`AtlasError` (carrying the original). A non-integer or out-of-range `size` throws
+rather than being normalized -- `size` feeds `common.base`, which
+`{ checked: true }` would reject, so a silent snap would launder a caller bug.
+
 ## Benchmark
 
 ```
@@ -479,6 +511,17 @@ count no gate can read drifts silently (F-43). `npm run torture` runs the ten-ti
 is proven by T3's 50-row abuse matrix and T9's control 10, and the pixel-snap
 promise by T5's allocating reference renderer plus two T9 controls that rebuild
 the rejected rounding variants and require the numbers to move.
+
+## What ships
+
+The published package is a single core module plus its optional atlas subpath --
+no build step, no bundler.
+
+| File | Subpath | Role |
+|------|---------|------|
+| `BitmapFont.js` / `BitmapFont.d.ts` | `@zakkster/lite-bmfont` | the zero-GC renderer (core) |
+| `Atlas.js` / `Atlas.d.ts` | `@zakkster/lite-bmfont/atlas` | COLD boot-time `generateAtlas` |
+| `README.md`, `CHANGELOG.md`, `llms.txt`, `LICENSE` | -- | docs + license |
 
 ## LLM-Friendly Documentation
 

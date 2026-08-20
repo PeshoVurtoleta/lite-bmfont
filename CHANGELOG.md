@@ -2,6 +2,40 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.8.0 -- 2026-08-20
+
+The atlas generator ships as a subpath export. `generateAtlas` -- previously
+duplicated inline in the demo -- is now `@zakkster/lite-bmfont/atlas` (`Atlas.js`
++ `Atlas.d.ts`). F-18 closes. The core `BitmapFont.js` changes exactly one line
+(the `VERSION` literal): no draw or measure body moves. Decision record:
+`decisions/0009-atlas-subpath.md`.
+
+`generateAtlas` is the package's ONE allocating function -- a boot-time COLD path
+(one canvas + one descriptor + ~95 char entries per call), called once per theme,
+labelled COLD in every doc surface and NOT precedent for allocating elsewhere. It
+fails closed with a named `AtlasError`, never a bare `Error`/`TypeError`: a
+missing DOM, a null `getContext('2d')`, OR a hostile `document` whose
+`createElement`/`getContext`/`measureText`/`fillText` throws are all re-thrown as
+`AtlasError` (carrying the original). A non-integer or out-of-range `size` (must
+be an integer in `[4, 512]`) throws rather than being normalized -- `size` feeds
+`common.base`, which `{ checked: true }` rejects; the lower bound 4 is derived
+from `cellH - 4 >= 1` (below it, glyph heights go non-positive).
+
+Note (publish window, 2026-08-20): the demo's `Atlas.js/+esm` CDN import 404s
+until 1.8.0 is published; the demo starts working the moment it is live.
+
+### Added
+
+- `@zakkster/lite-bmfont/atlas` subpath: `generateAtlas(size, fontCSS, fillColor, shadowColor?) -> { atlas, json }` and the `AtlasError` class.
+- T8 (packaging / docs-drift) torture tier filled: pack-contents check, a
+  DOM-free import of both entry points through the `exports` map in a clean
+  child, and a docs-drift guard that enumerates `BitmapFont.prototype` at runtime
+  and requires every method in `llms.txt` and `README.md`, both directions.
+
+### Closed (findings)
+
+- F-18: the duplicated demo helper is now a shipped, tested utility.
+
 ## 1.7.0 -- 2026-08-19
 
 `drawFast` renders exact digits at every magnitude. F-23 (inexact digit

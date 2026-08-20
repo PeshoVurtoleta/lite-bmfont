@@ -139,7 +139,7 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-15** | S3 | **`npm test` does not run at all.** The script is `vitest run`, `node_modules` is empty, and `vitest` is not installed: `sh: vitest: command not found`. The suite is 40 `it()` blocks in 3 `describe`s that nobody can execute. This also violates the suite Law directly ("`node:test` only"). | `npm test` -> `sh: vitest: command not found` |
 | **F-16** | S3 | **Packaging gaps against the suite Law.** No `CHANGELOG.md`, no `LICENSE` file, no `engines` field, no torture gate, no `prepublishOnly` gate that can pass. `files[]` is `[BitmapFont.js, BitmapFont.d.ts, llms.txt]` -- the Law requires README to ship. The README carries an inline changelog instead of a `CHANGELOG.md`. | `package.json`, `ls` |
 | **F-17** | S2 | **Every "zero allocation" claim in README and llms.txt is unproven.** README asserts it in seven places; there is no `measureAllocs`, no `measureOps`, no gate, and no devDep on `lite-gc-profiler` or `lite-leak`. The claim may well be true -- nothing in the repo can tell. | `grep -n "allocat" README.md llms.txt`; `devDependencies` is `{vitest}` |
-| **F-18** | S3 | **`generateAtlas` is duplicated, as the roadmap's Session 3 predicts.** `demo/demo-lite-bmfont.html:261` defines a 40-line `generateAtlas` and calls it four times; `tripple` needs the same function. | `demo/demo-lite-bmfont.html:261,309,313,317,321` |
+| **F-18** | S3 | **CLOSED in 1.8.0 (M7, decisions/0009).** Was: `generateAtlas` duplicated inline in `demo/demo-lite-bmfont.html` and called four times. Now shipped as the `@zakkster/lite-bmfont/atlas` subpath (`Atlas.js` + `Atlas.d.ts`); the demo imports it, defines it zero times. Closed by the extraction plus `test/findings.test.js` (F-18 closed-state + A2/A3/A6 behavioural proofs) and torture tier T8 (pack contents, DOM-free import through the exports map in a clean child, docs-drift guard). The core changed exactly one line (VERSION). | `test/findings.test.js` "F-18 CLOSED"; `node --expose-gc test/torture.mjs` T8 |
 | **F-19** | S3 | **Non-ASCII bytes in shipped `files[]`, violating the Law's ASCII-only rule** (U+00D7 and U+00B5 excepted). `BitmapFont.d.ts` is now CLEAN (de-Unicoded by M1: em dash, plus-minus, en dash in comments). Remaining debt: `BitmapFont.js` (10 lines -- U+2014 x10 plus one U+2026 at `:856`, so the char count is 11, not 10), `README.md` (47 lines: emoji, U+2192, U+2014, U+2026, en dash), `llms.txt` (10 lines: U+2014 x7, U+2026 x2, U+2013 x1). Docs (`README.md`, `llms.txt`) are de-Unicodeable in any session. No single behaviour fix touches all the affected source lines (the file header at line 1, and the `drawWrapped` doc block at 242-275), so the source de-Unicoding rides M9's hardening pass alongside the F-14 prototype freeze rather than being smeared across the behaviour sessions. | `grep -c -P '[^\x00-\x7F]' BitmapFont.js BitmapFont.d.ts README.md llms.txt` -> `10 / 0 / 47 / 10` |
 | **F-20** | S3 | **`draw()`/`drawFast()` center/right-align math is asserted only by directional inequality**, so an off-by-constant regression in the divisor is invisible to `npm test` and every wired torture tier. `drawWrapped()`'s align tests assert exact pixels (44, 88, 38) and are load-bearing; `draw`'s (`rec.dx[0] < 100`) are not. Closed prospectively by qa's `test/boundary.test.js`; the ported `BitmapFont.test.js` still carries the weak assertions. | scratch-edit `draw()`'s `... / 2` to `... / 3` -> `npm test` passes and `npm run torture` prints `ok`, exit 0 |
 | **F-21** | S3 | **T0 law 4 is vacuous -- the only kerning check in the torture gate never tests kerning (AR-02).** `FONT_KERN` kerns 3 pairs (A-B, B-A, A-A); the corpus is ASCII 33..126, so a random seam is 3/8836 = 0.034%. Under both shipped seeds ZERO eligible seams carry non-zero kerning, so law 4 degenerates to `left + right === full`. **Routed to M2**, which revises `t0-laws.mjs` and its corpus and builds the conservation law on top of it; fix by a seeded corpus planting A/B seams or a dense `FONT_KERN`, BEFORE the law leans on it. | default seed -> eligible 246, seams 0; seed 12345 -> eligible 247, seams 0. Deleting the kern term from `_measureRange` passes `npm run torture` clean |
@@ -170,6 +170,7 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-46** | S3 | **The suite Law's ASCII-only rule is enforced by nothing, and three of the six shipped files break it -- the main source file among them.** `../CLAUDE.md` Law reads "ASCII-only source (U+00D7 and U+00B5 excepted)". Measured by a full walk of the repo (excluding `node_modules` and `.git`), 2026-08-19 against published 1.6.0: **75 non-ASCII characters ship inside the npm tarball** -- `README.md` **56** (15 U+2014 em dash, 11 U+2192 arrow, 3 U+2026 ellipsis, 3 U+2013 en dash, and 24 emoji-region code points -- 21 pictograph glyphs plus 3 U+FE0F variation selectors -- over 18 distinct values, U+1F524 / U+1F680 / U+1FAB6 / U+1F5D2 among them; the punctuation above accounts for the other 32), `BitmapFont.js` **10** (9 U+2014, 1 U+2026 at `:1019`), `llms.txt` **9** (6 U+2014, 2 U+2026, 1 U+2013). `demo/demo-lite-bmfont.html` carries **1,121** more -- 1,062 U+2550 and 48 U+2500 in comment banners, 9 U+2014, 2 U+00B7 in visible markup -- but is absent from `package.json` `files[]`, so it breaks the Law without reaching a consumer. **Neither excepted code point appears anywhere in the repo**: all 1,196 characters are outside the exception, so the exception carries no weight here and the rule is simply unmet. Everything else is CLEAN -- `BitmapFont.d.ts`, `CHANGELOG.md`, `ROADMAP.md`, `LICENSE`, every file under `test/` and `decisions/`, and all nine `SESSION-*.md` -- which is the diagnostic detail: the discipline has held in every file authored since M0 and failed only in the three that predate it, the exact profile a missing gate produces rather than a lapse in care. **No character is behavioural.** The single one inside a source string position is `BitmapFont.js:1019`, and it is in a JSDoc sentence describing the ellipsis flag; the flag's implementation appends three ASCII '.' (code 46) and is untouched -- verified by reading the body, not inferred from the comment. Same class as F-14 and F-43 (a documented property no gate reads), but the property is the LAW rather than a count, and unlike F-43 the honest repair is a gate rather than a deletion: "every byte of every shipped file is < 0x80, except U+00D7 and U+00B5" is byte-checkable in one pass with no judgement in it. **CLOSED in 1.6.1 (M2b, `fd5aa35`).** The census went 1,196 -> **0** across all 39 tracked files, and the repair is a gate, not a sweep: `test/packaging.test.js` enumerates scope from `git ls-files` (never a filename list), reads each file as a Buffer, and fails closed on a broken enumeration, a NUL byte or invalid UTF-8 -- so a new TRACKED file carrying a non-ASCII byte reddens `npm test` on the day it is added, with no test edit. Proven non-vacuous in the wild: the 1.6.1 commit moved `decisions/0008-ascii-gate.md` from untracked to tracked, the scope went 38 -> 39 files, and the gate scanned the new file with no edit. `decisions/0008`. | full-repo `python3` walk: `README.md` 56, `BitmapFont.js` 10, `llms.txt` 9, `demo/demo-lite-bmfont.html` 1121, every other file 0; `grep -n "ascii\|ASCII\|charCodeAt\|0x7f" test/packaging.test.js` -> **0 hits**, so no gate exists to fail |
 
 | **F-47** | S3 | **`README.md` is not built on the blueprint the suite Law names, and the divergence is structural, not cosmetic.** The Docs Law in `../CLAUDE.md` says every README follows `LiteSepforge/README.md` "same spine, in order". Measured against it: bmfont has **no one-line blockquote tagline** under the title (the blueprint's line 3; bmfont goes straight from `# @zakkster/lite-bmfont` to the badge block), **no table of contents**, **no "What you get"**, **no `<details>` deep-dive** (blueprint has **2**, bmfont has **0**), **no Composability section with an end-to-end pipeline**, **no `<details>` Zero-GC design notes with an allocation table**, **no "Design decisions worth knowing"**, **no "What this is not"**, and **no Ecosystem section** -- nine of the spine's rows absent. In their place sit four headings the spine does not have: `What is lite-bmfont?` (where the spine wants the positioning H2 "The X the ecosystem was missing"), `Comparison`, `LLM-Friendly Documentation` and `Changelog`. Every H2 carries a leading emoji, which the blueprint has none of -- the same 24 emoji-region code points F-46 counts, so the two findings overlap on the emoji and nowhere else: F-46 is satisfied by deleting them, F-47 is not. The file also disagrees with ITSELF on the arrow convention the Law fixes as `->`: **11 U+2192 and 17 ASCII `->`, mixed inside one API reference** -- `measure(text, scale?) U+2192 number` at `:240` sits eleven lines above `measureWidest(text, scale?) -> number` at `:251`. That split is the dating evidence: sections written later followed the Law and nothing went back for the earlier ones, the identical profile F-46 shows across files. The peer `LiteTextLayout/README.md` and the blueprint itself both measure **0** non-ASCII, so bmfont is the outlier in the suite and not the norm. **NOT routed to M2b.** M2b is a mechanical byte sweep with a gate behind it and a proof that no executable byte moved; a spine rewrite is an authoring session with different risk, different review, and no byte-level acceptance test, and folding it in would destroy M2b's one clean claim. Filed for its own session, unscheduled. | `grep -n "^#\{1,3\} " README.md` -> 30 headings, 21 of the blueprint's spine rows unmatched; `grep -c "<details>" README.md` -> **0** vs blueprint **2**; `grep -n -i "table of contents\|Composability\|Design decisions\|What this is not\|^## Ecosystem" README.md` -> **0 hits**; `README.md` line 2 is blank where the blueprint's line 3 is the tagline; U+2192 x11 vs `->` x17 in one file |
+| **F-48** | S4 | **`Atlas.js` door 3c re-labels a genuine internal bug as a caller DOM failure.** M7's fix for a real fail-open (hostile `createElement`/`getContext` throws escaping as a bare `Error`/`TypeError`, contradicting the `AtlasError` promise shipped in four files) wraps the WHOLE DOM interaction -- `createElement`, `getContext`, and the per-glyph `measureText`/`fillText` loop -- in one `try`. That `try` also spans the pure-JS glyph arithmetic, so a defect INSIDE `generateAtlas` is caught and re-thrown as `AtlasError { field: 'dom' }` reading "generateAtlas failed while building the atlas from the DOM", when the DOM is healthy. Found by qa 2026-08-20 on a probe the coordinator asked for specifically, on the theory that the fix for a narrow fail-open had traded it for a broad mis-attribution -- it had. **S4, not S3**: it is a debuggability defect, not a correctness or safety one. The call still FAILS CLOSED and LOUDLY (nothing is swallowed or returned), no shipped doc claims the `field` values are exhaustive (`Atlas.d.ts` says "e.g."), and any such regression still reddens `A6`, which calls `generateAtlas` unguarded. **NOT fixed in 1.8.0, deliberately.** The repair carries a design choice -- which operations count as "the DOM" -- and inventing that narrowing after qa had already returned PASS would be an unreviewed late edit to the one file the whole session's review chain was built around. The honest move is to record it and let it be scoped. Fix shape when scheduled: narrow the `try` to the three DOM calls only, leaving the glyph math outside it, or pin the allowed `field` values so a mis-attribution reddens. Cheap either way -- the subpath ships with zero consumers. Unscheduled. | Under a HEALTHY `makeDocStub`, inject a reference to an undefined variable inside the per-glyph loop of `Atlas.js` -> throws `AtlasError`, `field: 'dom'`, message `generateAtlas failed while building the atlas from the DOM: totallyUndefinedInternalVar is not defined` -- a library bug reported as a caller-environment bug |
 
 (Every non-ASCII code point named in the F-46 row above is written as a `U+XXXX`
 escape, never as the character itself, so this file stays ASCII while describing
@@ -589,7 +590,7 @@ M2b appears in no arrow above on purpose: it carries `depends_on: []` and
 since M0. It has a position in ship order and no position in lineage.
 
 SHIP ORDER is not lineage order. Shipped: M0..M4a, M8 (1.5.0), M2a (1.6.0),
-M2b (1.6.1). M2a depended on M2 but was scheduled ahead of M8b because it
+M2b (1.6.1), M8b (1.7.0). M2a depended on M2 but was scheduled ahead of M8b because it
 BLOCKED a peer package (`@zakkster/lite-text-layout` TL5); its brief is filed
 next to M8b's, in ship order, not next to M2's. M2b (1.6.1, F-46) shipped the
 ASCII gate the Law had never had, taken before M8b because it is cheap,
@@ -598,8 +599,33 @@ behaviour-free, and because M8b rewrites the very comment block that carried
 **M8b's T20 ("strip the 11 non-ASCII characters") is now DISCHARGED before the
 session opens**, and M8b
 authors into a file that already enforces the rule instead of being re-edited
-after. Next: **M8b** (1.7.0, F-23 + F-44), re-baselined onto `fd5aa35` --
-see `SESSION-M8b.md` section 0.7.
+after. M8b then SHIPPED (1.7.0, 2026-08-20), re-baselined onto `fd5aa35` --
+see `SESSION-M8b.md` section 0.7. It closed the package's only open S2 (F-23)
+and closed F-44 as MISDIAGNOSED rather than fixed, which is the more useful of
+the two results: a measured cost was real and its stated mechanism was not.
+
+Four sessions remained after it -- M5, M6, M7, M9 -- and **none was forced by
+an open finding**: every S1 and S2 in section 2 is now closed. So the next one
+was a CHOICE, not a queue pop. Next: **M7** (1.8.0, F-18), planned 2026-08-20 --
+see `SESSION-M7.md`. Chosen over M5 on three grounds, recorded because "we
+picked the next one" is not a reason:
+
+1. **It is the only remaining session whose dependencies were satisfied on day
+   one** (`depends_on: [M0]`). M5 blocks M6 and starts the chain that ends in
+   M9; M7 hangs off nothing.
+2. **It closes the last hole in the gate itself.** T8 is REGISTERED BUT EMPTY
+   and has been since M0 -- the torture run's one remaining TODO line. A
+   registered-empty tier reports as passing while proving nothing, which is the
+   fail-closed Law's own failure mode sitting inside the harness that enforces
+   it. M7 is the session that owns filling it.
+3. **It closes the last watch-todo in `npm test`** (F-18) that any session
+   short of M9 can close. Afterwards `npm test` carries one todo (F-14, M9's)
+   and the torture run carries zero.
+
+M5 and M6 keep their order behind it; M9 still depends on all of them. F-47
+(the README spine) stays filed and unscheduled -- an authoring session with no
+byte-level acceptance test, deliberately not folded into a session that has
+one.
 
 VERSION TARGETS COLLIDE AND ARE NOT RESERVATIONS EITHER. Whichever session is
 PLANNED first takes the number; the other is re-stamped at plan time. Do not
@@ -610,7 +636,7 @@ wrong. Current state of the three unscheduled sessions:
 |---|---|---|
 | M5 | `1.5.0` | CONSUMED by M8 on 2026-08-18. Left stale deliberately; re-stamp at plan time. |
 | M6 | `unassigned` | was `1.6.0`, CONSUMED by M2a. Cleared 2026-08-19 rather than guessed. |
-| M7 | `1.7.0` | COLLIDES with M8b, which holds it and is planned. |
+| M7 | `1.8.0` | RE-STAMPED 2026-08-20. Was `1.7.0`, CONSUMED by M8b; M7 was planned the same day, so it re-stamped instead of aging stale. This is the rule working as written. |
 
 A stamped-but-consumed number is worse than none: it reads as a reservation and
 it is not one. M6 now carries `unassigned` for exactly that reason.
@@ -618,9 +644,10 @@ it is not one. M6 now carries `unassigned` for exactly that reason.
 DECISION NUMBERS ARE ISSUED AT PLAN TIME, NOT RESERVED. The reservations below
 are stale: M6 reserves `0006-range-parameters.md`, M7 `0007-atlas-subpath.md`,
 M8 `0008-drawfastint.md` -- but M8 shipped `0005-drawfastint.md`. Issued so far:
-0001-0006 and 0008 shipped (0006 = M2a, **0008 = M2b**), **0007 = M8b, issued
-but not yet written** -- so 0008 ships BEFORE 0007 exists. That gap is recorded,
-not closed: renumbering 0007 to make filenames sort by ship date would be the
+0001-0008 shipped (0006 = M2a, **0008 = M2b**, **0007 = M8b, written and
+shipped 2026-08-20 in 1.7.0**) -- so 0008 shipped BEFORE 0007 existed, and the
+directory now sorts by plan order while the CHANGELOG sorts by ship order. That
+gap is recorded, not closed: renumbering 0007 to make filenames sort by ship date would be the
 reservation habit this very rule condemns, in tidier clothes. M2b issued 0008
 because it is planned AFTER M8b was, so it takes the next free number, not the
 next ship-order one; decision numbers follow plan order and ship order is free
@@ -2184,17 +2211,47 @@ DONE WHEN
 ```markdown
 ---
 package: "@zakkster/lite-bmfont"
-version_target: 1.7.0
-status: planned
+version_target: 1.8.0  # RE-STAMPED 2026-08-20 at plan time; was 1.7.0, which
+                       # M8b consumed. Additive subpath export -> MINOR.
+status: next           # IMPLEMENTED 2026-08-20, tree modified &
+                       # UNCOMMITTED, awaiting the user's publish -- NOT `done`
+                       # until 1.8.0 is released. Baseline 32b5304 (1.7.0).
+                       # Pipeline: planner -> coder -> reviewer (APPROVED, 2
+                       # nits, both closed) -> qa (FAIL, 4 findings, all fixed)
+                       # -> qa (PASS). Gate at PASS: 126 tests / 125 pass /
+                       # 0 fail / 1 todo (F-14, M9's); torture ok, exit 0,
+                       # ZERO TODO lines -- T8 is filled, so the run carries no
+                       # TODO for the first time since M0. All 11 body shas
+                       # identical to 32b5304; BitmapFont.js diff is one line.
+                       # F-18 CLOSED. F-48 OPENED by qa (S4, Atlas.js door 3c
+                       # mis-attributes an internal bug as a DOM failure) and
+                       # deliberately NOT fixed here -- see its row.
+                       # Read SESSION-M7.md section 0 FIRST: this brief predates
+                       # M0 and five releases have landed on it. Nine drift rows
+                       # (R-1..R-9) override the body below, including an
+                       # assertion that is UNSATISFIABLE as written (R-3: "git
+                       # diff --stat BitmapFont.js is empty" cannot hold when
+                       # VERSION lives in that file) and a decision number that
+                       # is already taken (R-2: 0007 is M8b's; M7 issues 0009).
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: []
-findings: [F-18]
+findings: [F-18]      # CLOSED in 1.8.0. F-48 opened by this session's qa.
 depends_on: [M0]
 blocks: [M9]
 ---
+
+PUBLISH-WINDOW EXPOSURE (recorded 2026-08-20, M7 -- NO gate in this repo can see it)
+  The demo now imports `https://cdn.jsdelivr.net/npm/@zakkster/lite-bmfont/Atlas.js/+esm`.
+  That URL 404s from the moment this lands until 1.8.0 is published to npm and
+  jsDelivr fetches it -- a live but broken demo for the whole window. This is
+  UNGATED and unavoidable (the same is true of any CDN-consuming demo on a
+  release), and it is dated so it is not mistaken for a code fault. It closes on
+  publish. The demo uses the CDN FILE path (`Atlas.js/+esm`), not `/atlas/+esm`:
+  jsDelivr resolves file paths reliably but not package `exports` subpaths (R-7,
+  decisions/0009). The npm-consumer contract stays `@zakkster/lite-bmfont/atlas`.
 
 # lite-bmfont -- three copies of generateAtlas is a missing feature
 
@@ -2770,10 +2827,19 @@ DONE WHEN
 ---
 package: "@zakkster/lite-bmfont"
 version_target: 1.7.0  # was 1.6.0; M2a (F-45) took 1.6.0 on 2026-08-19
-status: queued         # created 2026-08-18 by M8 (decisions/0005 fork 1). F-23
-                       # is the only open S2 in the package; it is re-routed here
-                       # with its own brief rather than left as a sentence in a
-                       # decision doc, which is how it drifted the first time.
+status: done           # shipped 2026-08-20 (published, commit 32b5304); 121
+                       # tests (119 pass, 0 fail, 2 todo), torture ok, one TODO
+                       # (T8, M7's). F-23 CLOSED, F-44 CLOSED as MISDIAGNOSED.
+                       # decisions/0007 written and shipped. Created 2026-08-18
+                       # by M8 (decisions/0005 fork 1). F-23 was the only open S2
+                       # in the package; it was re-routed here with its own brief
+                       # rather than left as a sentence in a decision doc, which
+                       # is how it drifted the first time. Re-baselined onto
+                       # fd5aa35 before the coder started (SESSION-M8b.md 0.7,
+                       # rows R-1..R-8): two intervening releases had moved the
+                       # sha freeze, discharged T20, and invalidated an assertion
+                       # twin. Without that pass A12 would have been red before a
+                       # line was written.
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0

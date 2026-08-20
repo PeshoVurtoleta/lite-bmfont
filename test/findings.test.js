@@ -23,7 +23,9 @@
  * newlines, which is a documented contract now, pinned in `BitmapFont.test.js`
  * block "F-06: measure still sums across newlines".
  *
- * The TWO remaining watch-todos are F-14 and F-18.
+ * The ONE remaining watch-todo is F-14. F-18 was CLOSED in 1.8.0 (M7): its block
+ * below flipped from a todo watching the demo duplication to a real test of the
+ * CLOSED state (generateAtlas now ships as the `/atlas` subpath).
  *
  * Every block below is `test.todo(...)`: it still RUNS and its result is
  * printed, but a todo failure does not fail `npm test`'s exit code. That is
@@ -57,7 +59,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createLeakTracker } from '@zakkster/lite-leak';
 import { BitmapFont } from '../BitmapFont.js';
+import { generateAtlas, AtlasError } from '../Atlas.js';
+import { generateAtlasV0 } from './torture/fixtures/atlas-verbatim.mjs';
+import { makeDocStub } from './torture/fixtures/dom-stub.mjs';
 import { rec, resetRec, JSON_ASCII, ATLAS } from './torture/harness.mjs';
 
 // F-03 (the NaN guard polarity) was FIXED in M2. Its watch-todo is removed here;
@@ -115,13 +121,182 @@ test.todo('F-14 (freeze half): BitmapFont.prototype is still mutable -- deferred
     f.draw = original;
 });
 
-test.todo('F-18: generateAtlas is duplicated in the demo, not shared as a utility', () => {
+// F-18 is CLOSED in 1.8.0 (M7, decisions/0009): generateAtlas is no longer a
+// demo-local duplicate -- it ships as the `@zakkster/lite-bmfont/atlas` subpath
+// (Atlas.js) and the demo imports it. This block was the watch-todo that
+// asserted the duplication STILL existed; it is now a real test of the CLOSED
+// state. The A2/A3/A6 blocks below prove the extraction preserved behaviour and
+// fails closed. (A5 pack contents, A3(i) clean-child import and A4 docs-drift
+// live in the T8 torture tier, which needs a subprocess and the real tarball.)
+test('F-18 CLOSED: generateAtlas ships as a subpath, the demo imports it', () => {
     const html = readFileSync(new URL('../demo/demo-lite-bmfont.html', import.meta.url), 'utf8');
     const defCount = (html.match(/function generateAtlas\(/g) || []).length;
-    const callCount = (html.match(/generateAtlas\(/g) || []).length; // includes the definition
-    assert.equal(defCount, 1);          // defined once, inline in the demo
-    assert.equal(callCount, 5);         // 1 definition + 4 call sites
-    // No shared/exported copy exists anywhere else in the shipped surface.
+    const callCount = (html.match(/generateAtlas\(/g) || []).length; // call sites only now
+    assert.equal(defCount, 0);          // no inline definition remains
+    assert.equal(callCount, 4);         // the four font-bank call sites
+    // The demo imports the CDN file path for the subpath.
+    assert.match(html, /import\s*\{generateAtlas\}\s*from\s*'https:\/\/cdn\.jsdelivr\.net\/npm\/@zakkster\/lite-bmfont\/Atlas\.js\/\+esm'/);
+    // The core still carries no atlas code -- the extraction did not leak into it.
     const src = readFileSync(new URL('../BitmapFont.js', import.meta.url), 'utf8');
     assert.equal(src.includes('generateAtlas'), false);
+});
+
+// A6 -- STEP-2 EQUIVALENCE. The shipped, doored generateAtlas produces
+// byte-identical descriptors and identical canvas dimensions to the frozen
+// verbatim body for every demo argument tuple, so the CLEAN edit provably
+// preserved behaviour. Reddens if a body constant (e.g. cellW) is changed.
+test('A6: doored generateAtlas matches the frozen verbatim body on the demo tuples', () => {
+    const TUPLES = [
+        [36, "bold 36px 'Fira Code', monospace", '#39ff85', '#001a0a'],
+        [28, "800 28px 'Outfit', sans-serif", '#ffb830', '#1a0c00'],
+        [18, "500 18px 'Outfit', sans-serif", '#c8c8e0', '#000'],
+        [48, "bold 48px 'Fira Code', monospace", '#ff4090', '#200010'],
+    ];
+    const prev = globalThis.document;
+    globalThis.document = makeDocStub();
+    try {
+        for (const t of TUPLES) {
+            const a = generateAtlas(...t);
+            const b = generateAtlasV0(...t);
+            assert.deepStrictEqual(a.json, b.json, 'descriptor differs for size ' + t[0]);
+            assert.equal(a.atlas.width, b.atlas.width, 'canvas width differs for size ' + t[0]);
+            assert.equal(a.atlas.height, b.atlas.height, 'canvas height differs for size ' + t[0]);
+        }
+        // The descriptor must satisfy the { checked: true } door it was built for.
+        const { atlas, json } = generateAtlas(...TUPLES[0]);
+        assert.doesNotThrow(() => new BitmapFont(atlas, json, { checked: true }));
+    } finally {
+        if (prev === undefined) delete globalThis.document; else globalThis.document = prev;
+    }
+});
+
+// A3 -- DOM DOORS. The DOM-FREE-IMPORT direction (A3(i)) is NOT tested here: a
+// static `import '../Atlas.js'` at the top of this file already resolves the
+// module in a DOM-free Node process, so an in-process A3(i) would be preempted
+// -- its mutation (a module-scope bare-`document` read) crashes the whole file
+// before any test registers, and any weaker mutation reddens A6 first. The
+// genuine, non-redundant proof lives in torture tier T8 (`checkCleanChildImport`
+// in t8-packaging.mjs): it imports BOTH entry points through the `exports` map
+// in a CLEAN CHILD process, which the exports-map mutation reddens while
+// `npm test` stays green.
+test('A3(ii): generateAtlas without a DOM throws a NAMED AtlasError, not a TypeError', () => {
+    const prev = globalThis.document;
+    if (prev !== undefined) delete globalThis.document;
+    try {
+        let e = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { e = x; }
+        assert.ok(e instanceof AtlasError, 'expected AtlasError, got ' + (e && e.constructor && e.constructor.name));
+        assert.equal(e.name, 'AtlasError');
+        assert.ok(!(e instanceof TypeError), 'a bare TypeError escaped the DOM door');
+        assert.match(e.message, /^lite-bmfont: generateAtlas requires a DOM/);
+    } finally {
+        if (prev !== undefined) globalThis.document = prev;
+    }
+});
+test('A3(size): a non-integer or out-of-range size throws AtlasError, does not normalize', () => {
+    const prev = globalThis.document;
+    globalThis.document = makeDocStub();
+    try {
+        // 1/2/3 are below the DERIVED lower bound (cellH - 4 >= 1 => size >= 4):
+        // they would emit glyph heights -3/-2/0 that { checked: true } waves through.
+        for (const bad of [36.5, 0, -1, 1, 2, 3, 513, NaN]) {
+            let e = null;
+            try { generateAtlas(bad, 'x', '#fff'); } catch (x) { e = x; }
+            assert.ok(e instanceof AtlasError, 'size ' + bad + ' did not throw AtlasError');
+            assert.match(e.message, /^lite-bmfont: generateAtlas size must be an integer/);
+        }
+        // twin: the smallest legal size (4) and a demo size (36) do NOT throw, and
+        // every emitted glyph height is positive -- the whole point of the bound.
+        for (const good of [4, 36]) {
+            const { json } = generateAtlas(good, 'x', '#fff');
+            for (const ch of json.chars) {
+                assert.ok(ch.height >= 1, 'size ' + good + ' emitted height ' + ch.height + ' < 1');
+            }
+        }
+    } finally {
+        if (prev === undefined) delete globalThis.document; else globalThis.document = prev;
+    }
+});
+
+// FIX 1 -- the 2d context is an unverified state. createElement can hand back an
+// element with no getContext, and getContext('2d') can return null under memory
+// pressure. Both must throw the AtlasError the header promises, never a bare
+// TypeError one step later ("null is not zero").
+test('A3(context): a null or unusable 2d context throws AtlasError, not a TypeError', () => {
+    const prev = globalThis.document;
+    try {
+        // (a) getContext returns null.
+        globalThis.document = { createElement: () => ({ width: 0, height: 0, getContext: () => null }) };
+        let e = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { e = x; }
+        assert.ok(e instanceof AtlasError, 'null context did not throw AtlasError, got ' + (e && e.constructor && e.constructor.name));
+        assert.ok(!(e instanceof TypeError), 'a bare TypeError escaped the null-context door');
+        assert.match(e.message, /2d context/);
+
+        // (b) createElement returns an element with no getContext at all.
+        globalThis.document = { createElement: () => ({ width: 0, height: 0 }) };
+        e = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { e = x; }
+        assert.ok(e instanceof AtlasError, 'no-getContext did not throw AtlasError, got ' + (e && e.constructor && e.constructor.name));
+        assert.ok(!(e instanceof TypeError), 'a bare TypeError escaped the getContext door');
+        assert.match(e.message, /no getContext/);
+
+        // (c) createElement itself THROWS a plain Error -> AtlasError, not Error.
+        globalThis.document = { createElement: () => { throw new Error('boom-create'); } };
+        e = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { e = x; }
+        assert.ok(e instanceof AtlasError, 'throwing createElement did not become AtlasError, got ' + (e && e.constructor && e.constructor.name));
+        assert.match(e.message, /boom-create/); // the original is carried, not swallowed
+
+        // (d) getContext THROWS a plain Error -> AtlasError, not Error.
+        globalThis.document = { createElement: () => ({ width: 0, height: 0, getContext: () => { throw new Error('boom-ctx'); } }) };
+        e = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { e = x; }
+        assert.ok(e instanceof AtlasError, 'throwing getContext did not become AtlasError, got ' + (e && e.constructor && e.constructor.name));
+        assert.match(e.message, /boom-ctx/);
+
+        // (e) a hostile createElement throws a TypeError internally -> AtlasError,
+        // NOT the bare TypeError the shipped docs promise never escapes.
+        globalThis.document = { createElement: () => { undefined.foo; } };
+        e = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { e = x; }
+        assert.ok(e instanceof AtlasError, 'internal TypeError escaped as ' + (e && e.constructor && e.constructor.name));
+        assert.ok(!(e instanceof TypeError), 'a bare TypeError escaped the DOM wrap');
+
+        // twin: a healthy stub still succeeds.
+        globalThis.document = makeDocStub();
+        assert.doesNotThrow(() => generateAtlas(36, 'x', '#fff'));
+    } finally {
+        if (prev === undefined) delete globalThis.document; else globalThis.document = prev;
+    }
+});
+
+// A2 -- RETENTION + GC. 200 generateAtlas calls with results dropped; every
+// returned atlas is registered with lite-leak (a primitive tag, a module-level
+// NOOP cleanup -- neither closes over the atlas, per the held-value contract).
+// After gc() the tracker returns to 0. A canvas pool inside generateAtlas would
+// hold all 200 and this reddens.
+const ATLAS_NOOP = function () {};
+test('A2: generateAtlas retains nothing -- 200 dropped atlases collect to 0', async () => {
+    const tracker = createLeakTracker({ name: 'bmfont-atlas' });
+    const prev = globalThis.document;
+    globalThis.document = makeDocStub();
+    // Churn in a helper so no stack slot retains the last atlas past the loop.
+    function churn() {
+        for (let i = 0; i < 200; i++) {
+            const { atlas } = generateAtlas(36, "bold 36px monospace", '#fff');
+            tracker.track(atlas, ATLAS_NOOP, i);
+        }
+    }
+    try {
+        churn();
+        assert.equal(tracker.size(), 200, 'expected 200 tracked atlases mid-churn');
+        for (let k = 0; k < 6; k++) {
+            globalThis.gc?.();
+            await new Promise((r) => setTimeout(r, 30));
+        }
+        assert.equal(tracker.size(), 0, 'atlases outlived their owner: ' + tracker.size());
+    } finally {
+        if (prev === undefined) delete globalThis.document; else globalThis.document = prev;
+    }
 });

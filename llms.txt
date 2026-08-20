@@ -15,7 +15,7 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0-255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.7.0'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.8.0'.
 
 ## Export: BitmapFontError (class extends RangeError)
 The one error the constructor throws (F-10). Extends RangeError, so a
@@ -285,13 +285,49 @@ font.drawWrapped(ctx, 'Hello world...', layout, n, 200, 100, 10, 10, 1, 1, 1); /
 - BMFontChar  = { id, x, y, width, height, xoffset, yoffset, xadvance }
 - BMFontKerning = { first, second, amount }
 
+## Subpath: @zakkster/lite-bmfont/atlas
+import { generateAtlas } from '@zakkster/lite-bmfont/atlas';
+A COLD, boot-time helper on its own subpath so the core imports nothing and stays
+DOM-free in Node (decisions/0009). Not loaded unless asked for.
+
+## Export: generateAtlas (function, COLD)
+COLD, ALLOCATES -- the ONE allocating function in the package. Synthesizes a full
+printable-ASCII mock BMFont atlas from a CSS font and returns { atlas, json }
+ready for new BitmapFont(atlas, json). One canvas + one descriptor + ~95 char
+entries PER CALL: a RATIFIED allocation exception (decisions/0009), called once
+per theme at boot, NEVER in a frame loop, and NOT precedent for allocating
+anywhere else. Signature (kept out of the method-signature column so the
+docs-drift guard does not read it as a prototype method):
+
+```
+generateAtlas(size, fontCSS, fillColor, shadowColor?) -> { atlas, json }
+  size        integer px in [4, 512] (feeds common.base; lower bound derived from cellH - 4 >= 1)
+  fontCSS     a CSS font shorthand, e.g. "bold 36px monospace"
+  fillColor   glyph fill color
+  shadowColor optional drop-shadow color
+```
+
+Fails closed with AtlasError, never a bare Error/TypeError: a missing DOM
+(globalThis.document.createElement), a null/unusable getContext('2d'), and a
+hostile DOM whose createElement/getContext/measureText/fillText throws are all
+re-thrown as AtlasError (carrying the original). A non-integer or out-of-range
+size throws rather than normalizing -- size feeds common.base and { checked: true }
+would reject a fractional base, so a silent snap would launder a caller bug.
+
+## Export: AtlasError (class extends Error)
+The one error generateAtlas throws. name === 'AtlasError'; own properties field
+(the offending field, 'document' or 'size') and value (the received value). Every
+message starts 'lite-bmfont: '.
+
 See source file BitmapFont.js for full JSDoc API documentation.
 
 ## Testing
 - Gate: `npm test` -> 0 failures. `node --expose-gc test/torture.mjs` -> prints
   exactly `ok`, exit 0. Test files: BitmapFont.test.js, boundary.test.js,
-  findings.test.js, packaging.test.js (version sync). Counts are not pinned in
-  docs -- nothing reads them, and they drifted in 1.4.0 (F-43). M4 closed F-07 / F-34 / F-35 / F-36 as
+  findings.test.js (F-18 closure + the atlas extraction proofs), packaging.test.js
+  (version sync + the ASCII-only Law). Torture tier T8 owns pack contents, the
+  DOM-free import through the exports map, and the docs-drift guard. Counts are
+  not pinned in docs -- nothing reads them, and they drifted in 1.4.0 (F-43). M4 closed F-07 / F-34 / F-35 / F-36 as
   real assertions and half-closed F-06 (measureWidest ships; measure's semantics
   stay M9's). F-08's storage half stays open (M9).
 - npm run torture -> node --expose-gc test/torture.mjs: prints exactly "ok", exit 0.

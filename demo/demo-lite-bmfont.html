@@ -253,54 +253,15 @@
     //  NPM IMPORTS
     // ===========================================================
     import {BitmapFont} from 'https://cdn.jsdelivr.net/npm/@zakkster/lite-bmfont/+esm';
+    // generateAtlas ships as the `@zakkster/lite-bmfont/atlas` subpath (F-18).
+    // The demo imports the CDN FILE path (Atlas.js), not `/atlas/+esm`: jsDelivr
+    // resolves file paths reliably but does NOT guarantee package `exports`
+    // subpaths. An npm consumer still imports `@zakkster/lite-bmfont/atlas`.
+    // PUBLISH WINDOW (2026-08-20): this URL 404s until 1.8.0 is published to npm
+    // and jsDelivr fetches it. The demo is intentionally broken for that window;
+    // it starts working the moment 1.8.0 is live.
+    import {generateAtlas} from 'https://cdn.jsdelivr.net/npm/@zakkster/lite-bmfont/Atlas.js/+esm';
     import {Viewport} from 'https://cdn.jsdelivr.net/npm/lite-viewport/+esm';
-
-    // ===========================================================
-    //  ATLAS GENERATOR -- creates a full ASCII mock BMFont at runtime
-    // ===========================================================
-    function generateAtlas(size, fontCSS, fillColor, shadowColor) {
-        const chars = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~';
-        const c = document.createElement('canvas');
-        const cols = 16, cellW = size * 1.2 | 0, cellH = size * 1.4 | 0;
-        const rows = Math.ceil(chars.length / cols);
-        c.width = cols * cellW;
-        c.height = rows * cellH;
-        const x = c.getContext('2d');
-        x.textBaseline = 'top';
-        x.font = fontCSS;
-
-        const json = {common: {lineHeight: cellH, base: size}, chars: [], kernings: []};
-
-        for (let i = 0; i < chars.length; i++) {
-            const ch = chars[i];
-            const col = i % cols, row = (i / cols) | 0;
-            const px = col * cellW + 2, py = row * cellH + 2;
-            const m = x.measureText(ch);
-            const w = Math.ceil(m.width) + 4;
-
-            if (shadowColor) {
-                x.shadowColor = shadowColor;
-                x.shadowBlur = 3;
-                x.shadowOffsetX = 1;
-                x.shadowOffsetY = 2;
-            }
-            x.fillStyle = fillColor;
-            x.fillText(ch, px, py);
-            x.shadowBlur = 0;
-
-            json.chars.push({
-                id: ch.charCodeAt(0),
-                x: px,
-                y: py,
-                width: w,
-                height: cellH - 4,
-                xoffset: 0,
-                yoffset: 0,
-                xadvance: w - 2
-            });
-        }
-        return {atlas: c, json};
-    }
 
     // ===========================================================
     //  FONT BANK -- multiple styled fonts from one generator

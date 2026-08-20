@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-bmfont",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Zero-GC bitmap font canvas renderer. O(1) kerning via 64K Int16 LUT, multi-line alignment, zero-alloc numeric HUD output, and pre-laid-out wrapped text with H/V alignment + ellipsis.",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "license": "MIT",
@@ -14,11 +14,19 @@
       "node": "./BitmapFont.js",
       "import": "./BitmapFont.js",
       "default": "./BitmapFont.js"
+    },
+    "./atlas": {
+      "types": "./Atlas.d.ts",
+      "node": "./Atlas.js",
+      "import": "./Atlas.js",
+      "default": "./Atlas.js"
     }
   },
   "files": [
     "BitmapFont.js",
     "BitmapFont.d.ts",
+    "Atlas.js",
+    "Atlas.d.ts",
     "README.md",
     "CHANGELOG.md",
     "llms.txt",
@@ -68,7 +76,7 @@
     "test:watch": "node --test --watch test/*.test.js",
     "torture": "node --expose-gc test/torture.mjs",
     "verify": "npm test && npm run torture",
-    "smoke": "node -e \"import('./BitmapFont.js').then(m => { if (typeof m.BitmapFont !== 'function' || typeof m.VERSION !== 'string') { process.exit(1); } })\"",
+    "smoke": "node -e \"Promise.all([import('./BitmapFont.js'), import('./Atlas.js')]).then(([m, a]) => { if (typeof m.BitmapFont !== 'function' || typeof m.VERSION !== 'string' || typeof a.generateAtlas !== 'function') { process.exit(1); } })\"",
     "prepublishOnly": "npm run verify && npm run smoke"
   }
 }
