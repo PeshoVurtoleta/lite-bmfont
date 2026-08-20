@@ -598,6 +598,19 @@ renderer can decline to act, a query cannot decline to answer.** A caller who
 passes `scale: NaN` to both in one frame gets zero pixels and a NaN width, and
 both are honest.
 
+**Supersession marker, M9pre 2026-08-21 (F-40 docs half).** The M4a amendment
+above (2026-08-18) is CONFIRMED and stands as the record: NaN is what the measure
+family DOORS emit for an argument they cannot use, and it is NOT a unique signal
+-- a constructed font can also produce NaN or Infinity by arithmetic at an
+extreme in-door scale (advances 32767 / -32768, `measure('AB', Number.MAX_VALUE)`
+-> NaN; advance 32767, `measure('A', Number.MAX_VALUE)` -> Infinity). The
+ORIGINAL claim -- "a font that constructs cannot produce a NaN width from valid
+input" -- is left VERBATIM above under its own dated marker, on purpose: a dated
+measurement is evidence, and evidence is not edited when it turns out to have
+been read wrong. The behaviour half -- whether the scale door should carry an
+upper bound below Infinity, and what it is -- remains 2.0.0's, alongside F-08's
+storage half (decisions/0011 fork 7).
+
 ## Fork (5) -- what `measureLine` returns for an EMPTY range
 
 Not asked anywhere in the brief. It must be settled, because fork (3)'s clamp

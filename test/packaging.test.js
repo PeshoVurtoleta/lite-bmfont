@@ -148,3 +148,43 @@ test('A11 (M5): the ten shipped method bodies are frozen (draw must not move)', 
             (names[i] === 'draw' ? 'draw MUST NOT change in M5' : 'an unintended edit'));
     }
 });
+
+// F-26 (M9pre) -- the SOURCE-TEXT pin, recorded as a WEAKER class of assertion.
+// The F-03 guard reshape `if (!(id >= 0 && id < 256)) continue;` lives in three
+// hot bodies (draw, drawWrapped, layoutGlyphs) and is unfalsifiable through the
+// public API -- none of those three takes a range parameter, so no public call
+// can drive a NaN id into the guard. KEEP wins over delete (SESSION-M9pre S4):
+// deleting the reshape writes the NaN-ACCEPTING `id < 0 || id >= 256` form -- the
+// F-03 corruption -- back into three bodies on the theory no future call path
+// reaches them, and "no future call path" is an unverified state the Law fails
+// closed on. So the three sites are KEPT and pinned HERE by source text. This is
+// weaker than every behavioural assertion in the suite and is recorded as such;
+// it must NOT be described anywhere as behavioural coverage. The behavioural twin
+// that DOES redden is _measureRange's guard, killed by T0 law 11 (it takes
+// start/end). R-17: the count is THREE (a third site, layoutGlyphs, arrived with
+// M5); a session that pinned "two" would miss it.
+test('F-26 source pin: exactly three NaN-safe glyph guards, zero NaN-accepting form in CODE', () => {
+    // readFileSync throwing is a FAILURE, not a skip (matches the ASCII gate at :57).
+    const src = readFileSync(new URL('../BitmapFont.js', import.meta.url), 'utf8');
+    // Strip comments FIRST: BitmapFont.js:423 and :729 both quote the forbidden
+    // `id < 0 || id >= 256` form inside `//` prose warning AGAINST it. A pin that
+    // tripped on those would be a grep matching its own docs -- this repo has
+    // shipped that bug. Block comments then line comments; the code that remains
+    // is what ships.
+    const code = src
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+    const safe = (code.match(/if \(!\(id >= 0 && id < 256\)\) continue;/g) || []).length;
+    const accepting = (code.match(/id < 0 \|\| id >= 256/g) || []).length;
+    // False-positive direction: the two comment occurrences must NOT survive the
+    // strip. If they did, `accepting` would be 2 and this would catch it.
+    assert.equal(
+        accepting, 0,
+        'the NaN-accepting `id < 0 || id >= 256` form is present in CODE (F-03 restored), count ' + accepting
+    );
+    assert.equal(
+        safe, 3,
+        'expected exactly three NaN-safe glyph guards (draw/drawWrapped/layoutGlyphs); found ' + safe +
+        ' -- a reshape site was deleted, added or altered'
+    );
+});

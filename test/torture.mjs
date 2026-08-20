@@ -59,7 +59,7 @@ const TIERS = [
     ['T9 controls', t9],
 ];
 
-function main() {
+async function main() {
     if (typeof globalThis.gc !== 'function') {
         process.stderr.write(
             'torture: FAIL -- run with --expose-gc:  node --expose-gc test/torture.mjs\n');
@@ -68,7 +68,12 @@ function main() {
 
     for (const [name, run] of TIERS) {
         try {
-            run();
+            // AWAIT, not call-and-forget (M9pre / F-27). A sync tier returns
+            // undefined and `await undefined` is a no-op, so the sync tiers are
+            // unaffected; T7 is async because its retention witness reads
+            // tracker.size() only AFTER a FinalizationRegistry settle tick, and
+            // FR callbacks fire on a later turn -- a sync read cannot see them.
+            await run();
         } catch (err) {
             // Tiers normally fail via die() (which exits). A thrown error is an
             // unexpected fault -- surface it with the replay seed and stop.
@@ -89,4 +94,7 @@ function main() {
     process.exit(0);
 }
 
-main();
+main().catch((err) => {
+    process.stderr.write('torture: FAIL -- main rejected: ' + (err && err.stack || err) + '\n');
+    process.exit(1);
+});

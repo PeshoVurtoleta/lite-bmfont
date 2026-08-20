@@ -147,6 +147,46 @@ const VOL16_MAX = 4750000;
 // blindness window G documents. Environment sensitive, hence the wide margin.
 const REGB_MAX = 15000000;
 
+// ---- F-37: volume lanes for windows A, B, C, C2, D (M9pre) ------------------
+//
+// M5 added allocVolume to E-J but NOT to the M0/M2 windows, so draw / drawFast /
+// drawWrapped / measure were still blind to transient per-call allocation. R-18:
+// VOL_MAX (calibrated on measure-family bodies E/F that emit no drawImage) MUST
+// NOT be reused by analogy -- A/C/C2 drive 62/64/64 recording drawImage calls per
+// op. So EACH floor was MEASURED on this host (Node v26.3.1), 6 reps, 20,000-iter
+// warmup, and EACH mutant was applied in a cp -R sandbox and watched. The
+// realistic regression for a renderer is the "materialize the 8 drawImage args
+// into an array per glyph" mistake (window J:537 records V8 elides the INLINE
+// spread; only a materialized/escaping array is a real regression) -- an 8-float
+// array per glyph, escaping to a module slot. For measure(), the split('\n')
+// mistake window E documents. Measured (B = bytes over VOL_OPS):
+//   window   shipped floor (max/6)   mutant (min/6)                separation
+//   A draw          65,376 B         97,732,272 B  (8-float/glyph)   ~1495x
+//   B drawFast      37,152 B         81,443,776 B  (8-float/glyph)   ~2192x
+//   C drawWrapped        0 B        102,969,888 B  (8-float/glyph)   inf
+//   C2 align-path        0 B        102,969,936 B  (8-float/glyph)   inf
+//   D measure        5,024 B         28,042,592 B  (text.split)      ~5582x
+// R-15 RESOLVED: the split mutant measures 28,042,592 B here, confirming the
+// 28,042,664 B pinned at :112 (72 B apart, GC-noise); it does NOT reproduce the
+// ROADMAP F-37 row's 32,881,040 B, which is stale for this host/Node.
+// Each limit sits between its own floor and its own mutant -- none is copied.
+// C and C2 measure the SAME body (drawWrapped, align 0 vs align 1); the identical
+// value is an independent measurement of each, not an analogy.
+const VOLA_MAX = 2500000;    // A: floor 65,376 -> 38x margin; mutant 97.7M -> 39x below
+const VOLB_MAX = 1700000;    // B: floor 37,152 -> 46x margin; mutant 81.4M -> 48x below
+const VOLC_MAX = 3000000;    // C: floor 0 (drawWrapped self-collects); mutant 103.0M -> 34x below
+const VOLC2_MAX = 3000000;   // C2: floor 0 (same body, own measurement); mutant 103.0M -> 34x below
+const VOLD_MAX = 400000;     // D: floor 5,024 -> 80x margin; mutant 28.0M -> 70x below
+// Window K (F-32) drives only REJECT branches -- they return before any glyph
+// work, so the floor is JIT-warmup residue, not per-call allocation. Measured
+// cold in a fresh process (rep 0 is what the single in-run allocVolume call
+// sees): 320,136-369,624 B; warm reps 0-28,160 B. A4's retention leak
+// (`_rejectLog = (this._rejectLog||[]).concat(scale)` at the draw scale door)
+// reddens the retention lane first (bytesPerCall 7.67, verdict fail, ~1.2s) and
+// the volume lane too (3.1M B by op 2000); the ops lane is BLIND (major=0, the
+// F-37 shape). VOLK_MAX sits 5.4x above the worst cold floor.
+const VOLK_MAX = 2000000;
+
 function allocVolume(fn) {
     for (let i = 0; i < VOL_WARMUP; i++) fn(i);
     globalThis.gc();
@@ -185,8 +225,42 @@ function structural(font, label) {
     // do NOT, because missingAdvance defaults to 0 and no glyph changed drawing.
     check(font._mapped.byteLength === 32,
         () => 'T6/' + label + ': _mapped byteLength ' + font._mapped.byteLength + ' != 32');
+    // F-31 (M9pre): the four equalities above name WHICH array moved; this SUM
+    // catches a FIFTH typed array they cannot name. RETAIN both -- a compensating
+    // pair (one array shrinks, another grows by the same bytes) passes the sum and
+    // is caught only by the named rows; a brand-new array passes every named row
+    // and is caught only by the sum. The mutation that reddens it: a
+    // `this._bloat = new Float64Array(512)` in the constructor makes the total
+    // 134712 + 4096 = 138808 while all four named rows stay green (A1, watched).
+    const taTotal = typedArrayTotal(font);
+    check(taTotal === 134712,
+        () => 'T6/' + label + ': typed-array total ' + taTotal + ' != 134712 (a typed' +
+            ' array was added, dropped or resized; decisions/0002)');
     check(rec.dropped === 0 && rec.imgMismatch === 0,
         () => 'T6/' + label + ': dropped ' + rec.dropped + ' imgMismatch ' + rec.imgMismatch);
+}
+
+/**
+ * F-31 (M9pre): sum byteLength over every ArrayBuffer view held in an OWN slot
+ * of `font`, on a LIVE (non-destroyed) instance. Reflect.ownKeys -- not
+ * Object.keys -- so a non-enumerable or symbol-keyed backing store is still
+ * seen; the value is read from the property DESCRIPTOR, never through the slot,
+ * so an accessor is not invoked. KNOWN LIMIT, recorded honestly: a typed array
+ * reachable only through a closure or a WeakMap sits behind no own property, so
+ * no walk can see it -- this gate pins the instance's own slots, nothing more.
+ * Called from structural(), which runs OUTSIDE every measured window, so the
+ * keys-array allocation here is not on any gated hot path.
+ */
+function typedArrayTotal(font) {
+    const keys = Reflect.ownKeys(font);
+    let total = 0;
+    for (let i = 0; i < keys.length; i++) {
+        const d = Object.getOwnPropertyDescriptor(font, keys[i]);
+        if (!d || !('value' in d)) continue;        // accessor slot: skip, do not invoke
+        const v = d.value;
+        if (ArrayBuffer.isView(v) && typeof v.byteLength === 'number') total += v.byteLength;
+    }
+    return total;
 }
 
 function gateOps(report, summary, label) {
@@ -223,6 +297,13 @@ export function run() {
         gateOps(report, summary, 'A');
         const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
         gateAlloc(aReport, result, 'A');
+        // F-37 volume lane (M9pre): the two gates above are RETENTION lanes and
+        // are blind to per-glyph transient. Floor 65,376 B, mutant 97.7 MB.
+        const volA = allocVolume(hot);
+        check(volA <= VOLA_MAX,
+            () => 'T6/A: draw allocated ' + volA + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOLA_MAX + ') -- a per-glyph allocation escaping' +
+                ' the draw loop (a materialized array, not a spread literal V8 elides)');
         // In BREAK mode the gate above was SUPPOSED to reject and exit. Reaching
         // here with BREAK set means the control silently passed -- a failure.
         if (BREAK) die('T6: BMFONT_TORTURE_BREAK injected allocations but the gate passed');
@@ -243,6 +324,12 @@ export function run() {
         gateOps(report, summary, 'B');
         const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
         gateAlloc(aReport, result, 'B');
+        // F-37 volume lane (M9pre). Floor 37,152 B, mutant 81.4 MB (8-float/glyph).
+        const volB = allocVolume(hot);
+        check(volB <= VOLB_MAX,
+            () => 'T6/B: drawFast allocated ' + volB + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOLB_MAX + ') -- a per-glyph allocation escaping' +
+                ' the digit loop (a materialized array, not a spread literal)');
     }
 
     // --- Window C: drawWrapped() on 8 lines x 8 glyphs = 64 ----------------------
@@ -260,6 +347,12 @@ export function run() {
         gateOps(report, summary, 'C');
         const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
         gateAlloc(aReport, result, 'C');
+        // F-37 volume lane (M9pre). Floor 0 B, mutant 103.0 MB (8-float/glyph).
+        const volC = allocVolume(hot);
+        check(volC <= VOLC_MAX,
+            () => 'T6/C: drawWrapped allocated ' + volC + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOLC_MAX + ') -- a per-glyph allocation escaping' +
+                ' the wrapped draw loop (a materialized array, not a spread literal)');
     }
 
     // --- Window C2 (M2a): drawWrapped() on the ALIGN path, scale 2, align 1 -----
@@ -282,6 +375,13 @@ export function run() {
         gateOps(report, summary, 'C2');
         const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
         gateAlloc(aReport, result, 'C2');
+        // F-37 volume lane (M9pre). Floor 0 B, mutant 103.0 MB -- same body as C,
+        // own measurement (align 1 / scale 2 path).
+        const volC2 = allocVolume(hot);
+        check(volC2 <= VOLC2_MAX,
+            () => 'T6/C2: drawWrapped(align) allocated ' + volC2 + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOLC2_MAX + ') -- a per-glyph allocation escaping' +
+                ' the wrapped/align draw loop (a materialized array, not a spread literal)');
     }
 
     // --- Window D: measure() -- no drawImage, 0 glyphs --------------------------
@@ -300,6 +400,14 @@ export function run() {
         gateOps(report, summary, 'D');
         const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
         gateAlloc(aReport, result, 'D');
+        // F-37 volume lane (M9pre). Floor 5,024 B, mutant 28.0 MB (text.split in
+        // the measure walk -- the R-15 mutant, re-measured on this host: it is
+        // 28,042,592 B, confirming :112's 28,042,664 and NOT the ROADMAP 32.9 MB).
+        const volD = allocVolume(hot);
+        check(volD <= VOLD_MAX,
+            () => 'T6/D: measure allocated ' + volD + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOLD_MAX + ') -- a per-call allocation shipped,' +
+                ' most likely a text.split() or slice in the measure walk');
     }
 
     // --- Window E (M4): measureWidest() -- no drawImage, 0 glyphs ---------------
@@ -562,5 +670,70 @@ export function run() {
                 ' calls (limit ' + VOL_MAX + ') -- a per-glyph allocation shipped that' +
                 ' escapes the loop (a materialized array/object, not a spread literal' +
                 ' V8 elides) (A9)');
+    }
+
+    // --- Window K (M9pre): the REJECT branches of every per-call door (F-32) ----
+    // F-32: the reject branches of the scale/text doors were exercised by T5 and
+    // by T9 control 13, but never INSIDE a measured window, so a reject path that
+    // allocated was invisible. Window K drives ALL FOURTEEN enumerated doors of
+    // the eight public bodies that take a scale or text -- the SESSION-M9pre list
+    // says "thirteen" but enumerates fourteen; fail closed, cover all fourteen:
+    //   scale doors (8): measure :471, measureWidest :500, measureLine :575,
+    //     layoutGlyphs :1309, draw :670, drawFast :808, drawFastInt :974,
+    //     drawWrapped :1129 -- driven with scale = NaN.
+    //   text  doors (6): measure :470, measureWidest :499, measureLine :574,
+    //     layoutGlyphs :1308, draw :669, drawWrapped :1128 -- driven with a
+    //     non-string text (drawFast/drawFastInt take a numeric value, no text door).
+    // The measure/query faces (measure/measureWidest/measureLine/layoutGlyphs)
+    // answer a bad door with NaN (decisions/0004 fork 4) -- accumulated into
+    // `sink` so V8 cannot DCE the calls; a NaN sink cannot be ===-asserted, so K
+    // asserts `sink !== sink`. The void draw faces (draw/drawFast/drawFastInt/
+    // drawWrapped) return after drawing nothing, so `rec.total === 0` is their
+    // DCE-proof and their reject proof at once. GLYPHS = 0.
+    //
+    // THREE lanes, VOLK_MAX. Mutation A4 (watched): `this._rejectLog =
+    // (this._rejectLog || []).concat(scale); return;` at the draw scale door
+    // (:670) -- a materialized, escaping, retained array. It reddens the RETENTION
+    // lane first (bytesPerCall 7.67, verdict fail) and the VOLUME lane too; the
+    // ops lane is blind (major = 0), which is exactly the F-37 shape this session
+    // is about. `_rejectLog` is an Array, not an ArrayBuffer view, so F-31's
+    // typed-array walk does not see it -- the two assertions stay independent.
+    {
+        const OPS = 200000, WARMUP = 5000, GLYPHS = 0;
+        const BAD = 12345;                 // a non-string, to trip the text doors
+        resetRec(ATLAS); resetTotals();
+        const hot = (i) => {
+            rec.calls = 0;
+            // eight scale doors -- scale = NaN
+            sink = FONT_ASCII.measure(S64, NaN)
+                 + FONT_ASCII.measureWidest(S64, NaN)
+                 + FONT_ASCII.measureLine(S64, 0, 21, NaN)
+                 + FONT_ASCII.layoutGlyphs(S64, QUADBUF, 0, 0, NaN, 0);
+            FONT_ASCII.draw(rec, S64, 0, 0, NaN, 0);
+            FONT_NUM.drawFast(rec, 123.4, 0, 0, NaN, 0);
+            FONT_NUM.drawFastInt(rec, 1234, 0, 0, NaN, 0);
+            FONT_ASCII.drawWrapped(rec, WRAP_TEXT, WRAP_LAYOUT, 8, 100, 200, 0, 0, NaN, 0, 0);
+            // six text doors -- non-string text
+            sink += FONT_ASCII.measure(BAD, 1)
+                 + FONT_ASCII.measureWidest(BAD, 1)
+                 + FONT_ASCII.measureLine(BAD, 0, 21, 1)
+                 + FONT_ASCII.layoutGlyphs(BAD, QUADBUF, 0, 0, 1, 0);
+            FONT_ASCII.draw(rec, BAD, 0, 0, 1, 0);
+            FONT_ASCII.drawWrapped(rec, BAD, WRAP_LAYOUT, 8, 100, 200, 0, 0, 1, 0, 0);
+        };
+        const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+        check(rec.total === (OPS + WARMUP) * GLYPHS,
+            () => 'T6/K: rec.total ' + rec.total + ' != 0 (a reject door drew a glyph)');
+        check(sink !== sink,
+            () => 'T6/K: sink ' + sink + ' is not NaN -- a measure/query reject door failed to return NaN');
+        structural(FONT_ASCII, 'K');
+        gateOps(report, summary, 'K');
+        const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
+        gateAlloc(aReport, result, 'K');
+        const volK = allocVolume(hot);
+        check(volK <= VOLK_MAX,
+            () => 'T6/K: reject doors allocated ' + volK + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOLK_MAX + ') -- a reject branch allocated, most' +
+                ' likely a log/collect of the rejected argument (A4)');
     }
 }

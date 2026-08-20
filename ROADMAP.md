@@ -140,15 +140,15 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-16** | S3 | **Packaging gaps against the suite Law.** No `CHANGELOG.md`, no `LICENSE` file, no `engines` field, no torture gate, no `prepublishOnly` gate that can pass. `files[]` is `[BitmapFont.js, BitmapFont.d.ts, llms.txt]` -- the Law requires README to ship. The README carries an inline changelog instead of a `CHANGELOG.md`. | `package.json`, `ls` |
 | **F-17** | S2 | **Every "zero allocation" claim in README and llms.txt is unproven.** README asserts it in seven places; there is no `measureAllocs`, no `measureOps`, no gate, and no devDep on `lite-gc-profiler` or `lite-leak`. The claim may well be true -- nothing in the repo can tell. | `grep -n "allocat" README.md llms.txt`; `devDependencies` is `{vitest}` |
 | **F-18** | S3 | **CLOSED in 1.8.0 (M7, decisions/0009).** Was: `generateAtlas` duplicated inline in `demo/demo-lite-bmfont.html` and called four times. Now shipped as the `@zakkster/lite-bmfont/atlas` subpath (`Atlas.js` + `Atlas.d.ts`); the demo imports it, defines it zero times. Closed by the extraction plus `test/findings.test.js` (F-18 closed-state + A2/A3/A6 behavioural proofs) and torture tier T8 (pack contents, DOM-free import through the exports map in a clean child, docs-drift guard). The core changed exactly one line (VERSION). | `test/findings.test.js` "F-18 CLOSED"; `node --expose-gc test/torture.mjs` T8 |
-| **F-19** | S3 | **Non-ASCII bytes in shipped `files[]`, violating the Law's ASCII-only rule** (U+00D7 and U+00B5 excepted). `BitmapFont.d.ts` is now CLEAN (de-Unicoded by M1: em dash, plus-minus, en dash in comments). Remaining debt: `BitmapFont.js` (10 lines -- U+2014 x10 plus one U+2026 at `:856`, so the char count is 11, not 10), `README.md` (47 lines: emoji, U+2192, U+2014, U+2026, en dash), `llms.txt` (10 lines: U+2014 x7, U+2026 x2, U+2013 x1). Docs (`README.md`, `llms.txt`) are de-Unicodeable in any session. No single behaviour fix touches all the affected source lines (the file header at line 1, and the `drawWrapped` doc block at 242-275), so the source de-Unicoding rides M9's hardening pass alongside the F-14 prototype freeze rather than being smeared across the behaviour sessions. | `grep -c -P '[^\x00-\x7F]' BitmapFont.js BitmapFont.d.ts README.md llms.txt` -> `10 / 0 / 47 / 10` |
+| **F-19** | S3 | **CLOSED 2026-08-20 (verified at 1.9.0).** `grep -c -P '[^\x00-\x7F]'` over `BitmapFont.js` `BitmapFont.d.ts` `Atlas.js` `Atlas.d.ts` `README.md` `llms.txt` returns **0 0 0 0 0 0**. M2b (1.6.1) discharged the whole row, source included, and the keeping gate is `packaging.test.js:28-97`, which enumerates from `git ls-files -z` rather than a filename list -- so a NEW file carrying a non-ASCII byte reddens on the day it is added. The routing below ("rides M9's hardening pass") is therefore moot; M9 schedules no work for this. Was: **Non-ASCII bytes in shipped `files[]`, violating the Law's ASCII-only rule** (U+00D7 and U+00B5 excepted). `BitmapFont.d.ts` is now CLEAN (de-Unicoded by M1: em dash, plus-minus, en dash in comments). Remaining debt: `BitmapFont.js` (10 lines -- U+2014 x10 plus one U+2026 at `:856`, so the char count is 11, not 10), `README.md` (47 lines: emoji, U+2192, U+2014, U+2026, en dash), `llms.txt` (10 lines: U+2014 x7, U+2026 x2, U+2013 x1). Docs (`README.md`, `llms.txt`) are de-Unicodeable in any session. No single behaviour fix touches all the affected source lines (the file header at line 1, and the `drawWrapped` doc block at 242-275), so the source de-Unicoding rides M9's hardening pass alongside the F-14 prototype freeze rather than being smeared across the behaviour sessions. | `grep -c -P '[^\x00-\x7F]' BitmapFont.js BitmapFont.d.ts README.md llms.txt` -> `10 / 0 / 47 / 10` |
 | **F-20** | S3 | **`draw()`/`drawFast()` center/right-align math is asserted only by directional inequality**, so an off-by-constant regression in the divisor is invisible to `npm test` and every wired torture tier. `drawWrapped()`'s align tests assert exact pixels (44, 88, 38) and are load-bearing; `draw`'s (`rec.dx[0] < 100`) are not. Closed prospectively by qa's `test/boundary.test.js`; the ported `BitmapFont.test.js` still carries the weak assertions. | scratch-edit `draw()`'s `... / 2` to `... / 3` -> `npm test` passes and `npm run torture` prints `ok`, exit 0 |
 | **F-21** | S3 | **T0 law 4 is vacuous -- the only kerning check in the torture gate never tests kerning (AR-02).** `FONT_KERN` kerns 3 pairs (A-B, B-A, A-A); the corpus is ASCII 33..126, so a random seam is 3/8836 = 0.034%. Under both shipped seeds ZERO eligible seams carry non-zero kerning, so law 4 degenerates to `left + right === full`. **Routed to M2**, which revises `t0-laws.mjs` and its corpus and builds the conservation law on top of it; fix by a seeded corpus planting A/B seams or a dense `FONT_KERN`, BEFORE the law leans on it. | default seed -> eligible 246, seams 0; seed 12345 -> eligible 247, seams 0. Deleting the kern term from `_measureRange` passes `npm run torture` clean |
 | **F-22** | S3 | **The documented word-wrap recipe does not type-check.** `README.md:124-125` and `llms.txt:75-76` read `font.glyphs[id * 7 + 6]` and `font.kerning[(prevId << 8) \| id]`; both are real `Int16Array` members at runtime and neither was declared in `BitmapFont.d.ts`. A TypeScript consumer copying the package's own answer to "compute the layoutBuffer yourself" cannot compile the primary integration path. Fixed in 1.2.2 (M1): `readonly glyphs` / `readonly kerning` declared, stride marked a cross-package contract. | `tsc` on the README recipe -> `Property 'glyphs' does not exist on type 'BitmapFont'` |
 | **F-23** | S2 | **`drawFast`'s digit loop is inexact in two bands (originally routed to M8, which was believed to reopen the body).** **[RE-ROUTED 2026-08-18 to M8b by decisions/0005 fork 1: P-4 proved M8's `drawFastInt` shares NO arithmetic with `drawFast` -- only the 24-byte scratch buffer -- so M8 does not reopen `drawFast`. M8 shipped `drawFastInt` (1.5.0) with `drawFast` byte-frozen; F-23's fix moves to M8b (1.6.0, status next), a MINOR with both bands as declared `### Changed (behaviour)` rows. See the M8 amendment in decisions/0001.]** Band 1 (`\|value\| < 2^53`): off-by-one-tenth on near-ties -- `Math.round(value * 10)` rounds the float product, not the real value, breaking the documented "rounded to nearest tenth" guarantee. Band 2 (`2^53 < \|value\| <= 1e21`): the integer digits themselves are wrong and silent -- the value is scaled through a double before extraction, so it prints digits the value does not have. 15,858/191,255 in-door samples diverge (1,738 band 1, 14,120 band 2). The 1.2.2 door ceiling `DRAWFAST_MAX = 1e21` is the buffer boundary; 2^53 is the correctness boundary, chosen deliberately (see `decisions/0001`). Ground truth is a bit-exact mantissa oracle; `toFixed(1)` is exact below 1e21, the plan's `BigInt(Math.round(v*10))` oracle was rejected because it shares the library's float multiply. **CLOSED in 1.7.0 (M8b) by decisions/0007:** band 1 now derives the tenth by Fast2Sum (no `value * 10` product), band 2 renders the double's exact integer value by decimal doubling. Validated against a BigInt oracle on 400,023 values, 0 mismatches; the six T4 pins now assert `s === ex`. `8.45` -> `"8.4"`, `762638538843020900000` -> `"762638538843020853248.0"`. | `drawFast(ctx, 8.45, 0, 0)` -> `"8.5"` (exact `8.4`); `drawFast(ctx, 762638538843020900000, 0, 0)` -> `"762638538843020800088.0"` (exact `762638538843020853248.0`) |
 | **F-24** | S3 | **The harness oracle's pinned missing-glyph policy is NOT what the implementation does, and M2's centrepiece law is a three-way equality against that oracle.** `harness.mjs:314` documents "a character with no descriptor entry advances by ZERO **and does not become the kerning `prev`**", claiming it pins "today's implementation behaviour". The second half is false: all three walk sites (`BitmapFont.js:86`, `:168`, `:357`) set `prevId = id` for any id in `[0, 256)` regardless of whether the descriptor covered it, so an unmapped glyph DOES break the kerning chain in the library and does NOT in the oracle. Invisible under every shipped fixture because `JSON_KERN` kerns only mapped ids -- the same vacuity shape as F-21. Wire T0's law as written and it fails on day one for a reason that is not F-03/F-04/F-05/F-12. The underlying question -- does a missing glyph break the kerning chain? -- is a second, independent policy fork that M2's decision (2) does not ask. | font `{65:adv 12, 66:adv 12}`, `kern(65,66) = -5`, text `'A\u00C8B'`: `_measureRange` -> `24`, `oracleAdvance` -> `19` |
 | **F-25** | S2 | **`_measureRange` treats `\n` as a renderable glyph and runs the kerning chain THROUGH it; `draw` skips it and resets the chain.** `draw` special-cases `id === 10` (`BitmapFont.js:135`) and sets `prevId = -1`; `_measureRange` has no newline case at all, so `10` passes the `[0, 256)` guard, contributes `glyphs[10*7+6]` to the width, and stays in the kerning chain across the line break. Distinct from F-06, which is about summing line widths -- this is the newline character itself carrying advance and kerning. Silent under every shipped fixture (id 10 unmapped -> advance 0, kerning 0), so it surfaces only against a descriptor that maps id 10 (some exporters emit one) or kerns against it. M2 owns T0's newline residual assertion and must state which of the two walks is correct before it can assert the residual exactly. **Third face, measured 2026-08-17:** `drawWrapped` has no `id === 10` case at all, so against a descriptor mapping id 10 it RENDERS the newline as a visible glyph mid-line -- 3 draw calls where `draw` makes 2 on separate lines. Section 3's T0 law "drawWrapped with a one-line layout covering `[0, len)` produces the byte-identical `dx` column that `draw` produces" is therefore false for any font mapping id 10, which is a precondition of M2's centrepiece that nobody stated. | descriptor maps `{id: 10, xadvance: 7}`: `measure('A\nA')` -> `31`, `draw` dx -> `[0, 0]`, `drawWrapped` over `[0,3)` dx -> `[0, 12, 19]` |
-| **F-26** | S3 | **The F-03 guard reshape in `draw` and `drawWrapped` is unfalsifiable through the public API, and M2 shipped it anyway -- deliberately.** Revert BOTH reshaped guards to the NaN-accepting `if (id < 0 \|\| id >= 256) continue;` and `npm test` (93 blocks) and `npm run torture` (10 tiers) both stay green. The reason is structural: `draw` has no range parameters, so `charCodeAt` over `[0, len)` can never yield NaN; and after M2's H13 per-line clamp, `drawWrapped`'s indices can no longer reach the guard as NaN either. **The load-bearing F-04 fix is the clamp, not the reshape** -- reverting `if (!(startIdx >= 0)) startIdx = 0;` reddens T2 row 9 instantly. The third site, `_measureRange`, IS falsifiable, because it takes `start`/`end` as parameters: T0 law 11 kills its inversion. So one of three sites is pinned behaviourally and two are pinned only by DONE WHEN rows 7/8, which are a source-text gate a human runs, not something `npm test` or CI can see. **Routed to M6**, which promotes `start`/`end` to the public surface and thereby creates the first NaN-capable call path into `draw`'s guard; M6 must add the behavioural kill and this row closes there. Recorded rather than "fixed" because the honest options today are a synthetic test of a private path or nothing, and F-20/F-21 are both in this ledger because someone preferred a comfortable assertion to an absent one. | revert both guards -> `npm test` exit 0, `npm run torture` -> `ok` exit 0. Invert `_measureRange`'s -> `torture: FAIL -- T0.law11: _measureRange("A",0,2) NaN != 12 (NaN id leaked past the guard)` |
-| **F-27** | S3 | **T7's "second independent witness" does not witness anything. The retention tier cannot see a leaked font.** `t7-soak.mjs:49` tracks a fresh throwaway `{cycle: c}` object and `:57` untracks it in the SAME iteration, unconditionally. The font is never tracked, so `tracker.size() === 0` is true by construction whether or not fonts leak. The tier's own docstring claims "a typed-array leak and a JS-object leak must not be able to hide behind each other" -- as implemented, the JS-object half is unmanned. Proven by qa: injecting a genuine owner-cascade leak into the constructor that retains all 4096 font shells forever left `npm run torture` at exit 0, `ok`, `tracker.size() === 0`, and heap growth still inside 512 KB -- because `destroy()` nulls the typed arrays, so the retained shells are tiny. Introduced by M0, not by M2; M2 found it. Every session between M0 and the fix reports a T7 retention number that proves typed-array nulling only. **Routed to M9** (the hardening pass, alongside F-14's prototype freeze). Fix: track the font itself, or a proxy whose lifetime is provably tied to it, with a cleanup that does not close over the target, and read `tracker.size()`/`audit()` after a real `gc()` + settle tick -- never a same-iteration track/untrack pair. | plant a module-level retainer in the constructor -> 4096 fonts retained -> `npm run torture` -> `ok`, exit 0, `tracker.size()` 0 |
+| **F-26** | S3 | **The F-03 guard reshape in `draw` and `drawWrapped` is unfalsifiable through the public API, and M2 shipped it anyway -- deliberately.** Revert BOTH reshaped guards to the NaN-accepting `if (id < 0 \|\| id >= 256) continue;` and `npm test` (93 blocks) and `npm run torture` (10 tiers) both stay green. The reason is structural: `draw` has no range parameters, so `charCodeAt` over `[0, len)` can never yield NaN; and after M2's H13 per-line clamp, `drawWrapped`'s indices can no longer reach the guard as NaN either. **The load-bearing F-04 fix is the clamp, not the reshape** -- reverting `if (!(startIdx >= 0)) startIdx = 0;` reddens T2 row 9 instantly. The third site, `_measureRange`, IS falsifiable, because it takes `start`/`end` as parameters: T0 law 11 kills its inversion. So one of three sites is pinned behaviourally and two are pinned only by DONE WHEN rows 7/8, which are a source-text gate a human runs, not something `npm test` or CI can see. ~~**Routed to M6**, which promotes `start`/`end` to the public surface and thereby creates the first NaN-capable call path into `draw`'s guard; M6 must add the behavioural kill and this row closes there.~~ **RE-ROUTED 2026-08-20 to M9pre. M6 was CUT** (see THE CUT in its brief), so the public range API that would have made this guard falsifiable is never built and the reshape is unfalsifiable through the public API PERMANENTLY, not until M6. The question changes with the owner: M9 must either DELETE the two unfalsifiable reshapes and let `_measureRange`'s falsifiable one stand alone, or keep them and pin them in the ASCII/source-text gate M2b built, recording that a source-text pin is all they will ever have. Deciding not to decide is what put this row here twice. **TWO FURTHER CORRECTIONS, 2026-08-20, both verified against 1.9.0.** (a) **This row says TWO reshaped sites. There are THREE**: `BitmapFont.js:732` (draw), `:1233` (drawWrapped) and **`:1360` (layoutGlyphs)**, the third added by M5/1.9.0 by a session not thinking about F-26 at all -- which is itself the argument against deletion. (b) **The answer is KEEP + a source-text pin, not delete.** Deleting does not remove a guard; it writes the NaN-ACCEPTING form `id < 0 || id >= 256` back into three hot bodies, and that form is false for NaN, i.e. it ACCEPTS NaN -- F-03's silent-corruption mechanism restored by hand on the theory that no CURRENT call path reaches it, which is an unverified state about all FUTURE call paths. Cost of keeping is zero: `BitmapFont.js:731` already records "Two comparisons before, two after". What keeping costs instead, recorded as weaker than every other assertion in this repo: these three sites will never have a behavioural test, their only gate is a source-text pin, and that must never be described anywhere as behavioural coverage. The pin must be proven in BOTH directions -- `:423` and `:729` contain the forbidden string inside comments warning against it, so a naive grep matches its own docs. Recorded rather than "fixed" because the honest options today are a synthetic test of a private path or nothing, and F-20/F-21 are both in this ledger because someone preferred a comfortable assertion to an absent one. | revert both guards -> `npm test` exit 0, `npm run torture` -> `ok` exit 0. Invert `_measureRange`'s -> `torture: FAIL -- T0.law11: _measureRange("A",0,2) NaN != 12 (NaN id leaked past the guard)` |
+| **F-27** | S3 | **T7's "second independent witness" does not witness anything. The retention tier cannot see a leaked font.** `t7-soak.mjs:49` tracks a fresh throwaway `{cycle: c}` object and `:57` untracks it in the SAME iteration, unconditionally. The font is never tracked, so `tracker.size() === 0` is true by construction whether or not fonts leak. The tier's own docstring claims "a typed-array leak and a JS-object leak must not be able to hide behind each other" -- as implemented, the JS-object half is unmanned. Proven by qa: injecting a genuine owner-cascade leak into the constructor that retains all 4096 font shells forever left `npm run torture` at exit 0, `ok`, `tracker.size() === 0`, and heap growth still inside 512 KB -- because `destroy()` nulls the typed arrays, so the retained shells are tiny. Introduced by M0, not by M2; M2 found it. Every session between M0 and the fix reports a T7 retention number that proves typed-array nulling only. **Routed to M9pre** (2026-08-20; was M9). **THE PRESCRIBED FIX CONTRADICTED THE TIER'S OWN HEADER, AND THE HEADER IS THE HALF THAT IS WRONG.** `t7-soak.mjs:13-16` states that "tracking the font itself, or a cleanup that closes over the font, violates lite-leak's held-value contract and pins the very object it watches", which is why the tracked target is a throwaway. The actual contract (`@zakkster/lite-leak` `llms.txt:125-129`) reads in full: "Neither `cleanup` nor `tag` may close over `target`. Both are retained on the internal record until FR fires or untrack; capturing the target via either defeats finalization." It constrains `cleanup` and `tag`. **It does not forbid tracking the target** -- `track(target, cleanup, tag?, options?)` exists to watch exactly that object. So the second clause of the comment is right and the first is false, and the false clause is the rationalisation that produced the blind witness. The fix is `tracker.track(font, NOOP, c)` -- `NOOP` is already module-level and `c` is a number, so both legs of the REAL contract were already satisfied by the code that was there. Correcting the comment is part of the fix; an uncorrected one makes the next session re-derive the same false constraint. Fix: track the font itself, or a proxy whose lifetime is provably tied to it, with a cleanup that does not close over the target, and read `tracker.size()`/`audit()` after a real `gc()` + settle tick -- never a same-iteration track/untrack pair. | plant a module-level retainer in the constructor -> 4096 fonts retained -> `npm run torture` -> `ok`, exit 0, `tracker.size()` 0 |
 | **F-28** | S2 | **The `opts` bag M2 introduced fails OPEN, and M3's entire design hangs off it.** The constructor reads `opts.missingAdvance` and validates that one value hard, but never validates `opts` itself and never rejects an unknown key. `new BitmapFont(atlas, json, { missingAdvanc: 6 })` -- one dropped `e` -- constructs silently with `missingAdvance` 0 and no error, which is the exact F-12 gap the option exists to close. `opts` of `7` or `'x'` also construct: the `opts !== undefined && opts !== null` door admits every primitive, and `(7).missingAdvance` is `undefined`. This matters beyond the typo: M3 proposes `{ checked: true }` in the same bag, so a caller who typos the flag gets the unchecked lane with no signal -- a validator most callers never run, defeated by a keystroke. Opened by M2 (the bag is M2's), found in the M3 precondition probe. Fix belongs in M3, ahead of any `checked` work: reject non-object `opts`, and reject unknown own keys against a frozen allowlist. Cold path; cost is irrelevant. | `new BitmapFont(ATLAS, OK, { missingAdvanc: 6 })` -> constructs, `glyphs[65*7+6]` unchanged; `new BitmapFont(ATLAS, OK, 7)` -> constructs; `new BitmapFont(ATLAS, OK, { checked: true })` -> constructs |
 | **F-29** | S2 | **A non-number `id` coerces through the range test, writes the glyph table, and is never marked in `_mapped` -- so `hasGlyph` disagrees with the table it describes.** M2 shipped `_mapped` with the stated invariant that it "keeps the two structures consistent with each other," and scoped the integrality test to `id === (id \| 0)`, which is correct for a fractional number and wrong for every other type. `id: '65'` passes `id >= 0 && id < 256` by string-to-number coercion, `ptr = '65' * 7` is `455`, four slots are written, `measure('A')` returns 12 -- the glyph renders -- and `hasGlyph(65)` is `false`. `id: null` coerces to 0 and writes glyph id 0; `id: true` coerces to 1 and writes glyph id 1. Three silent writes to ids the descriptor never named, each invisible to `hasGlyph`. This is the coverage-detection API from M2 lying in the direction that matters: a caller checking `hasGlyph` at load time to find gaps is told a glyph is missing that will in fact draw. | `new BitmapFont(ATLAS, {chars:[{id:'65',...}]})` -> 4 non-zero slots, `measure('A') === 12`, `hasGlyph(65) === false`; `id: null` -> writes ptr 0; `id: true` -> writes ptr 7 |
 | **F-30** | S2 | **A non-finite glyph field stores as 0 and the glyph is reported covered.** `x: NaN`, `x: Infinity` and `x: -Infinity` each write `glyphs[65*7] === 0` -- the Int16 store maps every non-finite to zero -- and `hasGlyph(65)` returns `true`. `null is not zero`: an atlas x of NaN is an unverified state, and the table now claims the glyph sits at the top-left corner of the sheet with full confidence. Distinct from F-08, whose two cases (wrap and fractional truncation) are both LOSSY-but-interpretable and therefore belong in the checked lane: there is no reading of `x: NaN` that renders the intended glyph, so it belongs in the always-throw lane. Recording it separately so the M3 accept/reject matrix cannot route it by analogy to F-08. | `chars:[{id:65,x:NaN,...}]` -> `glyphs[455] === 0`, `hasGlyph(65) === true` |
@@ -158,7 +158,7 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 | **F-34** | **S1** | **`_measureRange` NEVER TERMINATES on an unbounded range, and `measure` reaches it from the public surface.** The walk is `for (let i = start; i < end; i++)`; at `start === -Infinity` the increment never advances (`-Infinity + 1 === -Infinity`) and the loop is unkillable, exactly F-01's shape one function over. `measure(text, scale)` forwards `0` and `text.length`, so a string can never reach it -- but `measure` has no text door (F-36), and `measure({length: Infinity, charCodeAt(){return 65}})` hangs today, in 1.3.0, with no throw. `drawWrapped` is IMMUNE: M2's F-04 clamp (`if (!(startIdx >= 0)) startIdx = 0;` plus the `endIdx` clamp) runs first, which is the third confirmation that the clamp, not the guard reshape, is the load-bearing fix (F-26). This is a hard PRECONDITION of M4, not something M4 may discover: the brief prescribes `measureLine(text, start, end, scale)` as "a thin forward to `_measureRange`", which publishes an unbounded hang as a supported API on a render-adjacent path. T9 control 9 already owns out-of-process hang machinery (`t9-hang-child.mjs`) and is the ready-made gate. **Fixed in 1.4.0 (M4)** at the PUBLIC faces only: `measure`/`measureWidest` gain a `typeof text === 'string'` door and `measureLine` gains the `drawWrapped` clamp, so all three terminate. `_measureRange` keeps NO door and its body is byte-for-byte the 1.3.0 body (decisions/0004 fork 3 sub-fork A2) -- clamping it would tax `draw`'s per-line align calls, which cannot be out of range by construction. The boundary is proven by T9 control 13, which kills a door-removed child. | `f._measureRange('AAAA', -Infinity, Infinity, 1)` -> SIGKILL after 6 s (exit 137); `f.measure({length: Infinity, charCodeAt(){return 65}})` -> SIGKILL after 6 s; same input through `drawWrapped`'s layout buffer -> returns |
 | **F-35** | S2 | **`_measureRange` and `drawWrapped` disagree about what a fractional or negative index means, so a public `measureLine` would report a width `drawWrapped` does not render.** `drawWrapped` CLAMPS its indices once, up front, then walks a fractional `i` and lets `charCodeAt` truncate per ITERATION -- exactly as `_measureRange` does, so the ONLY difference between the two walks is the clamp. The two readings coincide for positive fractions and diverge for a negative one, because `charCodeAt(-0.5)` is `ToIntegerOrInfinity(-0.5) === -0`, which reads index **0** -- so a negative fractional start ADDS a glyph instead of being rejected, the exact opposite of what the F-04 clamp exists to do. A caller computing `layoutBuffer[2]` (lineWidth) with `measureLine` and handing it to `drawWrapped` gets an alignment one glyph too wide, silently. This is F-06's own disease -- two functions in a four-function package disagreeing about a width -- in the surface M4 proposes to ADD, so M4 must settle the index policy before it publishes the method. **Fixed in 1.4.0 (M4)**: `measureLine` CLAMPS and deliberately does NOT truncate, exactly as `drawWrapped` does not, so it reports what the renderer draws on every measured range -- `[-0.5, 2)` 16 / 2 quads, `[0.5, 2.7)` 24 / 3 quads, `[1.9, 3.1)` 16 / 2 quads, `[0, 99)` 32 / 4 quads. A clamp-PLUS-truncate door was ratified first and reversed mid-session on measurement: truncating collapses `[0.5, 2.7)` to two glyphs and reintroduces F-35 one method over. T5 pins the agreement itself (`measureLine === drawn * advance`), not three literals, and `BitmapFont.js` carries a DO-NOT-ADD-Math.trunc comment at the door. | range `[-0.5, 2)` on `'AAAA'`, advance 8: `drawWrapped` draws **2** glyphs, `_measureRange` returns **24** (3 glyphs). `[0.5, 2.7)` -> 3 and 3; `[1.9, 3.1)` -> 2 and 2 |
 | **F-36** | S2 | **`measure` has no scale door and no text door, so M3's F-11 fail-closed policy is installed on the renderers only.** All three draw methods now reject a `scale` outside `(0, Infinity)` and draw nothing; `measure` propagates it -- `measure('AA', NaN)` -> `NaN`, `measure('AA', Infinity)` -> `NaN`, `measure('AA', -1)` -> `-16` (a negative width). The text argument has no door either: `measure(123)` -> `0` (fails open, `(123).length` is `undefined`) and `measure(null)` / `measure(undefined)` -> a raw `TypeError` naming an internal property, the shape M3 spent its whole budget removing from the constructor. One bad `scale` therefore produces TWO different failure modes in one frame: the caller sizes a box at `NaN` and `draw` silently declines to render, so the text vanishes and the layout is poisoned, with no throw at either site. Compounds with F-34: it is the absent text door that makes the hang publicly reachable. M4 adds `measureWidest` and `measureLine` to this family and must settle the policy for all four at once -- including whether `measure`'s own frozen `NaN` return changes, which is a behaviour delta on a public method and belongs in a declared row, not a footnote. **Fixed in 1.4.0 (M4)**: one fail signal -- NaN -- across all three public measure faces, with the same range-test scale door the three draw bodies carry and a `typeof text === 'string'` door, in that order. Seven declared deltas (D1-D7 in CHANGELOG). The asymmetry with the renderers is deliberate and documented: a renderer can decline to act, a query cannot decline to answer. | `measure('AA', NaN)` -> `NaN`; `measure('AA', -1)` -> `-16`; `measure(123)` -> `0`; `measure(null)` -> `TypeError: Cannot read properties of null (reading 'length')`; the same `scale` values through `draw` -> 0 drawImage calls |
-| **F-37** | **S2** | **Nothing in the gate can see TRANSIENT allocation, so "zero allocation on any hot path" is unproven on all six T6 windows -- and the one rule that would catch it is structurally vacuous.** Three independent mechanisms compose: (i) `measureAllocs` / `maxBytesPerCall` is a RETENTION lane by the profiler's own definition -- `lite-gc-profiler/llms.txt:179` says it is "Distinct from `measureOps`, which reports an allocation RATE (`maxBytesPerOp`) and sees transient garbage that `measureAllocs` settles away" -- so per-call garbage that the scavenger reclaims measures as exactly 0 bytes; (ii) `checkNoGc`'s `maxBytesPerOp` rule reads `summary.bytesPerOp`, but `measureOps` puts `bytesPerOp` on the RESULT, not the summary (`summary.bytesPerOp` is `undefined`), and `checkNoGc` cannot be handed the result instead because it dereferences `summary.gc.major` and throws -- **so `maxBytesPerOp` passes at every threshold for every body, including `0` and `0.0001` against a measured 0.0638 B/op**; (iii) `stabilize: 'deep'`, which `harness.mjs:157-164` hardcodes because `maxArrayBuffersGrowth` requires it, additionally converts `bytesPerOp` from transient allocation into retention (`Gc.d.ts:822-826`). Proven in M4 by planting the plan's own A26 mutation -- `measureWidest` reimplemented with `text.split('\n')`, allocating one array plus three strings per call across 505,000 calls in window E: `npm run torture` printed `ok`, exit 0, with `measureAllocs` reporting `bytesPerCall = 0`, `checkAllocs` `verdict = pass`, and `checkNoGc` `ok = true`. A direct `perf_hooks` GC observer over the same loop separates the two bodies unambiguously -- **shipped 1 GC event, split mutant 82 (81 scavenges)**, heap delta 35,184 B vs 73,912 B -- so the signal exists and no gated rule reads it. Fourth member of the class F-27 (retention witness tracks a throwaway), F-31 (structural gate has no total) and F-32 (reject branches never measured) belong to, and the broadest: those blind one witness each, this one means the package's headline claim, asserted in README seven times (F-17) and in `llms.txt`, has never been gated by anything that can observe it. **M4 corrects its own false comment and adds an ALLOCATION-VOLUME detector to the two windows it introduces (E and F) -- the sum of positive `heapUsed` deltas over 200,000 strided calls, limit 1,000,000 B, measured 21,384-26,432 B on the shipped bodies and 32,881,040 B on the split mutant. A `PerformanceObserver` on `'gc'` was prescribed first and measured UNUSABLE: its entries are delivered on a later turn and `takeRecords()` returns 0 from inside the loop; the general fix -- all six windows, the vacuous rule, and the `maxArrayBuffersGrowth`-vs-transient conflict, which cannot both be gated in one `stabilize` mode and therefore need two passes -- is routed to M9** alongside F-27/F-31/F-32. | plant `measureWidest(t,s){ const L=t.split('\n'); let m=0; for(...) m=Math.max(m,this._measureRange(L[l],0,L[l].length,s)); return m; }` -> `npm run torture` `ok` exit 0; `measureAllocs` `bytesPerCall=0` `verdict=pass`; `checkNoGc` `ok=true`; `checkNoGc(summary,{maxBytesPerOp:0.0001})` -> `pass` at a measured `result.bytesPerOp` of `0.0638`; `checkNoGc(result,...)` -> `TypeError: Cannot read properties of undefined (reading 'major')`; perf_hooks GC events shipped **1** vs mutant **82** |
+| **F-37** | **S2** | **Nothing in the gate can see TRANSIENT allocation, so "zero allocation on any hot path" is unproven on all six T6 windows -- and the one rule that would catch it is structurally vacuous.** Three independent mechanisms compose: (i) `measureAllocs` / `maxBytesPerCall` is a RETENTION lane by the profiler's own definition -- `lite-gc-profiler/llms.txt:179` says it is "Distinct from `measureOps`, which reports an allocation RATE (`maxBytesPerOp`) and sees transient garbage that `measureAllocs` settles away" -- so per-call garbage that the scavenger reclaims measures as exactly 0 bytes; (ii) `checkNoGc`'s `maxBytesPerOp` rule reads `summary.bytesPerOp`, but `measureOps` puts `bytesPerOp` on the RESULT, not the summary (`summary.bytesPerOp` is `undefined`), and `checkNoGc` cannot be handed the result instead because it dereferences `summary.gc.major` and throws -- **so `maxBytesPerOp` passes at every threshold for every body, including `0` and `0.0001` against a measured 0.0638 B/op**; (iii) `stabilize: 'deep'`, which `harness.mjs:157-164` hardcodes because `maxArrayBuffersGrowth` requires it, additionally converts `bytesPerOp` from transient allocation into retention (`Gc.d.ts:822-826`). Proven in M4 by planting the plan's own A26 mutation -- `measureWidest` reimplemented with `text.split('\n')`, allocating one array plus three strings per call across 505,000 calls in window E: `npm run torture` printed `ok`, exit 0, with `measureAllocs` reporting `bytesPerCall = 0`, `checkAllocs` `verdict = pass`, and `checkNoGc` `ok = true`. A direct `perf_hooks` GC observer over the same loop separates the two bodies unambiguously -- **shipped 1 GC event, split mutant 82 (81 scavenges)**, heap delta 35,184 B vs 73,912 B -- so the signal exists and no gated rule reads it. Fourth member of the class F-27 (retention witness tracks a throwaway), F-31 (structural gate has no total) and F-32 (reject branches never measured) belong to, and the broadest: those blind one witness each, this one means the package's headline claim, asserted in README seven times (F-17) and in `llms.txt`, has never been gated by anything that can observe it. **M4 corrects its own false comment and adds an ALLOCATION-VOLUME detector to the two windows it introduces (E and F) -- the sum of positive `heapUsed` deltas over 200,000 strided calls, limit 1,000,000 B, measured 21,384-26,432 B on the shipped bodies and 32,881,040 B on the split mutant. **CLAUSE (ii) HAS NO REFERENT IN THIS GATE (verified 2026-08-20).** `harness.mjs:44` reads `RULES = { maxMajor: 0, maxPauseMs: 4, maxArrayBuffersGrowth: 0 }`; `grep -rn maxBytesPerOp test/` returns only two COMMENTS (`t6-alloc.mjs:91`, `:392`). The rule has never been in `RULES`, so there is nothing vacuous to delete -- the vacuity is a property of `checkNoGc` IF the rule were added, and M9pre records that as a reason not to add it. **THIS ROW'S MUTANT NUMBER IS WRONG. RESOLVED BY MEASUREMENT 2026-08-21 (M9pre).** The row said 32,881,040 B; `t6-alloc.mjs:112` said "28,042,664 B, every rep". Re-measured on this host at Node v26.3.1: **28,042,592 B isolated** (72 B from the gate's figure -- GC noise) and **30,795,416 B inside the full-run context**. The gate's number reproduces; **this row's 32,881,040 does not**, and is retained above only as the M4-era reading it was. The lesson is the row's own: a number quoted from a finding is not a measurement, and two tracked files disagreed by 17% for four releases with nothing able to notice. A `PerformanceObserver` on `'gc'` was prescribed first and measured UNUSABLE: its entries are delivered on a later turn and `takeRecords()` returns 0 from inside the loop; the general fix -- all six windows, the vacuous rule, and the `maxArrayBuffersGrowth`-vs-transient conflict, which cannot both be gated in one `stabilize` mode and therefore need two passes -- is routed to M9** alongside F-27/F-31/F-32. | plant `measureWidest(t,s){ const L=t.split('\n'); let m=0; for(...) m=Math.max(m,this._measureRange(L[l],0,L[l].length,s)); return m; }` -> `npm run torture` `ok` exit 0; `measureAllocs` `bytesPerCall=0` `verdict=pass`; `checkNoGc` `ok=true`; `checkNoGc(summary,{maxBytesPerOp:0.0001})` -> `pass` at a measured `result.bytesPerOp` of `0.0638`; `checkNoGc(result,...)` -> `TypeError: Cannot read properties of undefined (reading 'major')`; perf_hooks GC events shipped **1** vs mutant **82** |
 | **F-38** | **S2** | **`measureLine`'s clamp has FOUR legs where `drawWrapped`'s has TWO, so the two disagree on a NaN `end` -- fork (3)'s own criterion, unclosed, on the exact value a failed layout produces.** `drawWrapped` clamps with `if (!(startIdx >= 0)) startIdx = 0;` and `if (!(endIdx <= tlen)) endIdx = tlen;` (`BitmapFont.js:919-920`) -- a NaN `endIdx` fails `<=`, becomes `tlen`, and the WHOLE line renders. `measureLine` adds `if (!(end >= 0)) end = 0;`, which fires first on NaN and drives `end` to 0, so it returns 0 px for a range the renderer draws in full. Measured on an advance-8 font: `[0, NaN)` -> `measureLine` **0** vs `drawWrapped` **4 quads (32)**; `[NaN, NaN)` -> 0 vs 32; `[1, NaN)` -> 0 vs 24. A `layoutBuffer` is a `Float32Array` and NaN is precisely what it holds when a layout pass fails or was never run, which is the caller this method exists for. The two surplus legs were added for symmetry and one of them is not symmetric: dropping `!(end >= 0) -> 0` makes the doors agree on NaN AND on negatives (a negative `end` then falls to `!(end > start)` and returns 0, matching the renderer's never-entered loop), while `!(start <= len) -> len` is harmless and can stay. Found by qa in M4, fixed in M4. Same shape as F-35, one method further on, and the reason it survived fork (3)'s ratification is that no tier enumerated a NaN `end`. | `measureLine('AAAA', 0, NaN, 1)` -> `0`; the same range through `drawWrapped` -> 4 drawImage calls |
 | **F-39** | S3 | **`measureWidest` floors its answer at 0, so it disagrees with `measure` and with its own oracle law on any font whose widest line is negative.** The body opens `let max = 0` and closes `return width > max ? width : max`, so a negative line width can never be returned. A negative `xadvance` is a valid `Int16` the constructor accepts in BOTH lanes -- `{ checked: true }` included, because a negative advance is neither lossy nor non-finite -- and negative kerning reaches the same state with non-negative advances. Measured: `xadvance: -5` gives `measure('AAA') === -15` and `measureWidest('AAA') === 0`; `xadvance: 0` with `kernings: [{first: 65, second: 65, amount: -3}]` gives `measure('AAA') === -6`, oracle max `-6`, `measureWidest` `0`. This falsifies assertion A3 (`measureWidest(s) === measure(s)` for newline-free `s`) and A5 (the allocating-oracle law) for that whole class, and both assertions are VACUOUS with respect to it because T5's corpus runs only `FONT_SNAP` and `FONT_SNAP_KERN`, which are all-positive by construction. Fix: initialise the accumulator to `-Infinity`; the empty string still returns 0 because the final comparison sees `width === 0`. Found by qa in M4, fixed in M4. | `xadvance: -5` -> `measure('AAA')` `-15`, `measureWidest('AAA')` `0` |
 | **F-40** | S3 | **The fork (4) amendment claims a constructed font cannot produce a NaN width from valid input; it can, so NaN is not an unambiguous fail signal.** `decisions/0004` and `SESSION-M4.md` 2.6 both record "every advance is a value out of an `Int16Array` multiplied by a finite scale, so a font that constructs cannot produce a NaN width from valid input", which is what makes NaN readable as "you gave me an argument I cannot use". Mixed-sign Int16 advances defeat it: with `xadvance: 32767` and `xadvance: -32768`, `measure('AB', Number.MAX_VALUE)` is **NaN** (`+Infinity + -Infinity`), indistinguishable from the door's fail signal, and `measure('A', Number.MAX_VALUE)` is **Infinity** -- a non-finite width from a scale the door ACCEPTS, since `Number.MAX_VALUE` passes `!(scale > 0 && scale < Infinity)`. Both behaviours are pre-existing (1.3.0 is identical) and neither is a semver delta; what is new in M4 is the record asserting they cannot happen. Recorded rather than fixed: narrowing the scale door to exclude `MAX_VALUE` would need a magnitude bound nobody has derived, and the honest repair is to state the limit. Same class as F-24 -- a record claiming a property the code does not have. Found by qa in M4; the claim is corrected in M4, the behaviour is left to M9 alongside F-08's storage half. | `chars` advances `32767` and `-32768`: `measure('AB', Number.MAX_VALUE)` -> `NaN`; `measure('A', Number.MAX_VALUE)` -> `Infinity` |
@@ -578,7 +578,7 @@ M0 --> M1 --> M2 --> M3 --> M4 --> M4a ----------------+
        |      |                     |                  |
        |      +--> M2a              |                  |
        |      |                     |                  |
-       |      +--------------------> M5 --> M6 ------+ |
+       |      +--------------------> M5 --> M6 ------x |   (M6 CUT 2026-08-20)
        |                                             | |
        +--> M8 --> M8b --------------------------------+ |
                                                      | |
@@ -629,6 +629,8 @@ picked the next one" is not a reason:
    and the torture run carries zero.
 
 M5 and M6 keep their order behind it; M9 still depends on all of them.
+(SUPERSEDED 2026-08-20: M6 was CUT after M5 shipped. M9 depends on M5 only
+through the quad format it already consumes, and on nothing M6 would have made.)
 
 **Next after M7: M5** (1.9.0), planned 2026-08-20 -- see `SESSION-M5.md`. This
 one was NOT a choice in the sense M7 was: with M7 shipped, M5 is the **only
@@ -641,7 +643,7 @@ one; F-48 (S4, Atlas.js) fails closed and loudly, and folding an unrelated
 COLD-path repair into the session that creates a public buffer format would
 muddy the one diff that most needs to stay readable.
 
-M5 IMPLEMENTED 2026-08-20 (1.9.0, uncommitted at time of writing). Its
+M5 SHIPPED 2026-08-20 (1.9.0, published, commit c030089). Its
 plan-time rebaseline was the largest yet -- thirteen rows -- because its brief
 is the oldest unexecuted one in this document and eight releases have landed on
 it. Two of its shipped assertions turned out to be UNSATISFIABLE as
@@ -699,11 +701,15 @@ wrong. Current state of the three unscheduled sessions:
 | session | stamped | reality |
 |---|---|---|
 | M5 | `1.9.0` | RE-STAMPED 2026-08-20 at plan time. Was `1.5.0`, CONSUMED by M8 on 2026-08-18; M5 was left stale deliberately until it was planned, which is the rule working as written (the same path M7 took). |
-| M6 | `unassigned` | was `1.6.0`, CONSUMED by M2a. Cleared 2026-08-19 rather than guessed. |
+| M6 | `unassigned` | was `1.6.0`, CONSUMED by M2a. Cleared 2026-08-19 rather than guessed. **SUPERSEDED 2026-08-20 -- never re-stamped, which is the rule paying off: a session that is cut costs no version number at all.** |
 | M7 | `1.8.0` | SHIPPED 2026-08-20. Was `1.7.0`, CONSUMED by M8b; M7 was planned the same day, so it re-stamped instead of aging stale. |
 
 A stamped-but-consumed number is worse than none: it reads as a reservation and
-it is not one. M6 now carries `unassigned` for exactly that reason.
+it is not one. M6 now carries `unassigned` for exactly that reason -- and M6 was
+then CUT (2026-08-20) without ever taking a number, which is the cleanest
+demonstration this rule has produced: had it been speculatively re-stamped to
+`1.7.0` on 2026-08-19, that number would have been burned by a session that
+never shipped.
 
 DECISION NUMBERS ARE ISSUED AT PLAN TIME, NOT RESERVED. The reservations below
 are stale: M6 reserves `0006-range-parameters.md`, M7 `0007-atlas-subpath.md`,
@@ -719,8 +725,11 @@ gap is recorded, not closed: renumbering 0007 to make filenames sort by ship dat
 reservation habit this very rule condemns, in tidier clothes. M2b issued 0008
 because it is planned AFTER M8b was, so it takes the next free number, not the
 next ship-order one; decision numbers follow plan order and ship order is free
-to differ. M6, M7
-and M9 re-issue when planned.
+to differ. **M5 issued `0010` (`0010-glyph-quads.md`, shipped 1.9.0), so the
+next free number is `0011`** -- M9's brief still names `decisions/0009-two-oh.md`
+and that reservation is VOID: `0009` shipped as `0009-atlas-subpath.md` (M7).
+M6 re-issues nothing: it was cut before plan time and took no number. M9
+re-issues when planned.
 
 Why each edge exists:
 
@@ -732,16 +741,22 @@ Why each edge exists:
   Shipping a public buffer contract over a cursor that a NaN can poison bakes
   F-03 into a format, which is the most expensive kind of mistake available
   here.
-- **M2 blocks M6** for the reason stated in section 2: M6 makes `start`/`end`
-  public, and F-04 is the negative-start failure in its exact hand-off shape.
+- ~~**M2 blocks M6**~~ **EDGE DELETED 2026-08-20 -- M6 was CUT.** The reason it
+  existed (M6 makes `start`/`end` public, and F-04 is the negative-start failure
+  in its exact hand-off shape) is now the reason M6 does not ship: with the
+  motivation discharged, the exposure buys nothing. Kept visible rather than
+  deleted because it is the clearest ordering argument in this document and it
+  is worth reusing.
 - **M4a blocks M5.** `layoutGlyphs` is a seventh public face that walks `text`,
   and F-42 is the proof that this package installs a text door one family at a
   time. Shipping the quad buffer over an undoored walk gives the hang a third
   site on the day the buffer becomes a public format contract. M4a is also the
   cheapest session in this document -- two predicates -- and an S1 hang has no
   business waiting behind a feature.
-- **M5 blocks M6** because M6 adds range parameters to `layoutGlyphs`, which M5
-  creates.
+- ~~**M5 blocks M6**~~ **EDGE DELETED 2026-08-20.** M5 shipped `layoutGlyphs`
+  and `drawQuads` in 1.9.0 and M6 was cut the same day, so this edge was
+  satisfied and then discharged within hours. Ranges on `layoutGlyphs` were
+  always contingent; nothing asked for them.
 - **M1 blocks M8, and that edge has been satisfied since 1.2.2.** `drawFastInt`
   is the same digit loop and the same scratch buffer; shipping it before the
   magnitude door would have meant writing the door twice, or worse, once. M1
@@ -764,7 +779,10 @@ Why each edge exists:
   font with a rejected descriptor even is, and both edit the constructor and the
   doc set.
 - **M9 depends on all of it.** A major bump should collect every breaking change
-  in one release, not dribble them across four.
+  in one release, not dribble them across four. **As of 2026-08-20 every edge
+  into M9 is satisfied**: M4 (1.4.0), M7 (1.8.0), M8 (1.5.0), M8b (1.7.0)
+  shipped, and M6 -- its last outstanding blocker -- is superseded. M9 is the
+  only session left in this document.
 
 ---
 
@@ -1965,9 +1983,8 @@ package: "@zakkster/lite-bmfont"
 version_target: 1.9.0  # RE-STAMPED 2026-08-20 at plan time; was 1.5.0, which
                        # M8 consumed on 2026-08-18. Two additive methods plus
                        # one named export, no shipped behaviour changed -> MINOR.
-status: next           # IMPLEMENTED 2026-08-20, tree modified &
-                       # UNCOMMITTED, awaiting the user's publish -- NOT `done`
-                       # until 1.9.0 is released. Baseline 1ab66eb (1.8.0).
+status: done           # shipped 2026-08-20 (published, commit c030089).
+                       # Baseline 1ab66eb (1.8.0).
                        # Pipeline: planner -> coder -> reviewer (REJECTED, 1
                        # blocker) -> coder -> qa (FAIL, 2 blockers) -> coder ->
                        # qa (PASS). Gate at PASS: 136 tests / 135 pass / 0 fail
@@ -2120,7 +2137,7 @@ DONE WHEN
 ```
 
 ===============================================================================
-# M6 -- lite-bmfont vUNASSIGNED -- range-addressable text (RE-SCOPED 2026-08-19)
+# M6 -- lite-bmfont vUNASSIGNED -- range-addressable text (SUPERSEDED 2026-08-20)
 ===============================================================================
 
 ```markdown
@@ -2131,8 +2148,11 @@ version_target: unassigned   # was 1.6.0, CONSUMED by M2a on 2026-08-19. Not
                              # "decision numbers and version targets are issued
                              # at PLAN time, not reserved". A guessed number is
                              # how M8b's 1.6.0 became wrong.
-status: planned              # RE-SCOPED 2026-08-19; see AMENDMENT below. Most
-                             # of the original scope has shipped or moved.
+status: superseded           # CUT 2026-08-20 at the keep-or-cut decision that
+                             # the AMENDMENT and the DONE WHEN both required.
+                             # RE-SCOPED 2026-08-19 first; see AMENDMENT below.
+                             # Three of four premises had expired; the fourth
+                             # was not justified. See THE CUT, below.
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -2141,11 +2161,76 @@ peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-text-layout"]
 findings: []                 # was [F-04]. F-04 CLOSED in 1.2.3 (M2). The
                              # "why it comes after M2" argument below is
                              # discharged, not pending.
-depends_on: [M5]             # was [M2, M5]. M2 shipped 1.2.3.
-blocks: [M9]
+depends_on: [M5]             # was [M2, M5]. M2 shipped 1.2.3; M5 shipped
+                             # 1.9.0 on 2026-08-20. BOTH EDGES SATISFIED -- this
+                             # session was unblocked and was cut on merit, not
+                             # abandoned because it could not run.
+blocks: []                   # was [M9]. Released 2026-08-20 by the cut: M9's
+                             # depends_on drops M6 and is now fully satisfied.
 ---
 
 # lite-bmfont -- close the last allocation in the lite-text-layout pipeline
+
+## THE CUT -- 2026-08-20 -- this session does not ship
+
+The AMENDMENT below re-scoped this session down to ONE live item and then
+required a keep-or-cut decision at plan time; the DONE WHEN named
+`status: superseded` as an admissible outcome, on the condition that the
+reasoning be written down. This is that reasoning. Taken 2026-08-20, after M5
+shipped 1.9.0 and cleared the last blocking edge.
+
+CUT. The surviving item -- `start`/`end` on single-line `draw` -- is not built.
+
+The four premises this session rested on, and where each stands today:
+
+| premise | state 2026-08-20 | evidence |
+|---|---|---|
+| the measure half is missing | **SHIPPED, by a contradicting design** | `measureLine(text, start, end, scale)` in 1.4.0, `BitmapFont.js:569`, ratified `decisions/0004:253` |
+| `layoutGlyphs` needs ranges | **NOT THIS SESSION'S** | M5 shipped `layoutGlyphs` + `drawQuads` in 1.9.0; ranges on it were always contingent and were never asked for |
+| every wrapped line needs `text.slice()` per frame | **DISCHARGED** | `drawWrapped` renders each `[start, end)` out of the layout buffer; lite-text-layout TL5 runs the wrapped pipeline at 0 bytes/frame |
+| `1.6.0` is reserved for it | **CONSUMED** | M2a took 1.6.0 on 2026-08-19 (F-45) |
+
+Three expired on their own. The fourth is the decision, and it goes against
+shipping, on the grounds the AMENDMENT set (convenience, not necessity):
+
+1. **No consumer.** TL5's render path is `drawWrapped`. No caller in this repo,
+   in `lite-text-layout`, or in the demo asks for a range-addressable
+   single-line `draw`. The rejection ledger's own standard -- "revisit when a
+   named consumer appears, not before" -- is the standard applied here.
+2. **The cost lands on the most-used method in the package.** Option A (the
+   recommended one) takes `draw` to EIGHT positional parameters, the last two
+   being a swappable index pair. Options B and C were already rejected in
+   writing: B allocates one object per call per frame in the package whose
+   identity is that drawing does not allocate; C duplicates a hot body or adds a
+   frame to it.
+3. **It multiplies F-04's reach by design.** This session's own load-bearing
+   sentence says making `startIdx` public "multiplies its reach from one method
+   to four and writes it into a cross-package contract". That argument was
+   written to justify ORDERING it after M2. With the motivation discharged, the
+   same sentence reads as a reason not to take the exposure at all.
+4. **Two range-measure surfaces with different argument orders already nearly
+   happened here** (AMENDMENT item 1). Adding a third range convention -- range
+   params trailing `scale`/`align` on `draw`, against `measureLine`'s leading
+   pair -- widens exactly the inconsistency that item flagged.
+
+WHAT THE CUT COSTS, RECORDED SO IT IS NOT REDISCOVERED AS A SURPRISE:
+
+- **F-26 loses its owner.** The F-26 row routes to this session on the theory
+  that a public range API creates the first NaN-capable call path into `draw`'s
+  guard, making the reshape falsifiable at last. No such path is now ever built,
+  so the guard stays unfalsifiable through the public API **permanently**, not
+  temporarily. F-26 is RE-ROUTED to M9's hardening pass with a changed question:
+  not "add the behavioural kill" (impossible now) but "delete the unfalsifiable
+  reshape, or pin it in the source-text gate and say that is all it has". See
+  the F-26 row, amended 2026-08-20.
+- **A caller who wants a substring drawn still allocates** a `text.slice()` per
+  call. That cost is real, it is one call per SUBSTRING draw and not one per
+  line per frame, and no shipped or peer consumer pays it today.
+
+REOPENING CONDITION (so this is a decision and not a door nailed shut): a named
+consumer that draws substrings per frame on a hot path, with the per-frame
+allocation measured. Then re-plan it, issue a fresh decision number, and take
+option A with `end` defaulting to `text.length`.
 
 ## AMENDMENT 2026-08-19 -- read this before the body below
 
@@ -3125,6 +3210,134 @@ DONE WHEN (the six M8 T4 pins INVERT -- they pin the DEFECT today; M8b flips eac
 ```
 
 ===============================================================================
+# M9pre -- lite-bmfont -- the gate witnesses (UNRELEASED)
+===============================================================================
+
+```markdown
+---
+package: "@zakkster/lite-bmfont"
+version_target: none         # UNRELEASED, RECOMMENDED. Zero shipped-byte delta:
+                             # files[] excludes test/, so a tarball would differ
+                             # from 1.9.0 only in package.json, BitmapFont.js's
+                             # VERSION const and CHANGELOG.md, and every runtime
+                             # byte a consumer executes would be identical.
+                             # Folded into 2.0.0's CHANGELOG under Tests/gate.
+                             # IF THE USER PREFERS A RELEASE it is 1.9.1 and the
+                             # only extra edits are package.json, the VERSION
+                             # const, the CHANGELOG heading and
+                             # test/packaging.test.js's VERSION pin. A11 stays
+                             # green either way -- it extracts METHOD BODIES
+                             # only and VERSION is top-level, so a bump moves
+                             # no sha. Open decision, recorded not guessed.
+status: complete-unreleased  # WORK COMPLETE 2026-08-21. Pipeline: planner ->
+                             # coder -> reviewer (REJECTED, 2 blockers, both
+                             # false-RED paths) -> coder -> reviewer (APPROVED,
+                             # 2 nits, both closed) -> qa (PASS). Gate green:
+                             # npm test 137/136/0/1, torture ok exit 0, ZERO
+                             # TODO, BREAK exit 1, A11's ten shas frozen,
+                             # BitmapFont.js 0 lines changed. NOT RELEASED --
+                             # see version_target above; the publish-or-land
+                             # decision is the user's and is open.
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak"]
+findings: [F-26, F-27, F-31, F-32, F-37, F-40]   # F-40 DOCS HALF ONLY
+depends_on: [M5]
+blocks: [M9]
+baseline_commit: c030089
+---
+
+# lite-bmfont -- repair the instrument before the only session allowed to move a hot body uses it
+
+WHY THIS IS A SESSION AND NOT A CHAPTER OF M9
+  M9's own rule is "if option C's shift costs more than 2% on `_measureRange`,
+  that is a FINDING". That rule is a MEASUREMENT and the instrument is T6.
+  F-31, F-32 and F-37 each say the instrument is blind in a specific way.
+
+  An instrument repaired in the same commit as the subject it measures cannot
+  adjudicate that subject: a RED result has two candidate causes -- the format
+  change regressed, or the new lane is mis-calibrated -- and a GREEN result has
+  none that can be trusted, because the lane that would have caught the
+  regression was authored in the same commit by the same hand. That is
+  F-31/F-32/F-37 reproduced at the session level.
+
+  Second, independent reason: the gate rebuild's own calibration is a
+  measurement with an unknown answer. `VOL_MAX` (1,000,000) was calibrated for
+  measure-family bodies that emit no `drawImage`; windows A/C/C2 drive 62/64/64
+  recording `drawImage` calls per op, and the file already needed
+  `VOL16_MAX = 4,750,000` and `REGB_MAX = 15,000,000` for windows whose
+  correct-code floors were 3.19 MB and ~6.2 MB. Having the "what is this
+  window's floor" conversation while 20 hot-body sites are half-converted is
+  how a threshold gets tuned quietly -- the exact phrase `t6-alloc.mjs:115`
+  uses to explain why its own margin is stated out loud.
+
+THE ONE RULE
+  ZERO SHIPPED-BYTE DELTA. `BitmapFont.js` is not opened -- not for a comment,
+  not for the stale `_measureRange:76` cross-reference at `:728` (real, and
+  deferred to 2.0.0 for exactly this reason). The proof is A11: its ten
+  method-body sha256s come out unchanged from their 1.8.0 pins.
+
+TASKS
+  Full text in `SESSION-M9pre.md` section 3. In brief:
+  - F-27: track the FONT in T7, not a throwaway `{cycle: c}`; untrack only
+    after `destroy()` is observed; read `size()` after `gc()` + settle. AND
+    correct `t7-soak.mjs:13-16`, whose false constraint produced the bug.
+  - F-31: add a `Reflect.ownKeys` typed-array sum asserted `=== 134712`,
+    RETAINING the four named equalities (sum localises nothing; parts do).
+  - F-37: volume lanes on windows A/B/C/C2/D, each floor MEASURED first, each
+    margin stated in-file. Two passes, with each pass's blind spots written
+    down. No limit copied by analogy.
+  - F-32: new window K driving all 13 enumerated reject-branch doors.
+  - F-26: KEEP all three reshaped guards + a source-text pin. See below.
+  - F-40 docs half: amend `decisions/0004` and `SESSION-M4.md`, leaving the
+    superseded text verbatim under a dated marker.
+  - F-19: CLOSE on sight. 0 non-ASCII in all six shipped files.
+  - `decisions/0011-gate-witnesses.md`, all eight forks.
+
+THREE CORRECTIONS THIS SESSION MAKES TO ITS OWN FINDING ROWS
+  1. **F-26 says TWO reshape sites. There are THREE** -- `BitmapFont.js:732`
+     (draw), `:1233` (drawWrapped), `:1360` (layoutGlyphs, added by M5/1.9.0
+     after the row was written). And the chosen answer REVERSES the obvious
+     one: KEEP, do not delete. Deleting does not remove a guard, it writes the
+     NaN-ACCEPTING form back into three hot bodies at zero byte saving --
+     `BitmapFont.js:731` already records "Two comparisons before, two after".
+     What KEEP costs, recorded as weaker than every other assertion here: these
+     three sites will never have a behavioural test, their only gate is a
+     source-text pin, and that must never be described as behavioural coverage.
+  2. **F-37 clause (ii) has NO REFERENT in this gate.** `harness.mjs:44` reads
+     `RULES = { maxMajor: 0, maxPauseMs: 4, maxArrayBuffersGrowth: 0 }` -- there
+     has never been a `maxBytesPerOp` key. The vacuity is a property of
+     `checkNoGc` IF the rule were added, not a defect present here. Nothing to
+     delete; `0011` records why adding it would be inert.
+  3. **F-27's prescribed fix contradicted `t7-soak.mjs:13-16`**, which claims
+     tracking the font "violates lite-leak's held-value contract". The contract
+     (`lite-leak/llms.txt:125-129`) says only that neither `cleanup` nor `tag`
+     may close over `target`. It does not forbid tracking the target -- that is
+     `track()`'s designed use. The comment is half wrong, and the wrong half is
+     what argued for the throwaway target that IS the defect.
+
+TWO NUMBERS FOR ONE MUTANT (re-measure before quoting either)
+  The split-`measureWidest` mutant is recorded as **28,042,664 B**
+  (`t6-alloc.mjs:112`) and **32,881,040 B** (the F-37 row). 17% apart, both
+  tracked, both pre-existing.
+
+NON-GOALS
+  No change to any shipped file. No F-08 storage decision. No `measure`
+  semantics. No `FORMAT.md` (that is M9's). No prototype freeze.
+
+DONE WHEN
+  A11's ten method-body shas unchanged from their 1.8.0 pins; the F-31 total
+  asserted at 134712 with the four named equalities retained; T7's witness tied
+  to font lifetime and its header comment corrected; windows A/B/C/C2/D each
+  carrying a volume lane whose floor was measured on this host with its margin
+  stated in-file; window K driving all 13 doors; `decisions/0011` written;
+  `decisions/0004` amended; A1-A5 each applied in a sandbox and watched go red,
+  with A2 recorded GREEN-BEFORE and RED-AFTER.
+```
+
+===============================================================================
 # M9 -- lite-bmfont v2.0.0 -- the breaking consolidation
 ===============================================================================
 
@@ -3138,8 +3351,25 @@ gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak", "@zakkster/lite-text-layout"]
-findings: [F-06, F-08, F-09, F-13, F-14]
-depends_on: [M4, M6, M7, M8, M8b]
+findings: [F-06, F-08, F-09, F-13, F-14, F-40]
+                              # SPLIT 2026-08-20 at plan time. F-40 is the
+                              # BEHAVIOUR half only (the scale-magnitude bound,
+                              # which needs F-08 to settle what an advance can
+                              # be); its DOCS half is M9pre's. F-19 CLOSED on
+                              # sight -- M2b (1.6.1) discharged it and all six
+                              # shipped files measure 0 non-ASCII. The five GATE
+                              # findings F-26/F-27/F-31/F-32/F-37 moved to
+                              # M9pre. An audit on 2026-08-20 found seven rows
+                              # carrying "routed to M9" in their BODIES that had
+                              # never been in this list; the frontmatter and the
+                              # rows had disagreed for eight releases.
+depends_on: [M4, M7, M8, M8b, M9pre]
+                                # M6 REMOVED 2026-08-20: superseded, not shipped
+                                # (see THE CUT in its brief). M9pre ADDED the
+                                # same day: the instrument that must adjudicate
+                                # this session's 2%-on-_measureRange rule is the
+                                # one F-31/F-32/F-37 say is blind. M4 1.4.0,
+                                # M7 1.8.0, M8 1.5.0, M8b 1.7.0 all shipped.
 ---
 
 # lite-bmfont -- collect every breaking change into one major
@@ -3204,8 +3434,11 @@ THE DECISION (record it before coding)
   repos.
 
 TASKS
-  - Write decisions/0009-two-oh.md BEFORE coding, with the four breaking
+  - Write decisions/**0012**-two-oh.md BEFORE coding, with the four breaking
     changes, the fixed-point measurement, and the migration table.
+    NUMBER RE-STAMPED 2026-08-20: the reserved `0009` shipped as
+    `0009-atlas-subpath.md` (M7), `0010` as `0010-glyph-quads.md` (M5), and
+    `0011` is M9pre's. Fourth consecutive session bitten by a reservation.
   - **FORMAT.md**: the glyph stride and slot meanings including the new fixed
     point, the kerning key derivation, the layout-buffer stride 4 including the
     F-13 flags mask, the quad stride 6, and a `FORMAT_VERSION` constant that
@@ -3228,14 +3461,25 @@ TASKS
     this repo.
   - Migration section in CHANGELOG under Breaking, with a before/after table per
     change.
-  - Three-place version sync 1.8.0 -> 2.0.0.
+  - Three-place version sync **1.9.0** -> 2.0.0 (was written 1.8.0; M5
+    shipped 1.9.0 on 2026-08-20).
 
 HOT PATH
   This is the one session permitted to change a hot body's instruction count,
-  and it must therefore be the most carefully measured. `assertOps` on all four
-  hot bodies plus `layoutGlyphs`, before and after, on the same machine in the
-  same run, with the numbers in the decision record and in the README benchmark
-  block stamped with version and machine. If option C's shift costs more than
+  and it must therefore be the most carefully measured. `assertOps` on **all
+  EIGHT bodies that read an advance or a kerning amount** -- `_measureRange`,
+  `measure`, `draw`, `drawFast`, `drawFastInt`, `drawWrapped`, `layoutGlyphs`,
+  `drawQuads` -- before and after, on the same machine in the same run, with the
+  numbers in the decision record and in the README benchmark block stamped with
+  version and machine. (Was "all four hot bodies plus `layoutGlyphs`"; written
+  before `drawFastInt`, `layoutGlyphs` and `drawQuads` existed.)
+  DESIGN NOTE HANDED FORWARD BY M9pre, an untested hypothesis written down so
+  the measurement is aimed at the right implementation rather than the naive
+  one: every advance/kerning read site already multiplies by `scale`. If the
+  1/16 is folded into a per-CALL constant computed once at the top of each body,
+  option C costs ZERO extra per-glyph operations and one extra multiply per
+  call -- a per-CALL cost, which law 6 prices as cheap, not the per-glyph shift
+  this fork assumes. If option C's shift costs more than
   2% on `_measureRange`, that is a finding: write it down and re-open the
   decision rather than shipping a number nobody looked at.
 
@@ -3243,10 +3487,17 @@ ASSERTIONS
   - `measure('AA\nAA') === 16` and `measure('A\nAAAAAA') === 48` -- the exact
     inversion of the v1.x pinned values, with both old numbers quoted in the
     migration note.
-  - With `xadvance: 8.6`: `measure('AA')` is within 0.05 of 17.2 under option C
-    (exactly 17.25), against 16 in v1.x. Assert the literal.
-  - Over a 40-glyph line the total error against the descriptor oracle is
-    <= 1.0px under C, against 24px in v1.x. Assert both bounds.
+  - With `xadvance: 8.6`: `measure('AA')` is **exactly 17.25** under option C,
+    against 16 in v1.x. **ASSERT THE EXACT LITERAL, NOT A TOLERANCE.** Measured
+    2026-08-20: the true gap to 17.2 IS 0.05, and "within 0.05" holds only
+    because `17.25 - 17.2` evaluates to `0.049999999999997158`. An assertion
+    resting on float representation luck is the F-38 shape.
+  - Over a 40-glyph line: v1.x drift is **exactly 24.00px** (measured 320 vs an
+    exact 344). Option C gives `8.625 * 40 = 345.0` against 344.0 -- an error of
+    **exactly -1.0000px, an OVERSHOOT**, where this brief's "<= 1.0px" implied
+    an undershoot with margin. `<= 1.0` passes by EQUALITY ALONE; `< 1.0` fails.
+    Assert the exact literals, or pick a probe advance that is not boundary-
+    exact and state why.
   - The M2 conservation law holds with the oracle now reading fractional
     advances -- the residual that F-08 forced T0 to tolerate is gone, and the
     three-way equality is exact. Delete the tolerance and prove the law tightens.
@@ -3255,8 +3506,10 @@ ASSERTIONS
   - `FORMAT_VERSION` asserted in this package and in lite-text-layout's
     conformance test; both green.
   - Every v1.x test still present, either passing or explicitly migrated with a
-    comment naming the breaking change and its decision record.
-  - `assertOps` on all five hot bodies recorded against v1.8.0.
+    comment naming the breaking change and its decision record. **Named
+    migration site inside the gate: `t6-alloc.mjs:298` pins
+    `measure(S64) === 744` and flips to `252` under F-06.**
+  - `assertOps` on all **eight** bodies recorded against **v1.9.0**.
   - `npm run torture` prints "ok"; every T9 control exits non-zero;
     `BMFONT_TORTURE_BREAK=1 npm run torture` exits non-zero.
   - `npm pack --dry-run` includes FORMAT.md and excludes test/.
@@ -3306,14 +3559,19 @@ None of them is a feeling.
    behaviour, and a layout hand-off shape that turns a wrap engine's off-by-one
    into a whole line of invisible draw calls. It blocks both feature sessions
    for a reason.
-4. **M2 before M6, always.** M6 makes `startIdx` a public parameter of the
-   most-used method in the package. F-04 is what a bad `startIdx` does. Shipping
-   the API first writes the bug into a cross-package contract.
+4. ~~**M2 before M6, always.**~~ **MOOT 2026-08-20 -- M6 was CUT.** The
+   argument stands and is worth keeping: M6 would have made `startIdx` a public
+   parameter of the most-used method in the package, and F-04 is what a bad
+   `startIdx` does. Shipping the API first writes the bug into a cross-package
+   contract. The cut is the strongest form of the same conclusion.
 5. **M7 is the free win.** It touches no hot body, has a named consumer, closes
    a finding, and is the only session in this document that can be done in
    parallel with anything else.
 6. **Do not start M9 until M4, M6, M7 and M8 have all shipped.** A major that
    collects three breaking changes and then discovers a fourth is two majors.
+   **SATISFIED 2026-08-20**: M4/M7/M8/M8b shipped, M6 superseded. A cut edge
+   counts only because the cut is recorded with its reasoning -- an unscheduled
+   session left `planned` would NOT have satisfied this line.
 
 ### The rejection ledger
 
