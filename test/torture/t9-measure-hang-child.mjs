@@ -90,6 +90,51 @@ function patch(src, marker, replacement, expected, name) {
     return src.split(marker).join(replacement);
 }
 
+// ---- METHOD-SCOPED PATCHING (M5, 1.9.0) ------------------------------------
+// These markers used to be GLOBALLY unique, and two of them stopped being so
+// the moment `layoutGlyphs` landed: it reproduces `draw`'s arithmetic exactly,
+// so it carries a byte-identical copy of the per-line-Y line AND a fourth copy
+// of the measure family's text door. Both duplications are correct and must
+// not be "deduplicated" -- a shared helper would be a call in a hot body.
+//
+// So the markers are scoped to ONE METHOD BODY instead of being assumed unique
+// across the file. `expected` stays 1 no matter how many other faces
+// legitimately copy the line, and the control still mutates the body it claims
+// to mutate.
+//
+// DO NOT fix a future collision by raising `expected` -- that patches every
+// copy, so the control no longer tests what it names. DO NOT take the first
+// match either: that is position-dependent and silently re-breaks the day
+// someone reorders methods. Scope it, and keep the exact-count check, because
+// refusing to test a body it cannot uniquely reconstruct is this control's
+// whole value.
+
+/**
+ * Character range of ONE method body, by the same `^    name(` .. `^    }`
+ * extraction the A11 body-sha freeze uses. Null if it cannot be recovered.
+ */
+function methodRange(src, method) {
+    const open = new RegExp('^    ' + method + '\\(', 'm');
+    const m = open.exec(src);
+    if (!m) return null;
+    const CLOSE = '\n    }\n';
+    const close = src.indexOf(CLOSE, m.index);
+    if (close === -1) return null;
+    return [m.index, close + CLOSE.length];
+}
+
+/** Apply one replacement INSIDE a single named method body. */
+function patchInMethod(src, method, marker, replacement, expected, name) {
+    const r = methodRange(src, method);
+    if (r === null) {
+        process.stderr.write('method range for ' + method + ' could not be recovered\n');
+        process.exit(3);
+    }
+    const patched = patch(src.slice(r[0], r[1]), marker, replacement, expected,
+        name + ' (scoped to ' + method + ')');
+    return src.slice(0, r[0]) + patched + src.slice(r[1]);
+}
+
 // The fork (3) range door: CLAMP-ONLY (F-35, it deliberately does not truncate,
 // because drawWrapped does not either) and TWO-LEG (F-38, there is no
 // `!(end >= 0)` leg, because drawWrapped has none and a NaN end must reach
@@ -105,12 +150,24 @@ const RANGE_DOOR =
 const TEXT_DOOR = "        if (typeof text !== 'string') return NaN;\n";
 const PER_LINE = '                cursorY = anchorY + Math.round(++lineIndex * step);';
 
-async function load(marker, replacement, expected, name) {
+async function load(marker, replacement, expected, name, methods) {
     if (marker === null) {
         const m = await import(SRC.href);
         return m.BitmapFont;
     }
-    const src = patch(readFileSync(SRC, 'utf8'), marker, replacement, expected, name);
+    let src = readFileSync(SRC, 'utf8');
+    if (methods) {
+        // Scoped: applied to EACH named method, expecting `expected` hits in
+        // each. Patching every member of the family is deliberate -- it is what
+        // proves they all carry the identical door -- but each is now counted
+        // in its own body, so a new face elsewhere cannot silently absorb the
+        // count (M5).
+        for (const method of methods) {
+            src = patchInMethod(src, method, marker, replacement, expected, name);
+        }
+    } else {
+        src = patch(src, marker, replacement, expected, name);
+    }
     const tmp = join(tmpdir(), 'bmfont-m4-' + name + '-' + process.pid + '.mjs');
     try {
         writeFileSync(tmp, src);
@@ -131,16 +188,22 @@ if (mode === 'door') {
     const b = f.measure(HANGY);
     const c = f.measureWidest(HANGY);
     const d = f.measureLine('AAAA', NaN, NaN, 1);
+    // layoutGlyphs (M5) carries the SAME text door and must answer HANGY with NaN
+    // in O(1), out of process -- the in-process boundary test cannot prove
+    // termination (a synchronous hang blocks the event loop and no per-test
+    // timeout can interrupt it), which is why this control exists.
+    const e = f.layoutGlyphs(HANGY, new Float64Array(64), 0, 0, 1, 0);
     // Returning is not sufficient: the VALUE must be the one the door promises.
     if (a !== 32) die('measureLine(-Inf,Inf) returned ' + a + ', expected 32');
     if (!Number.isNaN(b)) die('measure(array-like) returned ' + b + ', expected NaN');
     if (!Number.isNaN(c)) die('measureWidest(array-like) returned ' + c + ', expected NaN');
+    if (!Number.isNaN(e)) die('layoutGlyphs(array-like) returned ' + e + ', expected NaN');
     // F-38: 32, not 0. A NaN pair clamps to the WHOLE line -- NaN start to 0,
     // NaN end to len -- which is what drawWrapped renders for the same pair. A 0
     // here means an `end >= 0` leg is back in the door.
     if (d !== 32) die('measureLine(NaN,NaN) returned ' + d + ', expected 32 (F-38)');
     process.stdout.write(JSON.stringify({
-        mode, a, b: String(b), c: String(c), d,
+        mode, a, b: String(b), c: String(c), d, e: String(e),
         y0: baselines(f, 'A\nB\nC\nD\nE', 0, 1.1),
         y06: baselines(f, 'A\nB\nC\nD\nE', 0.6, 1.1),
     }) + '\n');
@@ -156,10 +219,24 @@ if (mode === 'nodoor') {
 }
 
 if (mode === 'notext') {
-    const BitmapFont = await load(TEXT_DOOR, '        // text door removed by t9 control 13 self-test\n', 3, 'TEXT_DOOR');
+    const BitmapFont = await load(TEXT_DOOR, '        // text door removed by t9 control 13 self-test\n', 1, 'TEXT_DOOR',
+        ['measure', 'measureWidest', 'measureLine']);
     const f = new BitmapFont({}, JSON_SNAP);
     const b = f.measure(HANGY);                                 // never returns
     process.stdout.write(JSON.stringify({ mode, b: String(b) }) + '\n');
+    process.exit(0);
+}
+
+if (mode === 'notext-layout') {
+    // M5: strip layoutGlyphs's text door and prove the walk then HANGS on the
+    // array-like -- the door-removed twin of the shipped `door` lane above. Same
+    // TEXT_DOOR marker (layoutGlyphs carries the identical predicate), scoped to
+    // layoutGlyphs alone so the count stays 1.
+    const BitmapFont = await load(TEXT_DOOR, '        // text door removed by t9 control 13 self-test\n', 1, 'TEXT_DOOR',
+        ['layoutGlyphs']);
+    const f = new BitmapFont({}, JSON_SNAP);
+    const n = f.layoutGlyphs(HANGY, new Float64Array(64), 0, 0, 1, 0);   // never returns
+    process.stdout.write(JSON.stringify({ mode, n }) + '\n');
     process.exit(0);
 }
 
@@ -167,7 +244,7 @@ if (mode === 'aform' || mode === 'b2form') {
     const repl = mode === 'aform'
         ? '                cursorY = Math.round(cursorY + step);'
         : '                cursorY = Math.round(y + ++lineIndex * step);';
-    const BitmapFont = await load(PER_LINE, repl, 1, 'PER_LINE');
+    const BitmapFont = await load(PER_LINE, repl, 1, 'PER_LINE', ['draw']);
     const f = new BitmapFont({}, JSON_SNAP);
     process.stdout.write(JSON.stringify({
         mode,

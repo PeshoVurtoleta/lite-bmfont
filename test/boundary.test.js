@@ -22,7 +22,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BitmapFont, DRAWFAST_MAX } from '../BitmapFont.js';
+import { BitmapFont, DRAWFAST_MAX, BitmapFontError, GLYPH_STRIDE } from '../BitmapFont.js';
 import { rec, resetRec, resetTotals, CAP, FONT_ASCII, FONT_NUM, JSON_ASCII, ATLAS } from './torture/harness.mjs';
 
 // ---- exact alignment formulas (closes the mutation-testing gap) -----------
@@ -386,4 +386,173 @@ test('drawFastInt(120) -> 3 glyphs and NO "." ; drawFast(120) -> 5 glyphs WITH a
     let dotFast = 0;
     for (let i = 0; i < rec.calls; i++) if (rec.sw[i] === 4) dotFast++;
     assert.equal(dotFast, 1, 'drawFast renders exactly one "." glyph (sw===4)');
+});
+
+// =====================================================================
+// M5 (v1.9.0): layoutGlyphs / drawQuads boundary matrix
+// =====================================================================
+// A 4-glyph font (A,B,C visible; space id 32 zero-size) for the drawQuads legs.
+function qFontB() {
+    return new BitmapFont(ATLAS, {
+        common: { lineHeight: 20, base: 16 },
+        chars: [
+            { id: 65, x: 1, y: 2, width: 8, height: 12, xoffset: 1, yoffset: 3, xadvance: 9 },
+            { id: 66, x: 11, y: 4, width: 7, height: 11, xoffset: 2, yoffset: 2, xadvance: 8 },
+            { id: 67, x: 20, y: 6, width: 9, height: 13, xoffset: 0, yoffset: 4, xadvance: 10 },
+            { id: 32, x: 0, y: 0, width: 0, height: 0, xoffset: 0, yoffset: 0, xadvance: 6 },
+        ],
+        kernings: [],
+    });
+}
+
+// A6 -- OVERFLOW, both directions. The guard is PER EMITTED RECORD (`p + 6 > cap`),
+// so a buffer one record short throws a PLAIN RangeError (never a BitmapFontError:
+// that is the descriptor door's type), with the pinned message shape; a buffer
+// sized to exactly `count * GLYPH_STRIDE` does NOT throw. Reddens under the
+// capacity compare `>` -> `>=`: the exact-fit buffer then throws on its last
+// record. 'ABC' is three visible glyphs, so need = 18 floats.
+test('A6 (M5): layoutGlyphs overflow throws a plain RangeError one record short, fits exactly', () => {
+    const text = 'ABC';
+    const need = text.length * GLYPH_STRIDE;         // 18, all visible
+    const shortBuf = new Float64Array(need - GLYPH_STRIDE);   // 12 -- one record short
+    let err = null;
+    try { FONT_ASCII.layoutGlyphs(text, shortBuf, 0, 0, 1, 0); } catch (e) { err = e; }
+    assert.ok(err instanceof RangeError, 'expected a RangeError, got ' + err);
+    assert.equal(err instanceof BitmapFontError, false, 'must NOT be a BitmapFontError');
+    assert.match(err.message, /^lite-bmfont: outBuffer holds \d+ floats, glyph \d+ needs \d+$/);
+    // Exactly `count * GLYPH_STRIDE` fits and returns the full count.
+    const exact = new Float64Array(need);
+    let n;
+    assert.doesNotThrow(() => { n = FONT_ASCII.layoutGlyphs(text, exact, 0, 0, 1, 0); });
+    assert.equal(n, text.length);
+});
+
+// A7 -- MATCHED-SCALE EXACTNESS. drawQuads's scale sizes ONLY the source dims;
+// dx/dy are already absolute and already scaled by layoutGlyphs. At a non-zero
+// origin and scale 2, drawQuads(..., scale) reproduces draw's destination
+// exactly. Reddens under applying `scale` to dx/dy as well: the destination x/y
+// then double-scale and diverge from draw.
+test('A7 (M5): drawQuads scale sizes only sw/sh -- dx/dy match draw exactly', () => {
+    const text = 'ABC';
+    const s = 2;
+    const buf = new Float64Array(text.length * GLYPH_STRIDE);
+    const n = FONT_ASCII.layoutGlyphs(text, buf, 5, 7, s, 0);
+    resetRec(ATLAS);
+    FONT_ASCII.draw(rec, text, 5, 7, s, 0);
+    assert.equal(rec.calls, n);
+    const dx = Array.from(rec.dx.slice(0, n));
+    const dy = Array.from(rec.dy.slice(0, n));
+    const dw = Array.from(rec.dw.slice(0, n));
+    const dh = Array.from(rec.dh.slice(0, n));
+    resetRec(ATLAS);
+    FONT_ASCII.drawQuads(rec, buf, 0, n, 0, 0, s);
+    assert.equal(rec.calls, n);
+    for (let g = 0; g < n; g++) {
+        assert.equal(rec.dx[g], dx[g], 'dx[' + g + '] ' + rec.dx[g] + ' != draw ' + dx[g]);
+        assert.equal(rec.dy[g], dy[g], 'dy[' + g + '] ' + rec.dy[g] + ' != draw ' + dy[g]);
+        assert.equal(rec.dw[g], dw[g], 'dw[' + g + '] ' + rec.dw[g] + ' != draw ' + dw[g]);
+        assert.equal(rec.dh[g], dh[g], 'dh[' + g + '] ' + rec.dh[g] + ' != draw ' + dh[g]);
+    }
+});
+
+// A8 -- THE DOORS. Non-string text returns NaN (a query cannot decline to
+// answer; 0 is the honest answer for ''); scale = 0 returns NaN and leaves the
+// buffer UNWRITTEN. Reddens under the text door `typeof text !== 'string'` ->
+// `if (text == null) return NaN`: a non-string non-null then falls through and
+// returns 0, not NaN. (The scale-door half of this test is killed by the
+// separate scale-door removal; both are exercised here.)
+test('A8 (M5): layoutGlyphs doors -- non-string and scale=0 both return NaN, buffer untouched', () => {
+    const buf = new Float64Array(6 * GLYPH_STRIDE);
+    // non-string text
+    for (const bad of [123, null, undefined, {}, []]) {
+        assert.ok(Number.isNaN(FONT_ASCII.layoutGlyphs(bad, buf, 0, 0, 1, 0)),
+            'layoutGlyphs(' + String(bad) + ') is not NaN');
+    }
+    // scale = 0: NaN AND the buffer is untouched (sentinel survives)
+    const sent = new Float64Array(GLYPH_STRIDE).fill(-999);
+    const probe = new Float64Array(GLYPH_STRIDE).fill(-999);
+    assert.ok(Number.isNaN(FONT_ASCII.layoutGlyphs('ABC', probe, 0, 0, 0, 0)),
+        'scale=0 must return NaN');
+    assert.deepEqual(Array.from(probe), Array.from(sent), 'scale=0 wrote into outBuffer');
+});
+
+// A8 (hostile array-like) -- ITS OWN test(): `{length: Infinity, charCodeAt}` is
+// the input that SIGKILLed 1.4.0 at 6 s; the `typeof text !== 'string'` door
+// rejects it in O(1) and returns NaN. This assertion pins ONLY that SHIPPED
+// behaviour -- it does NOT and CANNOT detect the door-removal mutation: under
+// `if (text == null)` the call never returns, the event loop is blocked (the
+// walk is synchronous), the wall-clock line below is never reached, and no
+// per-test timeout can interrupt a synchronous hang. The door-removal HANG is
+// proven OUT OF PROCESS by T9 control 13's 'notext-layout' lane
+// (test/torture/t9-measure-hang-child.mjs + t9-controls.mjs), which SIGKILLs a
+// door-removed layoutGlyphs and dies if it terminates.
+test('A8 (M5): layoutGlyphs answers the hostile array-like with NaN in O(1) (hang proof is T9 control 13)', () => {
+    const buf = new Float64Array(6 * GLYPH_STRIDE);
+    const hostile = { length: Infinity, charCodeAt() { return 65; } };
+    const t0 = Date.now();
+    const r = FONT_ASCII.layoutGlyphs(hostile, buf, 0, 0, 1, 0);
+    const ms = Date.now() - t0;
+    assert.ok(Number.isNaN(r), 'hostile array-like did not return NaN: ' + r);
+    assert.ok(ms < 1000, 'hostile array-like took ' + ms + ' ms -- the text door let it into the walk');
+});
+
+// A8b (M5) -- drawQuads fails CLOSED on the buffer length and CLAMPS the
+// index-likes (fork 10, drawWrapped's fork (1) idiom). A range whose end record
+// exceeds the buffer throws a plain RangeError; a valid subset does not; NaN /
+// negative / fractional first|count are clamped, never a NaN-geometry drawImage.
+// Reddens under dropping the `if (end * 6 > buffer.length)` throw: the
+// out-of-buffer call then issues NaN-geometry drawImage calls (fail-open).
+test('A8b (M5): drawQuads throws past the buffer, clamps bad first/count, draws a valid subset', () => {
+    const f = qFontB();
+    const text = 'ABC';
+    const buf = new Float64Array(text.length * GLYPH_STRIDE);   // 18 floats, 3 records
+    const n = f.layoutGlyphs(text, buf, 0, 0, 1, 0);
+    assert.equal(n, 3);
+    // Past the buffer: (0 + 10) * 6 = 60 > 18 -> throw, no drawImage.
+    resetRec(ATLAS);
+    let err = null;
+    try { f.drawQuads(rec, buf, 0, 10, 0, 0, 1); } catch (e) { err = e; }
+    assert.ok(err instanceof RangeError, 'over-buffer drawQuads did not throw a RangeError: ' + err);
+    assert.equal(err instanceof BitmapFontError, false, 'must NOT be a BitmapFontError');
+    assert.match(err.message, /^lite-bmfont: buffer holds \d+ floats, quads \d+\.\.\d+ need \d+$/);
+    assert.equal(rec.calls, 0, 'a throwing call must not have drawn');
+    // Exact fit draws all three with zero NaN geometry.
+    resetRec(ATLAS);
+    assert.doesNotThrow(() => f.drawQuads(rec, buf, 0, 3, 0, 0, 1));
+    assert.equal(rec.calls, 3);
+    // Clamps: NaN / negative / fractional first|count never reach drawImage with
+    // NaN geometry. NaN count -> nothing; -1 first -> clamps to 0; 2.9 count ->
+    // floor 2.
+    resetRec(ATLAS);
+    f.drawQuads(rec, buf, 0, NaN, 0, 0, 1);
+    assert.equal(rec.calls, 0, 'NaN count drew something');
+    resetRec(ATLAS);
+    f.drawQuads(rec, buf, -1, 2, 0, 0, 1);       // first clamps to 0 -> records 0,1
+    assert.equal(rec.calls, 2, 'negative first did not clamp to 0');
+    resetRec(ATLAS);
+    f.drawQuads(rec, buf, 0, 2.9, 0, 0, 1);      // count floors to 2
+    assert.equal(rec.calls, 2, 'fractional count did not floor');
+    // No recorded geometry is NaN.
+    for (let i = 0; i < rec.calls; i++) {
+        assert.ok(!Number.isNaN(rec.dx[i]) && !Number.isNaN(rec.sx[i]), 'clamped draw produced NaN geometry');
+    }
+});
+
+// A8c (M5) -- the PINNED HAZARD (fork 10b), asserted as behaviour, not fixed. A
+// buffer length cannot know how many records layoutGlyphs actually WROTE, so
+// passing a count larger than the written total (but within the buffer) draws
+// from unwritten slots -- the caller's responsibility, exactly as drawFast's
+// shared-scratch reentrancy is a pinned hazard, not a fix. Pinned so a future
+// reader does not mistake the fail-closed length check for a fail-closed count.
+test('A8c (M5): drawQuads past the WRITTEN count but within the buffer is the caller hazard (pinned)', () => {
+    const f = qFontB();
+    // 'A B' writes TWO records (space id 32 is zero-size) into a 3-record buffer.
+    const buf = new Float64Array(3 * GLYPH_STRIDE);
+    const n = f.layoutGlyphs('A B', buf, 0, 0, 1, 0);
+    assert.equal(n, 2, 'expected 2 written records');
+    // Asking for 3 does NOT throw (3 * 6 = 18 <= 18) and draws the unwritten
+    // third slot -- fail-open BY CONTRACT, the caller must pass `n`.
+    resetRec(ATLAS);
+    assert.doesNotThrow(() => f.drawQuads(rec, buf, 0, 3, 0, 0, 1));
+    assert.equal(rec.calls, 3, 'the pinned hazard changed -- drawQuads now bounds on written count');
 });

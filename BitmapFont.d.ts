@@ -329,6 +329,74 @@ export class BitmapFont {
         vAlign?: VAlign
     ): void;
 
+    /**
+     * Lays out `text` into `outBuffer` as one stride-`GLYPH_STRIDE` record per
+     * VISIBLE glyph -- `[sx, sy, sw, sh, dx, dy]` -- and returns the record
+     * count. Pair with `drawQuads` to blit them; edit `dx`/`dy` between the two
+     * calls to move individual glyphs (decisions/0010).
+     *
+     * Reproduces `draw`'s arithmetic EXACTLY at the same `x`/`y` origin, `scale`
+     * and `align`: same per-line-origin/per-baseline `Math.round` snap (F-07,
+     * B1), same NaN-safe id gate, same `gw > 0 && gh > 0` gate. A glyph that
+     * fails the size gate (a space) advances the cursor and occupies NO record,
+     * so the record count is NOT `text.length` and is NOT derivable in advance.
+     *
+     * `dx`/`dy` are ABSOLUTE with `scale` already folded in; `sw`/`sh` are the
+     * UNSCALED source dimensions (`drawQuads` multiplies them by its own scale).
+     *
+     * Contract:
+     * - `outBuffer` may be any indexable with a numeric `length` -- a
+     *   `Float64Array` or a plain `Array` (NOT a `Float32Array`, which rounds
+     *   the cursor and breaks round-trip identity with `draw`). `.length`, not
+     *   `byteLength`, is checked.
+     * - The buffer must hold at least `GLYPH_STRIDE` floats per emitted record.
+     *   A short buffer throws a plain `RangeError` (NOT `BitmapFontError`) naming
+     *   the capacity, the glyph index and the need, checked per emitted record.
+     *   The SAFE UPPER BOUND is `text.length * GLYPH_STRIDE` -- the exact count
+     *   is not knowable before the walk.
+     * - A **non-string** `text` or a `scale` outside `(0, Infinity)` returns
+     *   `NaN` (not `0`, which is the honest answer for `''`); nothing is written.
+     */
+    layoutGlyphs(
+        text: string,
+        outBuffer: Float64Array | number[],
+        x: number,
+        y: number,
+        scale?: number,
+        align?: Align
+    ): number;
+
+    /**
+     * Blits `count` glyph records from `buffer`, starting at record `first`,
+     * with one `ctx.drawImage` each. `offX`/`offY` are added RAW to `dx`/`dy`
+     * (never re-snapped -- the origin round already happened in `layoutGlyphs`).
+     * `scale` multiplies ONLY the source dimensions to size the destination and
+     * MUST equal the layout scale; `dx`/`dy` are already absolute and scaled
+     * (decisions/0010 forks 3 and 9).
+     *
+     * `first`/`count` follow `drawWrapped`'s fork (1) idiom (decisions/0010 fork
+     * 10): they are CLAMPED (a `NaN`, negative or below-one `count` draws nothing;
+     * a negative `first` clamps to 0; fractionals are floored), and a range whose
+     * last record exceeds the buffer THROWS a plain `RangeError` (NOT
+     * `BitmapFontError`) -- one check per call, none per glyph.
+     *
+     * PINNED HAZARD (fork 10b): the buffer length cannot know how many records
+     * `layoutGlyphs` actually WROTE, so a `count` larger than the returned count
+     * but still within the buffer draws from UNWRITTEN slots. Pass `drawQuads` the
+     * exact count `layoutGlyphs` returned; this is the caller's responsibility, in
+     * the same spirit `drawFast`'s shared-scratch reentrancy is a documented
+     * hazard, not a guarded case.
+     */
+    drawQuads(
+        ctx: CanvasRenderingContext2D,
+        buffer: Float64Array | number[],
+        first: number,
+        count: number,
+        offX?: number,
+        offY?: number,
+        scale?: number
+    ): void;
+
     /** Releases the atlas reference and internal typed arrays. */
     destroy(): void;
 }
@@ -336,6 +404,13 @@ export class BitmapFont {
 export default BitmapFont;
 
 export const VERSION: string;
+
+/**
+ * Float count per glyph record in a `layoutGlyphs` / `drawQuads` buffer:
+ * `[sx, sy, sw, sh, dx, dy]`, so 6. Use it to size the buffer: the safe upper
+ * bound is `text.length * GLYPH_STRIDE`.
+ */
+export const GLYPH_STRIDE: number;
 
 /** Largest magnitude drawFast renders (1e21). Both endpoints inclusive. */
 export const DRAWFAST_MAX: number;

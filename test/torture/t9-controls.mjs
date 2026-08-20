@@ -314,11 +314,15 @@ export function run() {
     {
         // The fourth value is 32, not 0, since F-38: a NaN index pair clamps to
         // the whole line, matching what drawWrapped renders for it.
-        if (shipped.a !== 32 || shipped.b !== 'NaN' || shipped.c !== 'NaN' || shipped.d !== 32) {
+        if (shipped.a !== 32 || shipped.b !== 'NaN' || shipped.c !== 'NaN' || shipped.d !== 32 ||
+            shipped.e !== 'NaN') {
             die('T9 control 13: the shipped child returned ' + JSON.stringify(shipped) +
-                ' -- expected 32 / NaN / NaN / 32');
+                ' -- expected 32 / NaN / NaN / 32 and layoutGlyphs NaN');
         }
-        for (const broken of ['nodoor', 'notext']) {
+        // 'notext-layout' (M5): the door-removed layoutGlyphs twin. A synchronous
+        // hang blocks the event loop, so no in-process test can time it -- only a
+        // SIGKILL from spawnSync's timeout proves the walk never terminates.
+        for (const broken of ['nodoor', 'notext', 'notext-layout']) {
             const r = spawnChild(broken, 2000);
             if (r.status === 3) {
                 die('T9 control 13: could not reconstruct the ' + broken + ' body -- the markers moved');

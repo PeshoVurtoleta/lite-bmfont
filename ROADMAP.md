@@ -604,7 +604,13 @@ see `SESSION-M8b.md` section 0.7. It closed the package's only open S2 (F-23)
 and closed F-44 as MISDIAGNOSED rather than fixed, which is the more useful of
 the two results: a measured cost was real and its stated mechanism was not.
 
-Four sessions remained after it -- M5, M6, M7, M9 -- and **none was forced by
+M7 then SHIPPED (1.8.0, 2026-08-20, published). It closed F-18 and FILLED T8,
+the tier that had been registered-but-empty since M0 -- so the torture run now
+carries **zero TODO lines for the first time in the package's history**, and
+`npm test` carries one todo (F-14, M9's). It opened F-48 (S4) in the file it
+created, deliberately unfixed; see that row.
+
+Four sessions remained after M8b -- M5, M6, M7, M9 -- and **none was forced by
 an open finding**: every S1 and S2 in section 2 is now closed. So the next one
 was a CHOICE, not a queue pop. Next: **M7** (1.8.0, F-18), planned 2026-08-20 --
 see `SESSION-M7.md`. Chosen over M5 on three grounds, recorded because "we
@@ -622,10 +628,68 @@ picked the next one" is not a reason:
    short of M9 can close. Afterwards `npm test` carries one todo (F-14, M9's)
    and the torture run carries zero.
 
-M5 and M6 keep their order behind it; M9 still depends on all of them. F-47
-(the README spine) stays filed and unscheduled -- an authoring session with no
+M5 and M6 keep their order behind it; M9 still depends on all of them.
+
+**Next after M7: M5** (1.9.0), planned 2026-08-20 -- see `SESSION-M5.md`. This
+one was NOT a choice in the sense M7 was: with M7 shipped, M5 is the **only
+remaining roadmap session whose dependencies are satisfied** (`depends_on:
+[M2, M4a]`, both shipped). M6 is blocked by M5 and M9 by everything, so the
+only alternatives were the two unscheduled finding sessions, and both were
+declined on record: F-47 (the README spine) stays an authoring session with no
 byte-level acceptance test, deliberately not folded into a session that has
-one.
+one; F-48 (S4, Atlas.js) fails closed and loudly, and folding an unrelated
+COLD-path repair into the session that creates a public buffer format would
+muddy the one diff that most needs to stay readable.
+
+M5 IMPLEMENTED 2026-08-20 (1.9.0, uncommitted at time of writing). Its
+plan-time rebaseline was the largest yet -- thirteen rows -- because its brief
+is the oldest unexecuted one in this document and eight releases have landed on
+it. Two of its shipped assertions turned out to be UNSATISFIABLE as
+written, both proven with numbers rather than argued (SESSION-M5.md R-3 and
+R-5), and one of its two signatures reproduces F-45 -- one float, two sources
+of truth, two entry points -- in a place F-45 was never looked for (R-4).
+
+WHAT M5 ACTUALLY COST, AND WHERE. The two new methods were correct on their
+first submission and never changed behaviourally: every body sha of the nine
+shipped methods stayed byte-identical, `draw` included. **All three blocking
+findings were defects in the GATE, not in the feature** -- which is the useful
+result, because a gate defect is invisible by construction:
+
+1. **T6 windows I and J were blind to transient per-call allocation** (reviewer).
+   They ran only the two RETENTION lanes; the file's own comment says those "do
+   NOT gate transient allocation", which is why E/F/G/H each carry a third
+   `allocVolume` leg. The new windows shipped without it, and their comments
+   claimed a mutation reddened them that provably did not. Injecting real
+   per-glyph garbage into `layoutGlyphs` left the whole run printing `ok`. This
+   is the THIRD time this blindness has been closed one window at a time (M8 for
+   `drawFastInt`, M8b for `drawFast` regime B, M5 here) -- a standing argument
+   that the volume leg belongs in the window helper, not in each window.
+2. **The A8 hostile-input assertion was structurally INERT** (qa). Its comment
+   said the door-removal mutation was "caught by the wall clock"; the wall-clock
+   line sits AFTER the call, so under the mutation it is never reached. Worse,
+   `layoutGlyphs` is SYNCHRONOUS, so the hang blocks the event loop and no
+   in-process timeout could ever catch it -- `node:test` has no default timeout
+   and a per-test `timeout` option cannot interrupt a blocked loop either. Fixed
+   the way this repo already proves F-34: out of process, in T9 control 13, with
+   a SIGKILL and a non-vacuity self-test.
+3. **`drawQuads` failed OPEN on `first`/`count`** (qa). Drawing past the written
+   records blitted real `ctx.drawImage` calls with NaN geometry, undocumented on
+   every surface -- while `layoutGlyphs` threw a `RangeError` rather than
+   truncate on the write side. One buffer contract, failing closed on write and
+   open on read. Fixed with `drawWrapped` fork (1)'s existing idiom (clamp the
+   index-likes, throw on the buffer length, zero per glyph) and recorded as
+   fork (10). The residual -- a length cannot know how many records were
+   WRITTEN -- is pinned in `drawFast`'s "PINNED hazard, not a fix" framing
+   rather than papered over.
+
+A fourth defect was found and REFUTED rather than fixed: qa reported that window
+J's comment cites a mutation (an inline `ctx.drawImage(...[8 floats])` spread)
+that allocates and reddens, contradicting the comment's "V8 scalar-replaces it"
+claim. Reproduced exactly as written and it does NOT redden -- the comment is
+right, and qa had most likely materialized the array into a variable first,
+which defeats scalar replacement. The comment now records the Node version and
+that the spread must be written INLINE. Recorded here because a refuted finding
+is evidence too, and the next reader will otherwise re-open it.
 
 VERSION TARGETS COLLIDE AND ARE NOT RESERVATIONS EITHER. Whichever session is
 PLANNED first takes the number; the other is re-stamped at plan time. Do not
@@ -634,9 +698,9 @@ wrong. Current state of the three unscheduled sessions:
 
 | session | stamped | reality |
 |---|---|---|
-| M5 | `1.5.0` | CONSUMED by M8 on 2026-08-18. Left stale deliberately; re-stamp at plan time. |
+| M5 | `1.9.0` | RE-STAMPED 2026-08-20 at plan time. Was `1.5.0`, CONSUMED by M8 on 2026-08-18; M5 was left stale deliberately until it was planned, which is the rule working as written (the same path M7 took). |
 | M6 | `unassigned` | was `1.6.0`, CONSUMED by M2a. Cleared 2026-08-19 rather than guessed. |
-| M7 | `1.8.0` | RE-STAMPED 2026-08-20. Was `1.7.0`, CONSUMED by M8b; M7 was planned the same day, so it re-stamped instead of aging stale. This is the rule working as written. |
+| M7 | `1.8.0` | SHIPPED 2026-08-20. Was `1.7.0`, CONSUMED by M8b; M7 was planned the same day, so it re-stamped instead of aging stale. |
 
 A stamped-but-consumed number is worse than none: it reads as a reservation and
 it is not one. M6 now carries `unassigned` for exactly that reason.
@@ -644,8 +708,12 @@ it is not one. M6 now carries `unassigned` for exactly that reason.
 DECISION NUMBERS ARE ISSUED AT PLAN TIME, NOT RESERVED. The reservations below
 are stale: M6 reserves `0006-range-parameters.md`, M7 `0007-atlas-subpath.md`,
 M8 `0008-drawfastint.md` -- but M8 shipped `0005-drawfastint.md`. Issued so far:
-0001-0008 shipped (0006 = M2a, **0008 = M2b**, **0007 = M8b, written and
-shipped 2026-08-20 in 1.7.0**) -- so 0008 shipped BEFORE 0007 existed, and the
+0001-0009 shipped (0006 = M2a, **0008 = M2b**, **0007 = M8b, written and
+shipped 2026-08-20 in 1.7.0**, **0009 = M7, shipped 2026-08-20 in 1.8.0** --
+note M7's brief reserved `0007`, which was already M8b's, so M7 issued the next
+free number instead; **M5 does the same and issues `0010`**, its reserved
+`0005` having been M8's since 1.5.0. Three consecutive sessions have now been
+bitten by this, which is the rule earning its place) -- so 0008 shipped BEFORE 0007 existed, and the
 directory now sorts by plan order while the CHANGELOG sorts by ship order. That
 gap is recorded, not closed: renumbering 0007 to make filenames sort by ship date would be the
 reservation habit this very rule condemns, in tidier clothes. M2b issued 0008
@@ -1888,14 +1956,38 @@ PRECONDITION PROBE (run 2026-08-18 against published 1.4.0, bbf87d1)
 ```
 
 ===============================================================================
-# M5 -- lite-bmfont v1.5.0 -- glyph quads (`layoutGlyphs` + `drawQuads`)
+# M5 -- lite-bmfont v1.9.0 -- glyph quads (`layoutGlyphs` + `drawQuads`)
 ===============================================================================
 
 ```markdown
 ---
 package: "@zakkster/lite-bmfont"
-version_target: 1.5.0
-status: planned
+version_target: 1.9.0  # RE-STAMPED 2026-08-20 at plan time; was 1.5.0, which
+                       # M8 consumed on 2026-08-18. Two additive methods plus
+                       # one named export, no shipped behaviour changed -> MINOR.
+status: next           # IMPLEMENTED 2026-08-20, tree modified &
+                       # UNCOMMITTED, awaiting the user's publish -- NOT `done`
+                       # until 1.9.0 is released. Baseline 1ab66eb (1.8.0).
+                       # Pipeline: planner -> coder -> reviewer (REJECTED, 1
+                       # blocker) -> coder -> qa (FAIL, 2 blockers) -> coder ->
+                       # qa (PASS). Gate at PASS: 136 tests / 135 pass / 0 fail
+                       # / 1 todo (F-14, M9's); torture ok, exit 0, ZERO TODO
+                       # lines. All TEN body shas byte-identical to 1ab66eb
+                       # (diffed against a pre-edit capture AND re-fetched from
+                       # git by qa). Tarball 9 files, no test/ or demo/.
+                       # THREE gate defects were found and fixed IN the gate
+                       # itself, not in the feature: see the M5 status note.
+                       # Read SESSION-M5.md section 0 FIRST: this brief predates
+                       # M0 and eight releases have landed on it. THIRTEEN drift
+                       # rows (R-1..R-13) override the body below, including TWO
+                       # assertions that are UNSATISFIABLE as written -- R-3
+                       # (a Float32Array buffer cannot hold the draw cursor:
+                       # 4 of 6 columns differ at scale 1.1) and R-5 (the origin
+                       # snap does not commute: 16 of 24 cases differ, so
+                       # "byte-identical to draw" is unreachable until the
+                       # rounding point is pinned) -- plus R-4, which is F-45's
+                       # exact shape in a new place: `scale` is baked into the
+                       # buffer by layoutGlyphs and passed AGAIN to drawQuads.
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -2205,7 +2297,7 @@ DONE WHEN
 ```
 
 ===============================================================================
-# M7 -- lite-bmfont v1.7.0 -- atlas generation as a subpath export
+# M7 -- lite-bmfont v1.8.0 -- atlas generation as a subpath export
 ===============================================================================
 
 ```markdown
@@ -2213,9 +2305,8 @@ DONE WHEN
 package: "@zakkster/lite-bmfont"
 version_target: 1.8.0  # RE-STAMPED 2026-08-20 at plan time; was 1.7.0, which
                        # M8b consumed. Additive subpath export -> MINOR.
-status: next           # IMPLEMENTED 2026-08-20, tree modified &
-                       # UNCOMMITTED, awaiting the user's publish -- NOT `done`
-                       # until 1.8.0 is released. Baseline 32b5304 (1.7.0).
+status: done           # shipped 2026-08-20 (published, 1.8.0).
+                       # Baseline 32b5304 (1.7.0).
                        # Pipeline: planner -> coder -> reviewer (APPROVED, 2
                        # nits, both closed) -> qa (FAIL, 4 findings, all fixed)
                        # -> qa (PASS). Gate at PASS: 126 tests / 125 pass /
@@ -2252,6 +2343,12 @@ PUBLISH-WINDOW EXPOSURE (recorded 2026-08-20, M7 -- NO gate in this repo can see
   publish. The demo uses the CDN FILE path (`Atlas.js/+esm`), not `/atlas/+esm`:
   jsDelivr resolves file paths reliably but not package `exports` subpaths (R-7,
   decisions/0009). The npm-consumer contract stays `@zakkster/lite-bmfont/atlas`.
+
+CORRECTION (recorded 2026-08-20, M5): the demo import above was changed to the
+BARE path `.../Atlas.js` (no `/+esm`) in commit 1ab66eb -- `/+esm` is jsDelivr's
+CJS->ESM transform and Atlas.js is already zero-dep ESM, so the suffix converts
+nothing. Appended, not edited: the dated block above is evidence. The
+`test/findings.test.js` pin tracks the bare spelling.
 
 # lite-bmfont -- three copies of generateAtlas is a missing feature
 

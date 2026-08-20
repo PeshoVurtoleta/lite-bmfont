@@ -32,8 +32,13 @@ import {
     FONT_NL, FONT_NLK, JSON_NL, JSON_NLK,
     FONT_SNAP, FONT_SNAP_KERN,
 } from './harness.mjs';
+import { GLYPH_STRIDE } from '../../BitmapFont.js';
 
 const SCALES = [0.25, 0.5, 1, 2, 4];
+// Law 1's FOURTH witness (M5). CORPUS strings are <= 48 renderable glyphs, so
+// layoutGlyphs emits exactly `len` records; QUAD dx joins walk/_measureRange/
+// oracle. Built ONCE at module scope -- no per-iteration allocation.
+const LAW1_QUADBUF = new Float64Array(48 * GLYPH_STRIDE);
 
 export function run() {
     const t0start = Date.now();
@@ -116,6 +121,21 @@ export function run() {
             const walk = rec.dx[rec.calls - 1] + oracleAdvance(json, t, len - 1, len, s) - rec.dx[0];
             check(walk === mr,
                 () => 'T0.law1: walk ' + walk + ' != _measureRange ' + mr + ' (seed=' + SEED + ' i=' + i + ' s=' + s + ')');
+
+            // FOURTH WITNESS (M5, A2): the quad dx column. layoutGlyphs folds
+            // scale into dx exactly as draw does, so its walk is a fourth
+            // independent path to the SAME conserved advance -- exact, no
+            // epsilon. Confined to layoutGlyphs: dropping `* scale` from its
+            // kerning term reddens this at kerning != 0 and scale != 1, and the
+            // mr === oracle check above is untouched so it cannot preempt.
+            const qn = font.layoutGlyphs(t, LAW1_QUADBUF, 0, 0, s, 0);
+            check(qn === len,
+                () => 'T0.law1: layoutGlyphs emitted ' + qn + ' of ' + len + ' (seed=' + SEED + ' i=' + i + ')');
+            const base = 4;
+            const qWalk = LAW1_QUADBUF[(qn - 1) * GLYPH_STRIDE + base] +
+                oracleAdvance(json, t, len - 1, len, s) - LAW1_QUADBUF[base];
+            check(qWalk === mr,
+                () => 'T0.law1: quad walk ' + qWalk + ' != _measureRange ' + mr + ' (seed=' + SEED + ' i=' + i + ' s=' + s + ')');
         }
     }
 

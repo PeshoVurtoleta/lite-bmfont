@@ -140,7 +140,9 @@ function checkDocsDrift() {
         () => 'T8/A4: privates drifted from [_measureRange]: ' + JSON.stringify(privates));
 
     const methods = proto.filter((n) => n !== 'constructor' && n[0] !== '_');
-    check(methods.length === 9, () => 'T8/A4: expected 9 public methods, got ' + methods.length + ': ' + methods.join(', '));
+    // 9 -> 11 in M5 (v1.9.0): layoutGlyphs and drawQuads. A deliberate pin
+    // amendment, NOT a filter widening -- skipped/privates above stay pinned.
+    check(methods.length === 11, () => 'T8/A4: expected 11 public methods, got ' + methods.length + ': ' + methods.join(', '));
 
     // The callable atlas surface documented as an API heading: functions that are
     // not error classes (error classes are prose-documented, like BitmapFontError).

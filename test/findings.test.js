@@ -60,7 +60,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createLeakTracker } from '@zakkster/lite-leak';
-import { BitmapFont } from '../BitmapFont.js';
+import { BitmapFont, GLYPH_STRIDE } from '../BitmapFont.js';
 import { generateAtlas, AtlasError } from '../Atlas.js';
 import { generateAtlasV0 } from './torture/fixtures/atlas-verbatim.mjs';
 import { makeDocStub } from './torture/fixtures/dom-stub.mjs';
@@ -134,8 +134,14 @@ test('F-18 CLOSED: generateAtlas ships as a subpath, the demo imports it', () =>
     const callCount = (html.match(/generateAtlas\(/g) || []).length; // call sites only now
     assert.equal(defCount, 0);          // no inline definition remains
     assert.equal(callCount, 4);         // the four font-bank call sites
-    // The demo imports the CDN file path for the subpath.
-    assert.match(html, /import\s*\{generateAtlas\}\s*from\s*'https:\/\/cdn\.jsdelivr\.net\/npm\/@zakkster\/lite-bmfont\/Atlas\.js\/\+esm'/);
+    // The demo imports the CDN FILE path for the subpath -- BARE, with no
+    // `/+esm` suffix. Corrected in 1.9.0 to match what shipped: `+esm` is
+    // jsDelivr's CommonJS-to-ESM transform, and Atlas.js is ALREADY ESM with
+    // zero dependencies, so the suffix buys nothing and the bare file path is
+    // what actually resolves. The pin is deliberately exact -- a `/atlas/+esm`
+    // exports-subpath spelling is NOT guaranteed to resolve on jsDelivr
+    // (decisions/0009), so this must not be loosened into a substring match.
+    assert.match(html, /import\s*\{generateAtlas\}\s*from\s*'https:\/\/cdn\.jsdelivr\.net\/npm\/@zakkster\/lite-bmfont\/Atlas\.js'/);
     // The core still carries no atlas code -- the extraction did not leak into it.
     const src = readFileSync(new URL('../BitmapFont.js', import.meta.url), 'utf8');
     assert.equal(src.includes('generateAtlas'), false);
@@ -299,4 +305,102 @@ test('A2: generateAtlas retains nothing -- 200 dropped atlases collect to 0', as
     } finally {
         if (prev === undefined) delete globalThis.document; else globalThis.document = prev;
     }
+});
+
+// =====================================================================
+// M5 (v1.9.0): the glyph-quad buffer -- layoutGlyphs + drawQuads
+// =====================================================================
+// A font with six DISTINCT glyphs (five visible A-E, plus a zero-size space so
+// the count-vs-draw law below is non-vacuous). Every source column differs per
+// glyph, so a column mix-up in drawQuads cannot hide behind equal values.
+const QJSON = {
+    common: { lineHeight: 20, base: 16 },
+    chars: [
+        { id: 65, x: 1, y: 2, width: 8, height: 12, xoffset: 1, yoffset: 3, xadvance: 9 },
+        { id: 66, x: 11, y: 4, width: 7, height: 11, xoffset: 2, yoffset: 2, xadvance: 8 },
+        { id: 67, x: 20, y: 6, width: 9, height: 13, xoffset: 0, yoffset: 4, xadvance: 10 },
+        { id: 68, x: 30, y: 8, width: 6, height: 10, xoffset: 1, yoffset: 1, xadvance: 7 },
+        { id: 69, x: 40, y: 3, width: 10, height: 14, xoffset: 2, yoffset: 5, xadvance: 11 },
+        { id: 32, x: 0, y: 0, width: 0, height: 0, xoffset: 0, yoffset: 0, xadvance: 6 },
+    ],
+    kernings: [],
+};
+function qFont() { return new BitmapFont(ATLAS, QJSON); }
+// Snapshot the recording's eight columns over [0, n) into a plain object.
+function snap(n) {
+    const c = { sx: [], sy: [], sw: [], sh: [], dx: [], dy: [], dw: [], dh: [] };
+    for (let g = 0; g < n; g++) {
+        c.sx.push(rec.sx[g]); c.sy.push(rec.sy[g]); c.sw.push(rec.sw[g]); c.sh.push(rec.sh[g]);
+        c.dx.push(rec.dx[g]); c.dy.push(rec.dy[g]); c.dw.push(rec.dw[g]); c.dh.push(rec.dh[g]);
+    }
+    return c;
+}
+
+// A3 -- the mutation seam is the buffer. Editing buf[i*6+5] (dy) between the two
+// calls moves EXACTLY one glyph by EXACTLY 10 in y and leaves the other five
+// record columns untouched. Reddens under drawQuads `buffer[p + 5]` ->
+// `buffer[p + 3]`: dy then reads the sh column, so the +10 never lands and the
+// dy of the moved glyph equals its sh instead of base.dy + 10.
+test('A3 (M5): editing dy in the quad buffer moves one glyph 10px, all six columns checked', () => {
+    const f = qFont();
+    const text = 'ABCDE';
+    const buf = new Float64Array(text.length * GLYPH_STRIDE);
+    const n = f.layoutGlyphs(text, buf, 0, 0, 1, 0);
+    assert.equal(n, 5);
+    resetRec(ATLAS);
+    f.drawQuads(rec, buf, 0, n, 0, 0, 1);
+    assert.equal(rec.calls, n);
+    const base = snap(n);
+    const i = 2;
+    buf[i * GLYPH_STRIDE + 5] += 10;      // move glyph 2 down by 10 in y
+    resetRec(ATLAS);
+    f.drawQuads(rec, buf, 0, n, 0, 0, 1);
+    assert.equal(rec.calls, n);
+    for (let g = 0; g < n; g++) {
+        const wantDy = base.dy[g] + (g === i ? 10 : 0);
+        assert.equal(rec.dy[g], wantDy, 'dy[' + g + '] ' + rec.dy[g] + ' != ' + wantDy);
+        assert.equal(rec.sx[g], base.sx[g], 'sx[' + g + '] moved');
+        assert.equal(rec.sy[g], base.sy[g], 'sy[' + g + '] moved');
+        assert.equal(rec.sw[g], base.sw[g], 'sw[' + g + '] moved');
+        assert.equal(rec.sh[g], base.sh[g], 'sh[' + g + '] moved');
+        assert.equal(rec.dx[g], base.dx[g], 'dx[' + g + '] moved');
+    }
+});
+
+// A4 -- subset draw. drawQuads(ctx, buf, 2, 3, ...) draws records 2, 3, 4 in
+// EXACTLY three calls, and the three drawn dx values are those records'. Reddens
+// under the loop bound `const end = f + n;` -> `const end = n;` (the clamped
+// first/count locals): the loop then runs g in [2, 3) -- one call for record 2.
+test('A4 (M5): drawQuads(ctx, buf, 2, 3) draws records 2,3,4 in exactly 3 calls', () => {
+    const f = qFont();
+    const text = 'ABCDE';
+    const buf = new Float64Array(text.length * GLYPH_STRIDE);
+    const n = f.layoutGlyphs(text, buf, 0, 0, 1, 0);
+    assert.equal(n, 5);
+    resetRec(ATLAS);
+    f.drawQuads(rec, buf, 2, 3, 0, 0, 1);
+    assert.equal(rec.calls, 3, 'drawQuads drew ' + rec.calls + ' != 3');
+    for (let k = 0; k < 3; k++) {
+        const recIdx = 2 + k;
+        assert.equal(rec.sx[k], buf[recIdx * GLYPH_STRIDE], 'call ' + k + ' sx != record ' + recIdx);
+        assert.equal(rec.dx[k], buf[recIdx * GLYPH_STRIDE + 4], 'call ' + k + ' dx != record ' + recIdx);
+    }
+});
+
+// A5 -- count equality with draw, including a zero-size glyph. layoutGlyphs
+// returns the number of drawImage calls draw makes for the SAME text: a space
+// (width 0, height 0) advances the cursor and emits no record. Reddens under
+// layoutGlyphs `gw > 0 && gh > 0` -> `true`: the space then gets a record and the
+// returned count (3) exceeds draw's drawImage count (2). (Over-detects into
+// A1/A3 too, which is accepted.)
+test('A5 (M5): layoutGlyphs count equals draw drawImage count -- a zero-size glyph emits no record', () => {
+    const f = qFont();
+    const text = 'A B';                    // space id 32 is width 0 / height 0
+    resetRec(ATLAS);
+    f.draw(rec, text, 0, 0, 1, 0);
+    const drawCalls = rec.calls;
+    assert.equal(drawCalls, 2, 'draw drew ' + drawCalls + ' != 2 (space must not draw)');
+    const buf = new Float64Array(text.length * GLYPH_STRIDE);
+    const n = f.layoutGlyphs(text, buf, 0, 0, 1, 0);
+    assert.equal(n, drawCalls, 'layoutGlyphs count ' + n + ' != draw count ' + drawCalls);
 });

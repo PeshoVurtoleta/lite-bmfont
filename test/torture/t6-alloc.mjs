@@ -1,8 +1,9 @@
 /**
  * T6 -- the zero-alloc gate (F-17).
  *
- * SEVEN windows (A-D from M0/M2, E and F added in M4, C2 added in M2a for the
- * F-45 align path), run STRICTLY
+ * ELEVEN windows (A-D from M0/M2, C2 added in M2a for the F-45 align path, E and
+ * F added in M4, G added in M8 for drawFastInt, H added in M8b for drawFast
+ * regime B, I and J added in M5 for layoutGlyphs and drawQuads), run STRICTLY
  * SEQUENTIALLY (the profiler is one-measurement-at-a-time and throws
  * "already in flight" if nested). Each window is gated on TWO lanes:
  *   - measureOps + checkNoGc (RULES): an allocation RATE gate. maxMajor:0,
@@ -30,6 +31,14 @@ import {
     rec, resetRec, resetTotals, runOpsGate, runAllocGate, BREAK, check, die,
     FONT_ASCII, FONT_NUM, S64, WRAP_TEXT, WRAP_LAYOUT, NUM_CYCLE, ATLAS,
 } from './harness.mjs';
+import { GLYPH_STRIDE } from '../../BitmapFont.js';
+
+// Windows I and J (M5). S64 is 62 visible 'A' glyphs over 3 lines, so
+// layoutGlyphs emits 62 records. QUADBUF is sized to the EXACT fit (no slack)
+// so window I also proves the `p + 6 > cap` guard does not trip an exact
+// buffer, and window J re-blits the SAME buffer built once at module scope.
+const QUAD_GLYPHS = 62;
+const QUADBUF = new Float64Array(QUAD_GLYPHS * GLYPH_STRIDE);
 
 /** Retained sink for the BREAK control -- survives GC so arrayBuffers grows. */
 const leak = [];
@@ -475,5 +484,83 @@ export function run() {
             () => 'T6/H: drawFast regime-B allocated ' + volH + ' bytes over ' + VOL_OPS +
                 ' calls (limit ' + REGB_MAX + ') -- gross per-call allocation in the' +
                 ' doubling loop, most likely BigInt or String arithmetic (A8)');
+    }
+
+    // --- Window I (M5): layoutGlyphs() -- fills QUADBUF, 0 drawImage ------------
+    // layoutGlyphs writes indexed floats into a caller-owned buffer and returns a
+    // count; it issues NO drawImage, so GLYPHS = 0 for the rec.total equality and
+    // the count is checked through `sink`. THREE lanes, because layoutGlyphs has
+    // no drawImage anchor to constrain its body:
+    //   - gateOps (RULES) + gateAlloc (ALLOC_RULES) are the RETENTION guard --
+    //     they catch bytes that survive the call (e.g. retaining DISTINCT buffers
+    //     into a pre-sized store, which allocVolume would settle away).
+    //   - allocVolume / VOL_MAX (the F-37 transient detector windows E-H carry)
+    //     catches PER-CALL allocation, transient or churning. This is the lane the
+    //     retention pair is blind to.
+    // Both worst mutations were WATCHED to turn window I RED via the volume lane:
+    // A9 (writing the record through a 6-float array literal + `outBuffer.set`)
+    // measured 329 MB over VOL_OPS; A10 (pushing `outBuffer` into a module sink)
+    // measured ~4.6 MB (the growing sink array's churn) -- both far above the
+    // 1 MB floor, and layoutGlyphs itself is zero, so no special floor is needed.
+    // The exact-fit QUADBUF also proves the `p + 6 > cap` guard passes a tight buffer.
+    {
+        const OPS = 200000, WARMUP = 5000, GLYPHS = 0;
+        resetRec(ATLAS); resetTotals();
+        const hot = (i) => {
+            rec.calls = 0;
+            sink = FONT_ASCII.layoutGlyphs(S64, QUADBUF, 0, 0, 1, 0);
+        };
+        const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+        check(rec.total === (OPS + WARMUP) * GLYPHS,
+            () => 'T6/I: rec.total ' + rec.total + ' != ' + ((OPS + WARMUP) * GLYPHS));
+        check(sink === QUAD_GLYPHS,
+            () => 'T6/I: layoutGlyphs(S64) returned ' + sink + ' != ' + QUAD_GLYPHS);
+        structural(FONT_ASCII, 'I');
+        gateOps(report, summary, 'I');
+        const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
+        gateAlloc(aReport, result, 'I');
+        const volI = allocVolume(hot);
+        check(volI <= VOL_MAX,
+            () => 'T6/I: layoutGlyphs allocated ' + volI + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOL_MAX + ') -- a per-record allocation shipped, most' +
+                ' likely a 6-float array literal + outBuffer.set(), or a retained' +
+                ' outBuffer reference (A9/A10)');
+    }
+
+    // --- Window J (M5): drawQuads() -- 62 drawImage from a prebuilt buffer ------
+    // The buffer is laid out ONCE below (outside the hot body), then re-blit every
+    // iteration -- drawQuads reads only, so GLYPHS = 62 and rec.total gates it.
+    // THREE lanes, same reasoning as window I: gateOps + gateAlloc are the
+    // retention guard; allocVolume / VOL_MAX catches PER-CALL allocation. WATCHED
+    // RED: a genuine per-glyph array escaping the loop measured 329 MB over
+    // VOL_OPS on the volume lane. NOTE the negative result that proves this lane
+    // earns its place -- `ctx.drawImage(...[8 floats])` per glyph, written INLINE
+    // (the literal spread straight into the call, NOT materialized into a variable
+    // first), does NOT redden: V8 scalar-replaces it and allocates nothing, so
+    // torture exits 0. Verified on Node v26.3.1. Only a materialized/escaping
+    // allocation is a real regression, and only a real regression should redden.
+    {
+        const OPS = 200000, WARMUP = 5000, GLYPHS = QUAD_GLYPHS;
+        resetRec(ATLAS); resetTotals();
+        const count = FONT_ASCII.layoutGlyphs(S64, QUADBUF, 0, 0, 1, 0);
+        check(count === QUAD_GLYPHS,
+            () => 'T6/J: layoutGlyphs seeded ' + count + ' records, expected ' + QUAD_GLYPHS);
+        const hot = (i) => {
+            rec.calls = 0;
+            FONT_ASCII.drawQuads(rec, QUADBUF, 0, count, 0, 0, 1);
+        };
+        const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
+        check(rec.total === (OPS + WARMUP) * GLYPHS,
+            () => 'T6/J: rec.total ' + rec.total + ' != ' + ((OPS + WARMUP) * GLYPHS));
+        structural(FONT_ASCII, 'J');
+        gateOps(report, summary, 'J');
+        const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
+        gateAlloc(aReport, result, 'J');
+        const volJ = allocVolume(hot);
+        check(volJ <= VOL_MAX,
+            () => 'T6/J: drawQuads allocated ' + volJ + ' bytes over ' + VOL_OPS +
+                ' calls (limit ' + VOL_MAX + ') -- a per-glyph allocation shipped that' +
+                ' escapes the loop (a materialized array/object, not a spread literal' +
+                ' V8 elides) (A9)');
     }
 }

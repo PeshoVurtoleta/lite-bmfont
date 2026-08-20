@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -10,7 +11,7 @@ test('version is synced across package.json, VERSION and the CHANGELOG heading',
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
     const head = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8')
         .split('\n').find(l => /^##\s+\d+\.\d+\.\d+/.test(l));
-    assert.equal(VERSION, '1.8.0');
+    assert.equal(VERSION, '1.9.0');
     assert.equal(pkg.version, VERSION);
     assert.equal(head.replace(/^##\s+/, '').split(/\s/)[0], VERSION);
 });
@@ -93,4 +94,57 @@ test('every tracked text file is ASCII-only (U+00D7 and U+00B5 excepted)', () =>
         offenders.length, 0,
         'non-ASCII code points found (transliterate per the Law):\n  ' + offenders.join('\n  ')
     );
+});
+
+// A11 (M5) -- the per-method body-SHA FREEZE. `draw` is NOT touched by the glyph-
+// quad split; this pins that at byte level, and freezes the other nine shipped
+// methods too (the session that only froze the method it expected to touch is the
+// one that finds out later -- R-9). Each body is extracted exactly as the
+// release-gate awk does -- from `^    name(` through the next `^    }$`, inclusive,
+// each line plus a trailing newline -- and sha256'd. The GUARD is distinctness,
+// not a length floor: a failed extraction yields the empty string, and every
+// empty capture shares one sha, so ten mutually-distinct non-empty shas catch a
+// vacuous extraction directly (a 200-char floor would falsely redden `hasGlyph`
+// at 143 chars and `destroy` at 126).
+test('A11 (M5): the ten shipped method bodies are frozen (draw must not move)', () => {
+    const src = readFileSync(new URL('../BitmapFont.js', import.meta.url), 'utf8');
+    const lines = src.split('\n');
+    function methodSha(name) {
+        const start = lines.findIndex((l) => new RegExp('^    ' + name + '\\(').test(l));
+        if (start < 0) return '';
+        let end = -1;
+        for (let i = start; i < lines.length; i++) {
+            if (/^    }$/.test(lines[i])) { end = i; break; }
+        }
+        if (end < 0) return '';
+        const block = lines.slice(start, end + 1).join('\n') + '\n';
+        return createHash('sha256').update(block).digest('hex');
+    }
+    // Captured on the 1.8.0 commit (1ab66eb) BEFORE the M5 edit.
+    const PINS = {
+        measure: '9967686a0e14e87b9751cb9b334e35bf7a4fa05b460474ab6dfe92a6864e45c1',
+        measureWidest: 'bb315f6f2e292bb866f95c4ec393c84fdfe1af0f70a3a3fcb3dcb5585da019c6',
+        measureLine: '50c28a69fe3e170e03bf0b50a3587c94c82ce91f5431aee2e10059742737e9d4',
+        hasGlyph: '5bdf08564c7ed450ad2ada75d43549bd7ccb4db5a986566ee455001c5c644dc5',
+        draw: '5a794f4afc3ae6d88225d121848afba9fe976467f3ae8b88224c390348907075',
+        drawFast: '143bafcb7d50c6497826d841a587fbdeae9ab4cdf92f8a6bae490eb58024d869',
+        drawFastInt: '3c5942448910181e71257ae15c4bb8c46439bfc5f27469b0e33c419ca8f7900e',
+        drawWrapped: 'bdae8ef4563b43b39ab6683b1370b3c1ceb3a64bab0ef96ac99de4a4505c29fd',
+        destroy: '6f7fd1459b1f452d4e2d5be976082fbabdd676958d1b11079b4bb955602fdf1c',
+        _measureRange: 'ba94f3bf4b9267fa55fc9d17c23aa4c7541edf2b9dac89e21c86d2ed335c5504',
+    };
+    const names = Object.keys(PINS);
+    const got = names.map(methodSha);
+    // Guard on the guard: every capture is non-empty and all ten are DISTINCT,
+    // so a failed awk-style extraction (empty string, shared sha) cannot pass.
+    for (let i = 0; i < names.length; i++) {
+        assert.notEqual(got[i], '', names[i] + ': body extraction was empty (regex missed the method)');
+    }
+    assert.equal(new Set(got).size, names.length, 'two method bodies hashed identically -- an extraction went vacuous');
+    // The freeze itself.
+    for (let i = 0; i < names.length; i++) {
+        assert.equal(got[i], PINS[names[i]],
+            names[i] + ' body sha moved from its 1.8.0 pin -- ' +
+            (names[i] === 'draw' ? 'draw MUST NOT change in M5' : 'an unintended edit'));
+    }
 });

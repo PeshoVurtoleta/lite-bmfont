@@ -2,6 +2,44 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 1.9.0 -- 2026-08-20
+
+Glyph quads: two additive methods and one new export split `draw`'s single loop
+so callers can animate, cull or batch individual letters. `draw` itself is NOT
+touched -- its body sha is frozen and unchanged.
+
+- `layoutGlyphs(text, outBuffer, x, y, scale = 1.0, align = 0) -> number` fills a
+  caller-owned buffer with one stride-`GLYPH_STRIDE` record per VISIBLE glyph --
+  `[sx, sy, sw, sh, dx, dy]` -- and returns the record count. It reproduces
+  `draw`'s arithmetic EXACTLY (same per-line-origin/per-baseline `Math.round`
+  snap, same NaN-safe id gate, same `gw > 0 && gh > 0` gate). `dx`/`dy` are
+  ABSOLUTE with `scale` folded in; `sw`/`sh` are the UNSCALED source dims.
+- `drawQuads(ctx, buffer, first, count, offX = 0, offY = 0, scale = 1.0) -> void`
+  blits a contiguous range of that buffer, one `drawImage` each. `offX`/`offY`
+  are added RAW; `scale` sizes only the source dims and must equal the layout
+  scale. `first`/`count` are CLAMPED (NaN/negative/fractional) and a range past
+  the buffer THROWS a plain `RangeError` (fork 10) -- one check per call, zero per
+  glyph. Drawing past the count `layoutGlyphs` RETURNED (but within the buffer) is
+  a documented caller hazard, not a guarded case.
+- `GLYPH_STRIDE = 6` is exported. Size a buffer with the safe upper bound
+  `text.length * GLYPH_STRIDE` -- the exact record count is not derivable in
+  advance (spaces and out-of-range ids advance the cursor and emit no record).
+
+`outBuffer` is a `Float64Array` or a plain `Array`, never a `Float32Array` (which
+rounds the double cursor and breaks round-trip identity with `draw`). A short
+buffer throws a plain `RangeError` per emitted record (NOT `BitmapFontError`); a
+non-string `text` or a `scale` outside `(0, Infinity)` returns `NaN`. Decision
+record: `decisions/0010-glyph-quads.md`.
+
+Tests/docs: `test/findings.test.js`'s demo-import pin was corrected to match the
+demo, which already imports the BARE CDN file path
+`https://cdn.jsdelivr.net/npm/@zakkster/lite-bmfont/Atlas.js`. The demo itself did
+not change this release -- it was set to the bare path in 1.8.0's commit; only the
+test pin (which still expected the old `/+esm` spelling) caught up here. `/+esm` is
+jsDelivr's CommonJS-to-ESM transform and `Atlas.js` is already zero-dependency
+ESM, so the suffix converted nothing. A dated correction is appended to
+`decisions/0009-atlas-subpath.md`.
+
 ## 1.8.0 -- 2026-08-20
 
 The atlas generator ships as a subpath export. `generateAtlas` -- previously

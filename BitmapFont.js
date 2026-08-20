@@ -1298,6 +1298,135 @@ export class BitmapFont {
         }
     }
 
+    layoutGlyphs(text, outBuffer, x, y, scale = 1.0, align = 0) {
+        // F-42 text door -- the SIXTH inline site (measure/measureWidest/
+        // measureLine/draw/drawWrapped are the other five). Text first, then
+        // scale; the scale predicate is NaN-safe by construction. This is a
+        // QUERY (it returns a count), so a bad door answers NaN -- 0 would be
+        // indistinguishable from the honest answer for '' (decisions/0010
+        // fork 5, ROADMAP law "null is not zero"). Per CALL, zero per glyph.
+        if (typeof text !== 'string') return NaN;
+        if (!(scale > 0 && scale < Infinity)) return NaN;
+        const len = text.length;
+        if (len === 0) return 0;
+
+        // `.length` (not `byteLength`): a plain Array and a Float64Array both
+        // work, which the contract promises (decisions/0010 fork 2, matching
+        // drawWrapped). The overflow guard is PER EMITTED RECORD below, not one
+        // up-front `len * 6` test -- spaces and out-of-range ids emit nothing,
+        // so an up-front test would reject a buffer that would have fit.
+        const cap = outBuffer.length;
+        let p = 0;      // write pointer into outBuffer
+        let out = 0;    // records emitted so far (== glyph index for the throw)
+
+        // Reproduces draw's arithmetic EXACTLY: same door order, same NaN-safe
+        // id gate, same B1 snap (decisions/0004) -- cursorX rounded once per
+        // line origin, cursorY once per baseline from anchorY captured once.
+        // dx/dy are written ABSOLUTE with scale folded in; sw/sh are the
+        // UNSCALED source dims (drawQuads multiplies them by scale).
+        let cursorX = x;
+        const anchorY = Math.round(y);
+        const step = this.lineHeight * scale;
+        let lineIndex = 0;
+        let cursorY = anchorY;
+        let prevId = -1;
+
+        let lineEnd = 0;
+        while (lineEnd < len && text.charCodeAt(lineEnd) !== 10) lineEnd++;
+
+        if (align === 1) cursorX -= this._measureRange(text, 0, lineEnd, scale) / 2;
+        else if (align === 2) cursorX -= this._measureRange(text, 0, lineEnd, scale);
+
+        cursorX = Math.round(cursorX);
+
+        for (let i = 0; i < len; i++) {
+            const id = text.charCodeAt(i);
+
+            if (id === 10) {
+                cursorY = anchorY + Math.round(++lineIndex * step);
+                cursorX = x;
+                prevId = -1;
+
+                let nextEnd = i + 1;
+                while (nextEnd < len && text.charCodeAt(nextEnd) !== 10) nextEnd++;
+
+                if (align === 1) cursorX -= this._measureRange(text, i + 1, nextEnd, scale) / 2;
+                else if (align === 2) cursorX -= this._measureRange(text, i + 1, nextEnd, scale);
+
+                cursorX = Math.round(cursorX);
+                continue;
+            }
+
+            if (!(id >= 0 && id < 256)) continue;
+
+            if (prevId !== -1) {
+                cursorX += this.kerning[(prevId << 8) | id] * scale;
+            }
+
+            const ptr = id * 7;
+            const gw = this.glyphs[ptr + 2];
+            const gh = this.glyphs[ptr + 3];
+
+            if (gw > 0 && gh > 0) {
+                // Per EMITTED RECORD (decisions/0010 fork 6). Plain RangeError,
+                // NOT BitmapFontError (that is the descriptor door's; conflating
+                // them lies about the taxonomy). `>` so an exactly-sized buffer
+                // (6 floats per emitted glyph) fits; `>=` would reject it.
+                if (p + 6 > cap) {
+                    throw new RangeError('lite-bmfont: outBuffer holds ' + cap +
+                        ' floats, glyph ' + out + ' needs ' + (p + 6));
+                }
+                outBuffer[p] = this.glyphs[ptr];
+                outBuffer[p + 1] = this.glyphs[ptr + 1];
+                outBuffer[p + 2] = gw;
+                outBuffer[p + 3] = gh;
+                outBuffer[p + 4] = cursorX + this.glyphs[ptr + 4] * scale;
+                outBuffer[p + 5] = cursorY + this.glyphs[ptr + 5] * scale - (this.base * scale);
+                p += 6;
+                out++;
+            }
+
+            cursorX += this.glyphs[ptr + 6] * scale;
+            prevId = id;
+        }
+        return out;
+    }
+
+    drawQuads(ctx, buffer, first, count, offX = 0, offY = 0, scale = 1.0) {
+        // Six indexed reads plus one drawImage per glyph. scale multiplies ONLY
+        // the source dims to size the destination (decisions/0010 fork 3); dx/dy
+        // are already absolute and already scaled. offX/offY are added RAW,
+        // never snapped (fork 9) -- the origin round already happened in
+        // layoutGlyphs. Zero allocation: no subarray, no per-glyph object.
+        //
+        // fork (1) idiom (decisions/0010 fork 10, matching drawWrapped's F-05
+        // door): CLAMP the index-likes, THROW on the buffer length -- both PER
+        // CALL, zero per glyph. `!(first >= 0)` and `!(count >= 1)` reject NaN and
+        // negatives in one NaN-safe test; Math.floor kills the fractional case. A
+        // range past the BUFFER throws (fork 10a); a range past what layoutGlyphs
+        // actually WROTE is not derivable from a length and is the caller's PINNED
+        // hazard (fork 10b) -- pass drawQuads the count layoutGlyphs returned.
+        const f = !(first >= 0) ? 0 : Math.floor(first);
+        const n = !(count >= 1) ? 0 : Math.floor(count);
+        if (n === 0) return;
+        const end = f + n;
+        if (end * 6 > buffer.length) {
+            throw new RangeError('lite-bmfont: buffer holds ' + buffer.length +
+                ' floats, quads ' + f + '..' + end + ' need ' + (end * 6));
+        }
+        for (let g = f; g < end; g++) {
+            const p = g * 6;
+            const sw = buffer[p + 2];
+            const sh = buffer[p + 3];
+            ctx.drawImage(
+                this.atlas,
+                buffer[p], buffer[p + 1], sw, sh,
+                buffer[p + 4] + offX, buffer[p + 5] + offY,
+                sw * scale, sh * scale
+            );
+        }
+    }
+
     /** Release atlas reference and typed arrays. */
     destroy() {
         this.atlas = null;
@@ -1306,4 +1435,11 @@ export class BitmapFont {
 }
 export default BitmapFont;
 
-export const VERSION = '1.8.0';
+/**
+ * Float count per glyph record in a layoutGlyphs / drawQuads buffer:
+ * [sx, sy, sw, sh, dx, dy]. Exported so a caller never hardcodes the stride
+ * (decisions/0010 fork 1). Safe buffer upper bound: text.length * GLYPH_STRIDE.
+ */
+export const GLYPH_STRIDE = 6;
+
+export const VERSION = '1.9.0';

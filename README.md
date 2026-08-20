@@ -413,6 +413,7 @@ object with a `drawImage` method.
 
 | Name | Value | Meaning |
 |------|-------|---------|
+| `GLYPH_STRIDE` | `6` | float count per glyph record in a `layoutGlyphs` / `drawQuads` buffer (`[sx, sy, sw, sh, dx, dy]`); size the buffer with the safe upper bound `text.length * GLYPH_STRIDE` |
 | `DRAWFAST_MAX` | `1e21` | largest magnitude `drawFast` renders; outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` it draws nothing (both endpoints inclusive) |
 | `DRAWFASTINT_MAX` | `Number.MAX_SAFE_INTEGER` | largest magnitude `drawFastInt` renders; outside `[-DRAWFASTINT_MAX, DRAWFASTINT_MAX]` it draws nothing (both endpoints inclusive). The correctness boundary, not a buffer boundary |
 | `opts.missingAdvance` | `0` (default) | xadvance written into every glyph id the descriptor did not cover, so an absent glyph leaves a gap instead of overprinting the next. Opt-in; the default is byte-identical to 1.2.x. Must be finite in `[0, 32767]` or the constructor throws `BitmapFontError` (which is a `RangeError`). Id 10 is never given a missing advance |
@@ -442,6 +443,49 @@ Renders a pre-laid-out `Float32Array` of lines into a box. See the **Wrapped Tex
   plain `Array` behave identically); no type check is performed.
 - Id 10 (`\n`) inside a line range is NOT a line break here -- it advances 0 and
   draws nothing.
+
+### `layoutGlyphs(text, outBuffer, x, y, scale?, align?) -> number`
+Lays out `text` into a caller-owned `outBuffer` as one stride-`GLYPH_STRIDE`
+record per **visible** glyph -- `[sx, sy, sw, sh, dx, dy]` -- and returns the
+record count. Pair it with `drawQuads` to blit; between the two calls the buffer
+IS the mutation seam -- edit `dx`/`dy` to move a letter, or narrow `first`/`count`
+to draw a subset (`decisions/0010`, no per-glyph closure).
+
+It reproduces `draw`'s arithmetic **exactly** at the same `x`/`y` origin, `scale`
+and `align`: the same per-line-origin/per-baseline `Math.round` snap (F-07, B1),
+the same NaN-safe id gate, the same `gw > 0 && gh > 0` gate. `dx`/`dy` are
+**absolute** with `scale` already folded in; `sw`/`sh` are the **unscaled**
+source dimensions (`drawQuads` multiplies them by its own `scale`).
+
+- `outBuffer` is a `Float64Array` or a plain `Array` -- **not** a `Float32Array`,
+  which rounds the double cursor and breaks round-trip identity with `draw`.
+  `.length`, not `byteLength`, is checked.
+- A short buffer throws a plain `RangeError` (**not** `BitmapFontError`) naming
+  the capacity, glyph index and need, checked **per emitted record**. The **safe
+  upper bound** is `text.length * GLYPH_STRIDE` -- the exact record count is NOT
+  derivable in advance, because spaces and out-of-range ids advance the cursor
+  and occupy no record.
+- A non-string `text`, or a `scale` outside `(0, Infinity)`, returns `NaN` (not
+  `0`, which is the honest answer for `''`); nothing is written.
+
+### `drawQuads(ctx, buffer, first, count, offX?, offY?, scale?) -> void`
+Blits `count` glyph records from `buffer` starting at record `first`, one
+`ctx.drawImage` each. `offX`/`offY` are added **raw** to `dx`/`dy` -- never
+re-snapped, so a sub-pixel shake or scroll offset stays smooth. `scale`
+multiplies **only** the source dimensions to size the destination and MUST equal
+the layout scale; `dx`/`dy` are already absolute and scaled.
+
+`first`/`count` follow `drawWrapped`'s fork (1) idiom (`decisions/0010` fork 10):
+they are **clamped** (a `NaN`, negative or below-one `count` draws nothing; a
+negative `first` clamps to 0; fractionals floored), and a range whose last record
+exceeds the buffer **throws** a plain `RangeError` (not `BitmapFontError`) -- one
+check per call, none per glyph.
+
+**Pinned hazard:** a buffer length cannot know how many records `layoutGlyphs`
+actually **wrote**, so a `count` larger than the returned count but still within
+the buffer draws from **unwritten** slots. Pass `drawQuads` the exact count
+`layoutGlyphs` returned -- the caller's responsibility, in the same spirit
+`drawFast`'s shared-scratch reentrancy is a documented hazard, not a guarded case.
 
 ### `destroy() -> void`
 Releases the atlas reference and typed arrays.

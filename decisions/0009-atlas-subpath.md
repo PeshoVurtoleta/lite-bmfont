@@ -181,3 +181,16 @@ the shipped file (not the frozen one) red.
   `BitmapFont.prototype`, so the docs-drift guard (T8) cannot enumerate it and
   needs NO exemption -- the exception disappears structurally instead of
   re-entering as a hand-maintained skip list.
+
+
+## Correction (2026-08-20, M5)
+
+The demo import spelling above (`.../Atlas.js/+esm`) was superseded before M5. The
+user's commit 1ab66eb changed the demo to the BARE CDN file path
+`https://cdn.jsdelivr.net/npm/@zakkster/lite-bmfont/Atlas.js` (no `/+esm`
+suffix). `/+esm` is jsDelivr's CommonJS-to-ESM transform; `Atlas.js` is already
+ESM with zero runtime deps, so the suffix converts nothing and buys nothing. The
+npm-consumer contract is unchanged (`@zakkster/lite-bmfont/atlas`). This note
+appends rather than edits the original text above -- a dated ADR statement is
+evidence and is corrected by addition, not rewrite. `test/findings.test.js` pins
+the corrected bare-path spelling.

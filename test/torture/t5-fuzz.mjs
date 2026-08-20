@@ -36,7 +36,7 @@
  * @license MIT
  */
 
-import { BitmapFont } from '../../BitmapFont.js';
+import { BitmapFont, GLYPH_STRIDE } from '../../BitmapFont.js';
 import {
     makePrng, SEED, check, nanScan,
     rec, resetRec, CAP,
@@ -62,6 +62,16 @@ const T5_DXDY_CKSUM = 0xcecd9814;
 const _ckBuf = new ArrayBuffer(8);
 const _ckF64 = new Float64Array(_ckBuf);
 const _ckU32 = new Uint32Array(_ckBuf);
+
+// A1 (M5) round-trip scratch, built ONCE. RT_QUADBUF holds up to CAP records;
+// sweep A skips t.length > 512, so rtN <= 512 <= CAP. The eight RT_* columns
+// snapshot draw's recording so layoutGlyphs + drawQuads can be compared to it
+// element-wise after rec is reset -- no per-tuple allocation.
+const RT_QUADBUF = new Float64Array(CAP * GLYPH_STRIDE);
+const RT_SX = new Float64Array(CAP), RT_SY = new Float64Array(CAP);
+const RT_SW = new Float64Array(CAP), RT_SH = new Float64Array(CAP);
+const RT_DX = new Float64Array(CAP), RT_DY = new Float64Array(CAP);
+const RT_DW = new Float64Array(CAP), RT_DH = new Float64Array(CAP);
 
 // ---- the allocating reference renderer (8.3.1) -----------------------------
 // Records instead of drawing: it returns arrays, it never calls drawImage, and
@@ -619,6 +629,7 @@ export function run() {
     // =====================================================================
     const SWEEP = 50000;
     let sweptGlyphs = 0, sweptMultiLine = 0, sweptFractionalY = 0;
+    let rtDrawTotal = 0, rtQuadTotal = 0;   // A1 corpus-level count equality
     let ckAcc = 0 >>> 0;                                  // F-42 byte-identity fold
     for (let i = 0; i < SWEEP; i++) {
         const fi = prng() % 3;
@@ -677,6 +688,46 @@ export function run() {
         sweptGlyphs += rec.calls;
         if (ref.baselines.length > 1) sweptMultiLine++;
         if (y !== Math.round(y)) sweptFractionalY++;
+
+        // A1 (M5) -- THE ROUND TRIP. Snapshot draw's recording, then rebuild it
+        // with layoutGlyphs + drawQuads(..., 0, 0, scale) and compare all eight
+        // recorded columns element-wise plus the emitted count. layoutGlyphs
+        // folds x/y/scale/align exactly as draw does, so the two recordings are
+        // byte-identical. The newline-branch mutation `cursorX = x` -> `= 0`
+        // moves dx on every line after the first at x != 0 and reddens here.
+        const rtN = rec.calls;
+        for (let g = 0; g < rtN; g++) {
+            RT_SX[g] = rec.sx[g]; RT_SY[g] = rec.sy[g];
+            RT_SW[g] = rec.sw[g]; RT_SH[g] = rec.sh[g];
+            RT_DX[g] = rec.dx[g]; RT_DY[g] = rec.dy[g];
+            RT_DW[g] = rec.dw[g]; RT_DH[g] = rec.dh[g];
+        }
+        resetRec(ATLAS);
+        const rtCount = font.layoutGlyphs(t, RT_QUADBUF, x, y, scale, align);
+        check(rtCount === rtN,
+            () => 'T5/A1: layoutGlyphs emitted ' + rtCount + ' records, draw drew ' + rtN +
+                ' (seed=' + SEED + ' i=' + i + ' fi=' + fi + ' si=' + si + ' scale=' + scale +
+                ' align=' + align + ' x=' + x + ' y=' + y + ')');
+        font.drawQuads(rec, RT_QUADBUF, 0, rtCount, 0, 0, scale);
+        check(rec.calls === rtN,
+            () => 'T5/A1: drawQuads blit ' + rec.calls + ' glyphs, draw drew ' + rtN + ' (i=' + i + ')');
+        for (let g = 0; g < rtN; g++) {
+            check(rec.sx[g] === RT_SX[g] && rec.sy[g] === RT_SY[g] &&
+                  rec.sw[g] === RT_SW[g] && rec.sh[g] === RT_SH[g] &&
+                  rec.dx[g] === RT_DX[g] && rec.dy[g] === RT_DY[g] &&
+                  rec.dw[g] === RT_DW[g] && rec.dh[g] === RT_DH[g],
+                () => 'T5/A1: quad glyph ' + g + ' [' + rec.sx[g] + ',' + rec.sy[g] + ',' +
+                    rec.sw[g] + ',' + rec.sh[g] + ',' + rec.dx[g] + ',' + rec.dy[g] + ',' +
+                    rec.dw[g] + ',' + rec.dh[g] + '] != draw [' + RT_SX[g] + ',' + RT_SY[g] + ',' +
+                    RT_SW[g] + ',' + RT_SH[g] + ',' + RT_DX[g] + ',' + RT_DY[g] + ',' +
+                    RT_DW[g] + ',' + RT_DH[g] + '] (seed=' + SEED + ' i=' + i + ' fi=' + fi +
+                    ' si=' + si + ' scale=' + scale + ' align=' + align + ' x=' + x + ' y=' + y + ')');
+        }
+        check(rec.imgMismatch === 0 && rec.dropped === 0 && nanScan() === 0,
+            () => 'T5/A1: imgMismatch ' + rec.imgMismatch + ' dropped ' + rec.dropped +
+                ' nanScan ' + nanScan() + ' (i=' + i + ')');
+        rtDrawTotal += rtN;
+        rtQuadTotal += rec.calls;
     }
     // Non-vacuity: the sweep must actually have drawn, actually have crossed a
     // newline, and actually have used a fractional y -- or it proves nothing
@@ -687,6 +738,13 @@ export function run() {
         () => 'T5/sweepA: only ' + sweptMultiLine + ' multi-line tuples -- F-07 is barely exercised');
     check(sweptFractionalY > 10000,
         () => 'T5/sweepA: only ' + sweptFractionalY + ' fractional-y tuples -- the B1/B2 sub-fork is INVISIBLE');
+    // A1 corpus-level count equality (DONE-WHEN "rec.total equality"): every draw
+    // glyph over the whole sweep has exactly one quad record, and the round trip
+    // actually drew (non-vacuity).
+    check(rtQuadTotal === rtDrawTotal,
+        () => 'T5/A1: drawQuads total ' + rtQuadTotal + ' != draw total ' + rtDrawTotal);
+    check(rtQuadTotal > 200000,
+        () => 'T5/A1: only ' + rtQuadTotal + ' quad glyphs round-tripped -- the round trip went vacuous');
     // F-42 byte-identity pin. Guarded to the default seed (the corpus and tuple
     // stream are seed-dependent). A moved checksum means a real string's dx or dy
     // changed -- the one failure mode this session must be unable to hide. DO NOT

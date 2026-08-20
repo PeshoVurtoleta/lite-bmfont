@@ -15,7 +15,7 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0-255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.8.0'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.9.0'.
 
 ## Export: BitmapFontError (class extends RangeError)
 The one error the constructor throws (F-10). Extends RangeError, so a
@@ -234,8 +234,54 @@ drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale
         the ellipsis (F-13); 2, 0 and NaN do not. A bit outside the mask throws
         under { checked: true } and is ignored otherwise.
 
+layoutGlyphs(text, outBuffer, x, y, scale = 1, align = 0) -> number
+  Lays out `text` into `outBuffer` as one stride-6 record per VISIBLE glyph and
+  returns the record count. Pair with drawQuads to blit; edit dx/dy between the
+  two calls to move individual glyphs (decisions/0010). Zero-alloc.
+  - Record layout, stride GLYPH_STRIDE (6):
+        [0] sx  -- source x in the atlas
+        [1] sy  -- source y in the atlas
+        [2] sw  -- UNSCALED source width  (drawQuads multiplies by its scale)
+        [3] sh  -- UNSCALED source height (drawQuads multiplies by its scale)
+        [4] dx  -- ABSOLUTE destination x, scale already folded in
+        [5] dy  -- ABSOLUTE destination y, scale already folded in
+  - Reproduces draw's arithmetic EXACTLY at the same x/y origin, scale and align:
+    same per-line-origin/per-baseline Math.round snap (F-07 B1), same NaN-safe id
+    gate, same gw>0 && gh>0 gate. A glyph that fails the size gate (a space)
+    advances the cursor and occupies NO record.
+  - `outBuffer`: Float64Array or a plain Array (NOT Float32Array -- it rounds the
+    cursor and breaks round-trip identity with draw). `.length`, not byteLength,
+    is checked.
+  - A short buffer THROWS a plain RangeError (NOT BitmapFontError) naming the
+    capacity, glyph index and need, checked per emitted record. SAFE UPPER BOUND
+    is text.length * GLYPH_STRIDE -- the exact record count is NOT derivable in
+    advance (spaces and out-of-range ids emit no record).
+  - A NON-STRING text or a scale outside (0, Infinity) returns NaN (not 0, which
+    is the honest answer for ''); nothing is written.
+
+drawQuads(ctx, buffer, first, count, offX = 0, offY = 0, scale = 1) -> void
+  Blits `count` glyph records from `buffer` starting at record `first`, one
+  ctx.drawImage each. Zero-alloc.
+  - offX/offY are added RAW to dx/dy -- never re-snapped (the origin round already
+    happened in layoutGlyphs; decisions/0010 fork 9).
+  - scale multiplies ONLY the source dims to size the destination and MUST equal
+    the layout scale; dx/dy are already absolute and scaled (fork 3).
+  - first/count follow drawWrapped's fork (1) idiom (fork 10): CLAMPED (NaN,
+    negative or <1 count draws nothing; negative first clamps to 0; fractionals
+    floored), and a range whose last record exceeds the buffer THROWS a plain
+    RangeError (NOT BitmapFontError). One check per call, zero per glyph.
+  - PINNED HAZARD (fork 10b): a buffer length cannot know how many records
+    layoutGlyphs WROTE, so a count past the returned total but within the buffer
+    draws UNWRITTEN slots. Pass drawQuads the count layoutGlyphs returned -- the
+    caller's job, like drawFast's shared-scratch reentrancy hazard.
+
 destroy() -> void
   Releases the atlas reference and typed arrays (glyphs, kerning, internal scratch).
+
+## Export: GLYPH_STRIDE (number)
+Float count per glyph record in a layoutGlyphs / drawQuads buffer:
+[sx, sy, sw, sh, dx, dy], so 6. Size the buffer with it: the safe upper bound is
+text.length * GLYPH_STRIDE.
 
 ## drawWrapped layout helper (recipe)
 
