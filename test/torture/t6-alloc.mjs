@@ -30,6 +30,7 @@
 import {
     rec, resetRec, resetTotals, runOpsGate, runAllocGate, BREAK, check, die,
     FONT_ASCII, FONT_NUM, S64, WRAP_TEXT, WRAP_LAYOUT, NUM_CYCLE, ATLAS,
+    allocVolume, VOL_OPS, VOL_WARMUP,
 } from './harness.mjs';
 import { GLYPH_STRIDE } from '../../BitmapFont.js';
 
@@ -115,8 +116,8 @@ let sink = 0;
 // sensitive, which is exactly why the margin is this wide and why it is stated
 // here rather than tuned quietly. The floor is not 0 because
 // process.memoryUsage() itself allocates; that is why sampling is strided.
-const VOL_OPS = 200000;
-const VOL_WARMUP = 20000;
+// VOL_OPS / VOL_WARMUP / allocVolume moved to harness.mjs (M10 T-1a) so
+// test/demo.test.js drives the same instrument; imported above.
 const VOL_MAX = 1000000;
 // Window G ONLY (C-4b). The 5-digit VOL_MAX cannot gate drawFastInt: at 5 digits
 // the String(value)+charCodeAt mutant allocates only ~84 KB (under VOL_MAX) and
@@ -192,22 +193,6 @@ const VOLD_MAX = 1000000;    // D (2.0.0, F-06): floor 65,088 worst -> 15.4x mar
 // the volume lane too (3.1M B by op 2000); the ops lane is BLIND (major=0, the
 // F-37 shape). VOLK_MAX sits 5.4x above the worst cold floor.
 const VOLK_MAX = 2000000;
-
-function allocVolume(fn) {
-    for (let i = 0; i < VOL_WARMUP; i++) fn(i);
-    globalThis.gc();
-    let prev = process.memoryUsage().heapUsed;
-    let sum = 0;
-    for (let i = 0; i < VOL_OPS; i++) {
-        fn(i);
-        if ((i & 1023) === 0) {
-            const h = process.memoryUsage().heapUsed;
-            if (h > prev) sum += h - prev;
-            prev = h;
-        }
-    }
-    return sum;
-}
 
 /** RECORDED-only wall-clock, ns/call. Not a gate: no threshold, no die(). */
 function timeNs(fn, ops, warmup) {

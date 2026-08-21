@@ -2,6 +2,29 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 2.0.1 -- 2026-08-21
+
+No shipped library byte behaviour changed. This is a docs + demo release.
+
+### Docs
+
+- The demo (`demo/demo-lite-bmfont.html`) rendered the words "zero alloc" over a
+  frame path that allocated ~42 strings/frame (F-53). The four per-frame scene
+  bodies moved to `demo/scenes.mjs` and were rewritten to allocate nothing per
+  frame: the wave uses `layoutGlyphs` + per-glyph `drawQuads`, the score draws a
+  constant `ZEROS[]` run + `drawFastInt`, the typewriter lays a phrase out once
+  and blits a growing prefix, and the stress counter uses `drawFastInt` + a
+  constant label. `test/demo.test.js` gates the wave and typewriter scenes on the
+  allocation-volume lane and the score scene behaviourally against the old
+  padStart output (F-54 records the lane's resolution floor). `demo/` is not in
+  `files[]` and ships to nobody; no published library byte moved.
+- Removed three stale forward-references from the shipped docs (F-52): the
+  "may re-parent this type" speculation in `llms.txt` and `BitmapFont.d.ts`, and
+  the "F-08 storage half stays open" scheduling note in `llms.txt`, all of which
+  described 2.0.0 as unfinished from inside the 2.0.0 tarball. A packaging gate
+  now reddens on a shipped consumer file carrying a roadmap session name or a
+  scheduling phrase.
+
 ## 2.0.0 -- 2026-08-21
 
 The 1/16 fixed-point advance format, the `measure` semantics flip, checked mode

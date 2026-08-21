@@ -57,7 +57,7 @@ export interface BitmapFontOptions {
  * `catch (e) { if (e instanceof RangeError) }` around `new BitmapFont(...)` still
  * fires. `field` is the caller-facing field name (e.g. `'chars[0].id'`,
  * `'opts.checked'`); `value` is the received value; `message` starts
- * `lite-bmfont: ` and contains both. 2.0.0 may re-parent this type.
+ * `lite-bmfont: ` and contains both.
  */
 export class BitmapFontError extends RangeError {
     readonly name: 'BitmapFontError';
@@ -76,7 +76,7 @@ export class BitmapFont {
      * [0]=x [1]=y [2]=width [3]=height [4]=xoffset [5]=yoffset [6]=xadvance.
      * Public: the documented word-wrap recipe reads `glyphs[id * 7 + 6]`.
      * The stride is a cross-package contract -- changing it is a MAJOR, and
-     * that binds M5 (glyph quads) and M7 (atlas subpath).
+     * that binds the glyph-quad layout API and the atlas subpath.
      */
     readonly glyphs: Int16Array;
 

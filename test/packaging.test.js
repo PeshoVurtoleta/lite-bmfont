@@ -14,9 +14,58 @@ test('version is synced across package.json, VERSION and the CHANGELOG heading',
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
     const head = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8')
         .split('\n').find(l => /^##\s+\d+\.\d+\.\d+/.test(l));
-    assert.equal(VERSION, '2.0.0');
+    assert.equal(VERSION, '2.0.1');
     assert.equal(pkg.version, VERSION);
     assert.equal(head.replace(/^##\s+/, '').split(/\s/)[0], VERSION);
+});
+
+// F-52: no SHIPPED consumer file may carry a roadmap session name (M0..M9, plus
+// M9pre / M9a / M9b) or a scheduling phrase ("stays open" / "may re-parent").
+// Three such sentences went to npm inside the 2.0.0 tarball -- the published docs
+// speculated about the release the reader was holding. The docs-drift guard could
+// not see them: it pins SIGNATURES, not stale English.
+//
+// REFIT (planner): scope = files[] MINUS CHANGELOG.md, LICENSE, BitmapFont.js.
+// CHANGELOG legitimately narrates the session history; LICENSE is boilerplate;
+// BitmapFont.js carries session names INSIDE method bodies whose SHAs A11 pins,
+// so editing them is out of scope. The exemption set is asserted LITERALLY so
+// widening it later reddens THIS test. Proven in BOTH directions below.
+const SESSION_OR_SCHEDULE = /\bM[0-9](?:pre|[ab])?\b|stays open|may re-parent/;
+
+test('F-52: no shipped consumer file carries a session name or scheduling phrase (both directions)', () => {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+
+    // Literal exemption set. Adding a file here to dodge the gate reddens this line.
+    const EXEMPT = ['BitmapFont.js', 'CHANGELOG.md', 'LICENSE'];
+    assert.deepEqual([...EXEMPT].sort(), ['BitmapFont.js', 'CHANGELOG.md', 'LICENSE']);
+
+    const scanned = pkg.files.filter((f) => !EXEMPT.includes(f));
+    // Fail closed: an empty or trivially-small scan set would pass vacuously.
+    assert.ok(scanned.length >= 5, 'scan set too small: ' + scanned.length);
+    assert.ok(scanned.includes('llms.txt') && scanned.includes('BitmapFont.d.ts'),
+        'scan set missing the files F-52 lived in');
+
+    // DIRECTION 1: the shipped tree is clean.
+    const offenders = [];
+    for (const rel of scanned) {
+        const abs = join(root, rel);
+        assert.ok(existsSync(abs), 'files[] lists a missing file: ' + rel);   // fail closed
+        const lines = readFileSync(abs, 'utf8').split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            if (SESSION_OR_SCHEDULE.test(lines[i])) offenders.push(rel + ':' + (i + 1) + ' ' + lines[i].trim());
+        }
+    }
+    assert.deepEqual(offenders, [], 'shipped file carries a session name / scheduling phrase:\n' + offenders.join('\n'));
+
+    // DIRECTION 2 (positive control): the matcher actually fires. Without this,
+    // DIRECTION 1 is a tautology -- a regex that matches nothing always passes.
+    assert.ok(SESSION_OR_SCHEDULE.test('closed in M4 and half-closed in M9'), 'matcher blind to M<n>');
+    assert.ok(SESSION_OR_SCHEDULE.test('the storage half stays open (M9)'), 'matcher blind to "stays open"');
+    assert.ok(SESSION_OR_SCHEDULE.test('2.0.0 may re-parent this type'), 'matcher blind to "may re-parent"');
+    assert.ok(SESSION_OR_SCHEDULE.test('scheduled for M9pre'), 'matcher blind to M9pre');
+    // and it does NOT fire on ordinary prose or version strings.
+    assert.equal('the 2.0.0 release measures widths'.match(SESSION_OR_SCHEDULE), null, 'matcher false-positives on prose');
 });
 
 // The ASCII-only Law (M2b / F-46). Every tracked text file must contain only

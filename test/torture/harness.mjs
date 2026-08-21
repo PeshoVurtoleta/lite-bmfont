@@ -99,6 +99,16 @@ export const rec = {
     imgMismatch: 0,    // incremented when img !== expected
     expected: null,    // the atlas identity every call must carry
 
+    // Demo-scene surface (M10). The four extracted scene bodies set these.
+    // globalAlpha is initialised to a DOUBLE (1.0) so the hidden-class transition
+    // happens ONCE here at boot, never mid-window. fillRect takes FOUR NAMED
+    // PARAMETERS, never a rest param -- a rest array allocates per call and would
+    // report megabytes per frame against a library that allocates nothing (the
+    // same discipline as drawImage above). It is a recording no-op.
+    globalAlpha: 1.0,
+    fillStyle: '#000000',
+    fillRect(x, y, w, h) { /* recording no-op; four named params, zero allocation */ },
+
     drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh) {
         const i = this.calls;
         this.total++;
@@ -176,6 +186,43 @@ export function runAllocGate(fn, opts) {
         batches: opts.batches === undefined ? 8 : opts.batches,
     });
     return { report: checkAllocs(result, ALLOC_RULES), result };
+}
+
+/** Iterations and warmup for the transient allocation-VOLUME lane. */
+export const VOL_OPS = 200000;
+export const VOL_WARMUP = 20000;
+
+/**
+ * The allocation-VOLUME lane (F-37, M9pre). The ONLY instrument that sees
+ * TRANSIENT per-call garbage: a retained-bytes rule (runAllocGate) measures a
+ * discarded substring as EXACTLY 0 bytes. Returns the summed positive heapUsed
+ * deltas over VOL_OPS calls, SAMPLED every 1024 ops.
+ *
+ * The stride is load-bearing, not incidental (M10 coordinator measurement):
+ * `process.memoryUsage()` returns a fresh object per call, so sampling every op
+ * makes the SAMPLER the dominant allocator and buries the signal. At stride 1024
+ * (>= 200) a non-allocating body measures EXACTLY 0 B, so any positive number is
+ * the body's own garbage, not the instrument's. Requires --expose-gc.
+ *
+ * Moved here from t6-alloc.mjs (M10 T-1a) so test/demo.test.js can import the
+ * same instrument; t6's eleven windows re-run unchanged to prove the move inert.
+ * @param {(i:number)=>void} fn
+ * @returns {number} summed positive heapUsed deltas, in bytes
+ */
+export function allocVolume(fn) {
+    for (let i = 0; i < VOL_WARMUP; i++) fn(i);
+    globalThis.gc();
+    let prev = process.memoryUsage().heapUsed;
+    let sum = 0;
+    for (let i = 0; i < VOL_OPS; i++) {
+        fn(i);
+        if ((i & 1023) === 0) {
+            const h = process.memoryUsage().heapUsed;
+            if (h > prev) sum += h - prev;
+            prev = h;
+        }
+    }
+    return sum;
 }
 
 // ---- shared test fonts and fixtures -- allocated ONCE, at module scope -------

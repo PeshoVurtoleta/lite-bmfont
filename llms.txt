@@ -15,14 +15,14 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0-255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '2.0.0'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '2.0.1'.
 
 ## Export: BitmapFontError (class extends RangeError)
 The one error the constructor throws (F-10). Extends RangeError, so a
 catch (e) { if (e instanceof RangeError) } around new BitmapFont(...) still fires.
 Own properties: name === 'BitmapFontError', field (the caller-facing field name,
 e.g. 'chars[0].id', 'opts.checked'), value (the received value). Every message
-starts 'lite-bmfont: ' and contains both. 2.0.0 may re-parent this type.
+starts 'lite-bmfont: ' and contains both.
 
 ## Export: DRAWFAST_MAX (number)
 1e21 -- the largest magnitude drawFast can render. The "d.d" form of 1e21 is
@@ -414,9 +414,9 @@ See source file BitmapFont.js for full JSDoc API documentation.
   findings.test.js (F-18 closure + the atlas extraction proofs), packaging.test.js
   (version sync + the ASCII-only Law). Torture tier T8 owns pack contents, the
   DOM-free import through the exports map, and the docs-drift guard. Counts are
-  not pinned in docs -- nothing reads them, and they drifted in 1.4.0 (F-43). M4 closed F-07 / F-34 / F-35 / F-36 as
-  real assertions and half-closed F-06 (measureWidest ships; measure's semantics
-  stay M9's). F-08's storage half stays open (M9).
+  not pinned in docs -- nothing reads them, and they drifted in 1.4.0 (F-43). F-07 / F-34 / F-35 / F-36 are closed as
+  real assertions; F-06 is closed (measureWidest ships and measure delegates to
+  the widest-line walk); F-08's storage half is closed.
 - npm run torture -> node --expose-gc test/torture.mjs: prints exactly "ok", exit 0.
   Zero-allocation is measured, not just claimed -- draw / drawFast / drawWrapped /
   measure / measureWidest / measureLine each pass maxMajor:0, maxPauseMs:4,
