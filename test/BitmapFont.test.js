@@ -70,8 +70,10 @@ describe('BitmapFont', () => {
         const font = new BitmapFont(atlas, mockFontJson);
         assert.equal(font.lineHeight, 20);
         assert.equal(font.base, 16);
-        // Glyph A at index 65*7
-        assert.equal(font.glyphs[65 * 7 + 6], 12); // xadvance
+        // Glyph A at index 65*7. 0012 fork 1 (C-folded): xadvance is stored in
+        // 1/16 fixed point, so 12 -> round(12*16) = 192; advanceOf decodes it.
+        assert.equal(font.glyphs[65 * 7 + 6], 192); // xadvance * 16
+        assert.equal(font.advanceOf(65), 12);
         assert.equal(rec.dropped, 0);
         assert.equal(rec.imgMismatch, 0);
     });
@@ -80,7 +82,10 @@ describe('BitmapFont', () => {
         const atlas = {};
         resetRec(atlas);
         const font = new BitmapFont(atlas, mockFontJson);
-        assert.equal(font.kerning[(65 << 8) | 66], -1); // A->B = -1
+        // 0012 fork 1/3 (C-folded): kerning amount stored in 1/16 fixed point,
+        // -1 -> round(-1*16) = -16; kernOf decodes it.
+        assert.equal(font.kerning[(65 << 8) | 66], -16); // A->B = -1 * 16
+        assert.equal(font.kernOf(65, 66), -1);
         assert.equal(font.kerning[(66 << 8) | 65], 0); // B->A = 0 (not defined)
         assert.equal(rec.dropped, 0);
         assert.equal(rec.imgMismatch, 0);
@@ -982,8 +987,9 @@ describe('BitmapFont M3: the descriptor door', () => {
             assert.throws(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id })] })),
                 (e) => e instanceof BitmapFontError && e.field === 'chars[0].id', 'id ' + String(id));
         }
-        // finite out of range is CHECKED, not always-throw.
-        assert.doesNotThrow(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: 3000 })] })));
+        // finite out of range is CHECKED, not always-throw. 0012 fork 6: checked
+        // now defaults ON, so the unchecked lane must be opted into explicitly.
+        assert.doesNotThrow(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: 3000 })] }), { checked: false }));
         clean();
     });
 
@@ -999,29 +1005,61 @@ describe('BitmapFont M3: the descriptor door', () => {
         clean();
     });
 
-    test('F-08: unchecked, x 40000 stores -25536 and xadvance 8.6 gives measure(AA) === 16 against an exact 17.2', () => {
-        // The semver guarantee in test form: unchecked storage is byte-identical to 1.2.x.
+    test('F-08 (0012 fork 1, C-folded): xadvance 8.6 stores 1/16 fixed point exactly', () => {
+        // BREAKING (0012 fork 1): 2.0.0 stores xadvance in 1/16 fixed point, so
+        // 8.6 -> round(8.6*16) = 138, advanceOf 8.625, measure('AA') = 17.25.
+        // v1.x truncated to 8 (measure 16, drift 24.0000px over 40 glyphs). The
+        // slot 0 x wrap is unchanged -- x stays raw Int16 (checked opt-out).
         resetRec(ATLAS);
-        const fx = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: 40000 })] }));
+        const fx = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: 40000 })] }), { checked: false });
         assert.equal(fx.glyphs[65 * 7], -25536);
         const fa = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 8.6 })] }));
-        assert.equal(fa.measure('AA'), 16);
-        assert.equal(8.6 * 2, 17.2);            // exact double the store loses
-        // F-33: the checked-lane message says "truncates toward zero" (block below);
-        // pin the BEHAVIOUR that wording describes, or the message could lie if the
-        // store ever floored. -8.6 stores -8 (toward zero), never -9 (floor).
+        assert.equal(fa.glyphs[65 * 7 + 6], 138);      // round(8.6 * 16), EXACT literal (S-4)
+        assert.equal(fa.advanceOf(65), 8.625);         // 138 / 16
+        assert.equal(fa.measure('AA'), 17.25);         // 8.625 * 2, NEVER a tolerance
+        // A 40-glyph line: C 8.625*40 = 345 vs exact 344 = -1.0000px overshoot,
+        // where v1.x drift was exactly 24.0000px (320). Exact literal (S-5).
+        assert.equal(fa.measure('A'.repeat(40)), 345);
+        // Non-boundary probe: 8.7 -> round(139.2) = 139, advanceOf 8.6875,
+        // 40 glyphs 347.5, all exactly representable.
+        const fp = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 8.7 })] }));
+        assert.equal(fp.glyphs[65 * 7 + 6], 139);
+        assert.equal(fp.advanceOf(65), 8.6875);
+        assert.equal(fp.measure('A'.repeat(40)), 347.5);
+        // Toward-zero is retired for this slot: -8.6 is a valid sub-pixel advance,
+        // stores round(-8.6*16) = -138 (NOT -8), and CONSTRUCTS under checked.
         const fn = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: -8.6 })] }));
-        assert.equal(fn.glyphs[65 * 7 + 6], -8);
+        assert.equal(fn.glyphs[65 * 7 + 6], -138);
+        assert.equal(fn.advanceOf(65), -8.625);
         clean();
     });
 
-    test('F-08: checked, the same two throw naming the exact stored value and the drift', () => {
-        // Not constructible on 1.2.3 (no checked mode).
+    test('F-08 (0012 fork 6): a fractional-advance font CONSTRUCTS by default -- the blocker', () => {
+        // THE BLOCKER (0012 forks 1+6): checked defaults ON in 2.0.0. Under the OLD
+        // integrality test this xadvance would throw "is not an integer" and every
+        // fractional-advance font would fail to load. C changes what "lossy" means:
+        // a declared 1/16 resolution does not throw on a value it rounds. This
+        // assertion is what proves the contradiction was RESOLVED, not discussed.
         resetRec(ATLAS);
+        assert.doesNotThrow(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 8.6 })] })));
+        const f = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 8.6 })] }));
+        assert.equal(f.measure('AA'), 17.25);
+        clean();
+    });
+
+    test('F-08 (0012 fork 1/6): slot 0 wrap still throws checked; advance out of fixed-point range throws', () => {
+        resetRec(ATLAS);
+        // Slot 0 (x) keeps the Int16 integrality/range lane: 40000 wraps to -25536.
         assert.throws(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: 40000 })] }), { checked: true }),
             (e) => e instanceof BitmapFontError && e.message.includes('40000') && e.message.includes('-25536'));
-        assert.throws(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: -8.6 })] }), { checked: true }),
-            (e) => e instanceof BitmapFontError && e.message.includes('toward zero') && !e.message.includes('floor'));
+        // Advance lane: a value OUTSIDE the 1/16 fixed-point range [-2048, 2047.9375]
+        // throws under checked (its store would wrap the Int16). 3000 is in range for
+        // v1.x Int16 but not for the *16 fixed-point store.
+        assert.throws(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 3000 })] }), { checked: true }),
+            (e) => e instanceof BitmapFontError && e.field === 'chars[0].xadvance' &&
+                e.message.includes('2047.9375'));
+        // But a fractional in-range advance does NOT throw under checked (blocker).
+        assert.doesNotThrow(() => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: -8.6 })] }), { checked: true }));
         clean();
     });
 
@@ -1033,7 +1071,8 @@ describe('BitmapFont M3: the descriptor door', () => {
                 (e) => e instanceof BitmapFontError && e.field === 'kernings[0].first', 'first ' + String(first));
         }
         // negative finite key: skipped unchecked (writes nowhere), throws checked.
-        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: -1, second: 65, amount: -2 }] }));
+        // 0012 fork 6: checked defaults ON, so opt into the skip lane explicitly.
+        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: -1, second: 65, amount: -2 }] }), { checked: false });
         assert.equal(f.kerning[(255 << 8) | 65], 0);
         assert.throws(() => new BitmapFont(ATLAS, mkFont({ kernings: [{ first: -1, second: 65, amount: -2 }] }), { checked: true }),
             (e) => e instanceof BitmapFontError && e.field === 'kernings[0].first');
@@ -1083,6 +1122,16 @@ describe('BitmapFont M3: the descriptor door', () => {
         resetRec(ATLAS);
         assert.doesNotThrow(() => ASCII_CHECKED.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 1), 1, 1000, 1000, 0, 0, 1, 0, 0));
         assert.equal(rec.calls, 8);
+        // F-49 (M9a): flags 3 -- bit 0 SET plus an unknown bit. Until M9a the
+        // mask test lived in the `else` of the ellipsis branch, so any odd flags
+        // value took the ellipsis path and the unknown bit was never seen: this
+        // threw for 2 and was SILENT for 3, over half the flag space. qa 2026-08-21
+        // found that F-49's only regression witness was in TORTURE (T2/14b,
+        // T3/48) -- `npm test` exercised 1 and 2 and never 3, so a fast-only run
+        // could not see the hole come back. This row is that witness.
+        assert.throws(() => { resetRec(ATLAS); ASCII_CHECKED.drawWrapped(rec, 'HELLO', Float32Array.of(0, 5, 60, 3), 1, 1000, 1000, 0, 0, 1, 0, 0); },
+            (e) => e instanceof BitmapFontError && e.message.includes('mask') && e.message.includes('3'),
+            'flags 3 (bit 0 set + unknown bit) must throw -- the F-49 else-if hole');
         clean();
     });
 });

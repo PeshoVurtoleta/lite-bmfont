@@ -139,11 +139,13 @@ export function run() {
         throwsBFE('20b id ' + v + ' checked', () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: v })] }), { checked: true }), 'chars[0].id');
     }
     // row 21: FINITE integer id outside [0,256). NaN is NOT in this case list.
+    // 0012 fork 6: checked defaults ON, so the SKIP lane is opted into explicitly.
     for (const v of [-1, 256, 3000]) {
-        constructs('21 id ' + v + ' unchecked', () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: v })] })));
-        const f = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: v })] }));
+        constructs('21 id ' + v + ' unchecked', () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: v })] }), { checked: false }));
+        const f = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: v })] }), { checked: false });
         check(f.hasGlyph(v) === false, () => 'T3/21: id ' + v + ' unchecked hasGlyph true');
         throwsBFE('21 id ' + v + ' checked', () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: v })] }), { checked: true }), 'chars[0].id');
+        constructs('21 id ' + v + ' default(checked) throws instead', () => { try { new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ id: v })] })); throw new Error('did not throw'); } catch (e) { if (!(e instanceof BitmapFontError)) throw e; } });
     }
 
     // row 22: F-30, non-finite glyph field, BOTH lanes.
@@ -155,20 +157,22 @@ export function run() {
 
     // row 24: x 40000 -- unchecked WRAPS (pinned), checked throws naming both numbers.
     {
-        const f = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: 40000 })] }));
+        const f = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: 40000 })] }), { checked: false });
         check(f.glyphs[65 * 7] === -25536, () => 'T3/24: x 40000 unchecked stored ' + f.glyphs[65 * 7] + ' != -25536');
         throwsBFE('24 x 40000 checked', () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: 40000 })] }), { checked: true }),
             'chars[0].x', '40000', '-25536');
     }
-    // row 25: xadvance 8.6 -- unchecked stores 8, measure('AA')===16 vs exact 17.2.
+    // row 25: xadvance 8.6 -- 0012 fork 1 (C-folded). Stores round(8.6*16)=138 in
+    // BOTH lanes (the declared 1/16 resolution retires the integrality throw), so
+    // advanceOf 8.625 and measure('AA') 17.25 -- EXACT literals, never a tolerance
+    // (S-4). v1.x stored 8 (measure 16, 1.2px/glyph drift); that number is dead.
     {
-        const f = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 8.6 })] }));
-        check(f.measure('AA') === 16, () => 'T3/25: xadvance 8.6 measure(AA) ' + f.measure('AA') + ' != 16');
-        const exact = 8.6 * 2, residual = exact - 16;               // 17.2 and 1.2px of drift
-        check(exact === 17.2 && residual > 1.19 && residual < 1.21,
-            () => 'T3/25: exact/residual drift ' + exact + '/' + residual);
-        throwsBFE('25 xadvance 8.6 checked', () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 8.6 })] }), { checked: true }),
-            'chars[0].xadvance');
+        const fu = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 8.6 })] }), { checked: false });
+        const fc = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 8.6 })] }), { checked: true });
+        check(fu.glyphs[65 * 7 + 6] === 138 && fc.glyphs[65 * 7 + 6] === 138,
+            () => 'T3/25: xadvance 8.6 stored ' + fu.glyphs[65 * 7 + 6] + '/' + fc.glyphs[65 * 7 + 6] + ' != 138');
+        check(fc.advanceOf(65) === 8.625, () => 'T3/25: advanceOf ' + fc.advanceOf(65) + ' != 8.625');
+        check(fc.measure('AA') === 17.25, () => 'T3/25: measure(AA) ' + fc.measure('AA') + ' != 17.25');
     }
     // row 26: xadvance -8.6. Row 56 (lane symmetry) requires BOTH lanes, and the
     // checked-lane message is required to say "toward zero" and never "floor"
@@ -177,12 +181,19 @@ export function run() {
     // found and closed in M3). Unchecked twin: the Int16 store truncates toward
     // ZERO, storing -8; floor would give -9.
     {
-        const f = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: -8.6 })] }));
-        check(f.glyphs[65 * 7 + 6] === -8,
-            () => 'T3/26 unchecked: xadvance -8.6 stored ' + f.glyphs[65 * 7 + 6] + ' != -8 (toward zero, not floor -9)');
-        const e = throwsBFE('26 xadvance -8.6 checked',
-            () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: -8.6 })] }), { checked: true }), 'chars[0].xadvance', 'toward zero');
-        check(!e.message.includes('floor'), () => 'T3/26: message says "floor": ' + e.message);
+        // 0012 fork 1: -8.6 is a valid sub-pixel advance, stores round(-8.6*16)=-138
+        // in BOTH lanes (no integrality throw for this slot), advanceOf -8.625.
+        const fu = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: -8.6 })] }), { checked: false });
+        const fc = new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: -8.6 })] }), { checked: true });
+        check(fu.glyphs[65 * 7 + 6] === -138 && fc.glyphs[65 * 7 + 6] === -138,
+            () => 'T3/26: xadvance -8.6 stored ' + fu.glyphs[65 * 7 + 6] + '/' + fc.glyphs[65 * 7 + 6] + ' != -138');
+        check(fc.advanceOf(65) === -8.625, () => 'T3/26: advanceOf ' + fc.advanceOf(65) + ' != -8.625');
+        // F-33/A9: the "toward zero, never floor" wording still guards slots 0-5
+        // (they keep the Int16 integrality lane). Pin it on x (slot 0): -8.6 under
+        // checked throws "truncates ... toward zero to -8", never floor (-9).
+        const e = throwsBFE('26 x -8.6 checked toward-zero', () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ x: -8.6 })] }), { checked: true }), 'chars[0].x', 'toward zero');
+        check(e.message.includes('-8') && !e.message.includes('floor'),
+            () => 'T3/26: slot-0 message not "toward zero to -8" or says floor: ' + e.message);
     }
     // row 26b twin: xadvance 12 does not throw in EITHER lane.
     constructs('26b twin xadvance 12 unchecked', () => new BitmapFont(ATLAS, mkFont({ chars: [mkChar({ xadvance: 12 })] })));
@@ -204,7 +215,7 @@ export function run() {
     }
     // row 32: first -1 (finite, out of range). unchecked writes NOWHERE; checked throws.
     {
-        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: -1, second: 65, amount: -2 }] }));
+        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: -1, second: 65, amount: -2 }] }), { checked: false });
         const base = (255 << 8) | 65;
         check(f.kerning[base] === 0 && f.kerning[base - 1] === 0 && f.kerning[base + 1] === 0 &&
             f.kerning[((254 << 8) | 65)] === 0 && f.kerning[((255 << 8) | 64)] === 0,
@@ -220,7 +231,7 @@ export function run() {
     }
     // row 33: keys >= 256 (finite). unchecked skips; checked throws.
     {
-        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 256, second: 300, amount: -2 }] }));
+        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 256, second: 300, amount: -2 }] }), { checked: false });
         check(f.kerning[(256 << 8) | 300] === undefined || f.kerning[(256 << 8) | 300] === 0,
             () => 'T3/33: first 256 wrote a slot');
         throwsBFE('33 first 256 checked', () => new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 256, second: 300, amount: -2 }] }), { checked: true }),
@@ -228,26 +239,33 @@ export function run() {
     }
     // row 33b twin: a valid pair writes in BOTH lanes.
     {
+        // 0012 fork 1/3: kerning stored in 1/16 fixed point, -2 -> round(-2*16) = -32.
         const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: -2 }] }));
-        check(f.kerning[(65 << 8) | 66] === -2, () => 'T3/33b: valid pair not written');
+        check(f.kerning[(65 << 8) | 66] === -32 && f.kernOf(65, 66) === -2, () => 'T3/33b: valid pair not written (' + f.kerning[(65 << 8) | 66] + ')');
         constructs('33b twin valid checked', () => new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: -2 }] }), { checked: true }));
     }
     // row 34: amount non-finite / non-number ALWAYS throws.
     throwsBFE('34 amount NaN', () => new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: NaN }] })), 'kernings[0].amount');
     throwsBFE('34 amount string', () => new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: 'x' }] })), 'kernings[0].amount');
-    // row 35: amount -1.7 -- unchecked stores -1; checked throws.
+    // row 35: amount -1.7 -- 0012 fork 1/3 (C-folded). A sub-pixel kern is valid:
+    // stores round(-1.7*16) = -27, kernOf -1.6875, and does NOT throw in EITHER
+    // lane (the declared 1/16 resolution retires the integrality throw). v1.x
+    // stored -1; that number is dead.
     {
-        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: -1.7 }] }));
-        check(f.kerning[(65 << 8) | 66] === -1, () => 'T3/35: amount -1.7 stored ' + f.kerning[(65 << 8) | 66] + ' != -1');
-        throwsBFE('35 amount -1.7 checked', () => new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: -1.7 }] }), { checked: true }),
-            'kernings[0].amount');
+        const fu = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: -1.7 }] }), { checked: false });
+        const fc = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: -1.7 }] }), { checked: true });
+        check(fu.kerning[(65 << 8) | 66] === -27 && fc.kerning[(65 << 8) | 66] === -27,
+            () => 'T3/35: amount -1.7 stored ' + fu.kerning[(65 << 8) | 66] + '/' + fc.kerning[(65 << 8) | 66] + ' != -27');
+        check(fc.kernOf(65, 66) === -1.6875, () => 'T3/35: kernOf ' + fc.kernOf(65, 66) + ' != -1.6875');
     }
-    // row 36: amount 40000 -- unchecked wraps to -25536; checked throws.
+    // row 36: amount 40000 -- 0012 fork 1: outside the 1/16 fixed-point range
+    // [-2048, 2047.9375]. Unchecked stores round(40000*16)=640000 wrapped in Int16
+    // to -15360; checked throws naming the range.
     {
-        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: 40000 }] }));
-        check(f.kerning[(65 << 8) | 66] === -25536, () => 'T3/36: amount 40000 stored ' + f.kerning[(65 << 8) | 66] + ' != -25536');
+        const f = new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: 40000 }] }), { checked: false });
+        check(f.kerning[(65 << 8) | 66] === -15360, () => 'T3/36: amount 40000 stored ' + f.kerning[(65 << 8) | 66] + ' != -15360');
         throwsBFE('36 amount 40000 checked', () => new BitmapFont(ATLAS, mkFont({ kernings: [{ first: 65, second: 66, amount: 40000 }] }), { checked: true }),
-            'kernings[0].amount', '40000', '-25536');
+            'kernings[0].amount', '2047.9375');
     }
 
     // ==== the opts bag door, rows 37-40 ====================================
@@ -348,11 +366,16 @@ export function run() {
 
     // ==== the flags contract, rows 47-50 ===================================
     const flagsCalls = (font, fl) => { resetRec(ATLAS); font.drawWrapped(rec, TEXT, T2LAYOUT(fl), 1, 1000, 1000, 0, 0, 1, 0, 0); return rec.calls; };
+    // 0012 fork 6: checked defaults ON, so FONT_ASCII now THROWS on an unknown flag
+    // bit. The SILENT-IGNORE rows (unknown bits drawn, not thrown) are the opt-out
+    // lane and use this font. FONT_ASCII with a clean-bit flag (0/1/1.0000001/NaN)
+    // stays on FONT_ASCII -- those carry no unknown bit either lane.
+    const FONT_ASCII_UNCHECKED = new BitmapFont(ATLAS, { common: { lineHeight: 20, base: 16 }, chars: FONT_ASCII_JSON_CHARS(), kernings: [] }, { checked: false });
     // row 47: 1.0000001 now fires the ellipsis (8), MEASURED.
     check(flagsCalls(FONT_ASCII, 1.0000001) === 8, () => 'T3/47: flags 1.0000001 did not fire the ellipsis');
     clean('47');
     // row 48: flags 2 -- unchecked unchanged (5); checked throws naming value + bit.
-    check(flagsCalls(FONT_ASCII, 2) === 5, () => 'T3/48: flags 2 unchecked changed');
+    check(flagsCalls(FONT_ASCII_UNCHECKED, 2) === 5, () => 'T3/48: flags 2 unchecked changed');
     clean('48 unchecked');
     {
         const fc = new BitmapFont(ATLAS, { common: { lineHeight: 20, base: 16 },
@@ -366,9 +389,17 @@ export function run() {
         let threw = false;
         try { resetRec(ATLAS); fc.drawWrapped(rec, TEXT, T2LAYOUT(1), 1, 1000, 1000, 0, 0, 1, 0, 0); } catch { threw = true; }
         check(!threw, () => 'T3/48 checked twin: flags 1 threw');
+        // F-49 (0012 fork 4): flags 3 has bit 0 SET and bit 1 unknown. The mask test
+        // used to sit in the ellipsis `else`, so odd flags skipped it and 3 was
+        // SILENT. Hoisted, it throws under checked. Restoring the else-if reddens this.
+        let msg3 = null;
+        try { resetRec(ATLAS); fc.drawWrapped(rec, TEXT, T2LAYOUT(3), 1, 1000, 1000, 0, 0, 1, 0, 0); }
+        catch (e) { msg3 = e instanceof BitmapFontError ? e.message : String(e); }
+        check(msg3 !== null && msg3.includes('mask'),
+            () => 'T3/48 F-49: flags 3 (bit 0 set) did not throw -- the else-if hole is back, got ' + msg3);
     }
     // row 49: flags -1 -> 8 (declared delta). row 50: flags 0 / NaN -> 5 (unchanged).
-    check(flagsCalls(FONT_ASCII, -1) === 8, () => 'T3/49: flags -1 did not fire the ellipsis (declared delta)');
+    check(flagsCalls(FONT_ASCII_UNCHECKED, -1) === 8, () => 'T3/49: flags -1 did not fire the ellipsis (declared delta)');
     clean('49');
     check(flagsCalls(FONT_ASCII, 0) === 5, () => 'T3/50: flags 0 changed');
     check(flagsCalls(FONT_ASCII, NaN) === 5, () => 'T3/50: flags NaN changed');

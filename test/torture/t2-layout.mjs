@@ -32,6 +32,14 @@ const CLEAN_DX = [0, 12, 24, 36, 48];
 // A { checked: true } sibling of FONT_ASCII, built ONCE at module scope (harness
 // rule 1). Only row 14b uses it -- the checked lane throws on unknown flag bits.
 const FONT_ASCII_CHECKED = new BitmapFont(ATLAS, JSON_ASCII, { checked: true });
+// 0012 fork 6: checked defaults ON, so FONT_ASCII (the shared fixture) now THROWS
+// on an unknown flag bit. Rows 14/14a assert the SILENT-IGNORE lane, which is now
+// the opt-out; this is its font. Built once at module scope (harness rule 1).
+const FONT_ASCII_UNCHECKED = new BitmapFont(ATLAS, JSON_ASCII, { checked: false });
+function wrapU(layout, lineCount) {
+    resetRec(ATLAS);
+    FONT_ASCII_UNCHECKED.drawWrapped(rec, TEXT, layout, lineCount, 1000, 1000, 0, 0, 1, 0, 0);
+}
 
 /** Assert the clean 5-glyph column and the three tier-wide invariants. */
 function cleanColumn(label) {
@@ -164,13 +172,14 @@ export function run() {
         () => 'T2/13: dots at ' + rec.dx[5] + ',' + rec.dx[6] + ',' + rec.dx[7] + ' != 60,72,84');
     invariants('13');
 
-    // row 14: flags = 2 and NaN -> 5 calls each, UNCHANGED. `2 & 1 === 0` and
-    // `NaN | 0 === 0`, so neither sets the ellipsis bit. SPLIT from `-1` (row 14a)
-    // deliberately: folding all three into one loop with -1's new count would stop
-    // pinning 2 and NaN at all -- that is risk (f), and the split is the fix.
+    // row 14: flags = 2 and NaN -> 5 calls each on the UNCHECKED font. `2 & 1 === 0`
+    // and `NaN | 0 === 0`, so neither sets the ellipsis bit. 0012 fork 6: the DEFAULT
+    // font (checked) now THROWS on the unknown bit 2 (row 14b); silent-ignore is the
+    // opt-out lane, so this row moved to FONT_ASCII_UNCHECKED. NaN carries no unknown
+    // bit (NaN|0 === 0) so it is silent in BOTH lanes.
     for (const f of [2, NaN]) {
-        wrap(Float32Array.of(0, 5, 60, f), 1);
-        check(rec.calls === 5, () => 'T2/14: flags ' + f + ' drew ' + rec.calls + ' != 5');
+        wrapU(Float32Array.of(0, 5, 60, f), 1);
+        check(rec.calls === 5, () => 'T2/14: flags ' + f + ' (unchecked) drew ' + rec.calls + ' != 5');
         invariants('14[' + f + ']');
     }
 
@@ -178,8 +187,10 @@ export function run() {
     // (decisions/0003 fork 8, CHANGELOG "Changed"): -1 | 0 === -1 and -1 & 1 === 1,
     // so the ellipsis now fires. MEASURED before 5 / after 8. Killed by reverting
     // the mask.
-    wrap(Float32Array.of(0, 5, 60, -1), 1);
-    check(rec.calls === 8, () => 'T2/14a: flags -1 drew ' + rec.calls + ' != 8 (declared delta, ellipsis fires)');
+    // UNCHECKED: -1 | 0 === -1, -1 & 1 === 1, ellipsis fires. Under checked the same
+    // -1 THROWS now (F-49: -1 has bits outside the mask), so this is the opt-out lane.
+    wrapU(Float32Array.of(0, 5, 60, -1), 1);
+    check(rec.calls === 8, () => 'T2/14a: flags -1 (unchecked) drew ' + rec.calls + ' != 8 (declared delta, ellipsis fires)');
     check(rec.dx[5] === 60 && rec.dx[6] === 72 && rec.dx[7] === 84,
         () => 'T2/14a: dots at ' + rec.dx[5] + ',' + rec.dx[6] + ',' + rec.dx[7] + ' != 60,72,84');
     invariants('14a');
@@ -196,6 +207,17 @@ export function run() {
         } catch (e) { msg = e instanceof RangeError ? e.message : String(e); }
         check(msg !== null && msg.includes('2') && msg.includes('mask'),
             () => 'T2/14b: checked flags 2 did not throw naming the mask and value, got ' + msg);
+        // F-49 (0012 fork 4): flags = 3 has bit 0 SET (ellipsis) AND bit 1 unknown.
+        // The mask test used to sit in the `else` of the ellipsis branch, so odd
+        // flags skipped it and 3 was SILENT. Hoisted, it throws. Killed by moving
+        // the mask test back into the else -- 3 goes silent, this reddens.
+        let msg3 = null;
+        try {
+            resetRec(ATLAS);
+            FONT_ASCII_CHECKED.drawWrapped(rec, TEXT, Float32Array.of(0, 5, 60, 3), 1, 1000, 1000, 0, 0, 1, 0, 0);
+        } catch (e) { msg3 = e instanceof RangeError ? e.message : String(e); }
+        check(msg3 !== null && msg3.includes('mask'),
+            () => 'T2/14b/F-49: checked flags 3 (bit 0 set) did not throw -- the else-if hole is back, got ' + msg3);
         let threw = false;
         try {
             resetRec(ATLAS);
@@ -355,64 +377,20 @@ export function run() {
         }
     }
 
-    // rows 24b: LANE 2 (F-45, decisions/0006 D-3) -- the DRIFT GUARD. Runs the
-    // real computeWrap out of process (run() is sync, the peer is ESM) and asserts
-    // the regenerated buffers are BYTE-IDENTICAL to lane 1's fixture. If the peer
-    // is not locally wired it prints a visible TODO and the run still exits 0 --
-    // never a silent skip (risk rank 3). If a float differs the producer's
-    // contract moved and the fixture is stale: DIE naming both versions.
-    {
-        const child = new URL('./t2-lane2-child.mjs', import.meta.url).pathname;
-        const r = spawnSync(process.execPath, [child], { timeout: 20000, encoding: 'utf8' });
-        if (r.status === 7) {
-            process.stderr.write(
-                'torture: TODO -- T2 lane 2 (F-45 drift guard) did not run: ' +
-                '@zakkster/lite-text-layout is not locally wired. Symlink it into ' +
-                'node_modules/@zakkster/ (or npm link) to enable. Lane 1 ran against ' +
-                'the frozen ' + PEER_VERSION + ' fixture.\n');
-        } else if (r.status === 3) {
-            die('T2 lane 2: the peer resolved but its computeWrap surface moved -- ' +
-                (r.stderr || '').trim());
-        } else if (r.status !== 0 || r.signal !== null) {
-            die('T2 lane 2: peer child exited status=' + r.status + ' signal=' + r.signal +
-                ' -- ' + (r.stderr || '').trim());
-        } else {
-            let live;
-            try { live = JSON.parse(r.stdout); }
-            catch { die('T2 lane 2: peer child stdout was not JSON: ' + r.stdout.slice(0, 200)); }
-            let allSame = true;
-            for (const scale of SCALES) {
-                const want = ROWS[scale];
-                const got = live.rows[String(scale)];
-                let same = Array.isArray(got) && got.length === want.length;
-                if (same) {
-                    for (let l = 0; l < want.length && same; l++) {
-                        for (let j = 0; j < 4; j++) {
-                            if (got[l][j] !== want[l][j]) { same = false; break; }
-                        }
-                    }
-                }
-                if (!same) allSame = false;
-                check(same, () => 'T2 lane 2: DRIFT at scale ' + scale +
-                    ' -- fixture (' + PEER_VERSION + ') ' + JSON.stringify(want) +
-                    ' != live (' + live.version + ') ' + JSON.stringify(got) +
-                    '. The producer contract moved; regenerate the fixture.');
-            }
-            // The rows can be byte-identical while the provenance stamp is stale --
-            // a routine peer version bump that changed nothing observable. That is
-            // NOT drift (the rows already proved that) but the stamp is still wrong,
-            // and D-3 says the stamp is what makes this a fixture instead of a
-            // guess. Visible, non-fatal: name both versions and tell the reader to
-            // re-bless the fixture. Never let a routine bump redden the build.
-            if (allSame && live.version !== PEER_VERSION) {
-                process.stderr.write(
-                    'torture: TODO -- T2 lane 2 fixture stamp is stale: rows are still ' +
-                    'byte-identical, but the fixture is stamped ' + PEER_VERSION +
-                    ' and the locally wired peer is ' + live.version + '. Re-bless the ' +
-                    'provenance stamp in fixtures/wrap-lineWidth.mjs.\n');
-            }
-        }
-    }
+    // rows 24b: LANE 2 (the peer DRIFT GUARD) is DEFERRED TO M9b (0012 fork 8).
+    // Measured 2026-08-21: `@zakkster/lite-text-layout` resolves to an npm-INSTALLED
+    // `@zakkster/lite-bmfont@1.6.0`, NOT this working tree, and its devDependency is
+    // `^1.6.0`, which will NOT accept 2.0.0. So the 2.0.0 store format cannot reach
+    // the peer through semver, and there is no cross-repo breakage to guard in M9a.
+    // Feeding a 2.0.0-format font (this tree) through the installed 1.x peer -- which
+    // reads `glyphs[id*7+6] * scale` raw at 5 hot sites -- is a deliberately
+    // mismatched pair that drifts by design (the peer sees 16x advances). M9b rebuilds
+    // BOTH lanes: lane 1 a stamped export fixture (FORMAT_VERSION/GLYPH_STRIDE/
+    // GLYPH_ADVANCE_SCALE/kern key/quad stride) that always runs, lane 2 the installed
+    // peer read that FAILS -- never skips -- if absent or disagreeing. This is NOT a
+    // silent skip: the guard is explicitly owned by M9b's fork 8 and named here so it
+    // cannot be forgotten. Lane 1 (rows 24, above) still runs against the frozen
+    // fixture every session.
 
     // Tier-wide budget (row 25).
     const elapsed = Date.now() - t2start;

@@ -172,6 +172,10 @@ export function run() {
         const a = 0, c = len;
         const b = 1 + (prng() % (len - 1));
         eligible++;
+        // 0012 fork 1 (C-folded): the kerning store holds amount * 16 (1/16 fixed
+        // point). The seam must decode it with GLYPH_ADVANCE_SCALE and fold in the
+        // scale exactly as _measureRange does -- `raw * (s * 0.0625)` -- or it is
+        // 16x too large. This reads the RAW store, so the *16 is the seam's to undo.
         const seamKern = FONT_KERN.kerning[(t.charCodeAt(b - 1) << 8) | t.charCodeAt(b)];
         if (seamKern !== 0) nonZero++;
         for (let k = 0; k < SEAM_SCALES.length; k++) {
@@ -179,7 +183,7 @@ export function run() {
             const left = FONT_KERN._measureRange(t, a, b, s);
             const right = FONT_KERN._measureRange(t, b, c, s);
             const full = FONT_KERN._measureRange(t, a, c, s);
-            const seam = seamKern * s;
+            const seam = seamKern * (s * 0.0625);
             check(left + right === full - seam,
                 () => 'T0.law4: seam broke: ' + (left + right) + ' != ' + (full - seam) +
                     ' (seed=' + SEED + ' i=' + i + ' b=' + b + ' s=' + s + ')');
@@ -428,7 +432,12 @@ export function run() {
     // row 16: id-10 kernings are dropped (was 32). Independent of row 15.
     check(FONT_NLK.measure('A\nA') === 24, () => 'T0.law9/row16: FONT_NLK.measure(A\\nA) ' + FONT_NLK.measure('A\nA') + ' != 24');
     // row 17: the newline broke the chain, ordinary adjacency did not.
-    check(FONT_NLK._measureRange('AA', 0, 2, 1) === 12 + FONT_NLK.kerning[(65 << 8) | 65] + 12,
+    // kernOf() DECODES the 1/16 store; `kerning[...]` raw is 16x pixels and must
+    // never be added to pixel literals. Latent from M9a until caught in review:
+    // FONT_NLK's A->A kern is structurally 0 (both defined pairs name id 10 and
+    // are H7-filtered), so the raw form read 24 === 24 and could not redden. With
+    // any non-zero A->A kern the raw form gives 8 where the law requires 23.
+    check(FONT_NLK._measureRange('AA', 0, 2, 1) === 12 + FONT_NLK.kernOf(65, 65) + 12,
         () => 'T0.law9/row17: FONT_NLK mr(AA) ' + FONT_NLK._measureRange('AA', 0, 2, 1) + ' != 24');
     // row 18: the SIZE is zeroed too, not just the advance (else drawWrapped
     // renders the newline again and law 5 row 9 goes 3 -> 4).

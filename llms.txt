@@ -48,6 +48,20 @@ the digit loop" was a misdiagnosis; the box is caller-side (decisions/0007).
 BOTH endpoints inclusive, so
 Math.max(-DRAWFASTINT_MAX, Math.min(DRAWFASTINT_MAX, v)) always renders.
 
+## Export: GLYPH_ADVANCE_SHIFT (number)
+4. The 1/16-fixed-point encoding of xadvance and kerning amount (2.0.0, 0012 fork
+1, C-folded). The constructor stores Math.round(value * (1 << GLYPH_ADVANCE_SHIFT)),
+i.e. value * 16, into the Int16 glyph/kerning tables, giving 1/16 px (0.0625 px)
+resolution -- worst-case rounding error 0.03125 px vs v1.x's 0.5 px Int16
+truncation. Exposed so a consumer reaching into `glyphs`/`kerning` decodes the
+format instead of guessing 16.
+
+## Export: GLYPH_ADVANCE_SCALE (number)
+0.0625, i.e. 1 / (1 << GLYPH_ADVANCE_SHIFT). A reader recovers pixels from the
+store with `stored * GLYPH_ADVANCE_SCALE`; the render bodies fold it into a
+per-call constant `s16 = scale * 0.0625` (0012 fork 1). advanceOf(id) and
+kernOf(a, b) apply it for you.
+
 ## Export: BitmapFont (class)
 
 ### Constructor
@@ -65,15 +79,18 @@ new BitmapFont(imageAtlas, fontJson, opts?)
   - opts.missingAdvance: number, default 0 (byte-identical to 1.2.x). The xadvance
     written into every glyph id the descriptor did not cover, so an absent glyph
     leaves a gap instead of overprinting the next (F-12). Must be finite in
-    [0, 32767] or the constructor throws; truncated to an integer by the Int16
-    store. Id 10 is never given a missing advance.
-  - opts.checked: boolean, default false (must be a boolean). Opens the LOSSY lane.
+    [0, 2047.9375] -- the 1/16 fixed-point advance range -- or the constructor
+    throws. Stored as Math.round(value * 16) by the Int16 store. Id 10 is never given a missing advance.
+  - opts.checked: boolean, DEFAULT TRUE (2.0.0; was false). Pass { checked: false }
+    to opt out. Opens the LOSSY lane.
     Two lanes: inputs with no correct reading (a null atlas, a NaN metric, a
     non-number id, a fractional kerning key) ALWAYS throw; lossy-but-interpretable
-    inputs (an atlas coord past Int16, a fractional xadvance, an id outside
-    [0, 256)) are skipped/truncated silently by default and throw only under
-    { checked: true }, which reports the exact drift (F-08 detection). Storage
-    behaviour is unchanged in 1.3.0; unchecked output is byte-identical.
+    inputs (an atlas coord past Int16, an id outside [0, 256)) are skipped
+    silently by default and throw only under checked, which reports the exact
+    drift. A FRACTIONAL xadvance/amount NO LONGER throws under checked (2.0.0,
+    0012 forks 1+6): 1/16 is the format's declared resolution, so a value it is
+    designed to round is not lossy. Out-of-RANGE advances still throw. Storage
+    CHANGED in 2.0.0: Math.round(value * 16), 1/16 fixed point.
 
 ### id-10 policy
 A descriptor entry for id 10 (`\n`) is DISCARDED at construction -- width, height,
@@ -141,6 +158,16 @@ scale can also produce NaN or Infinity by arithmetic, unchanged from 1.3.0.
 hasGlyph(id) -> boolean
   Does the descriptor cover this glyph id? Fail-closed on every non-integer: NaN,
   -1, 256, 65.5 are all false. Id 10 is always false. Throws after destroy().
+
+advanceOf(id) -> number
+  Decoded pixel advance of glyph `id` at scale 1 (2.0.0). The store holds
+  Math.round(xadvance * 16) in 1/16 fixed point; this returns stored * 0.0625, so
+  an xadvance 8.6 font reports advanceOf(65) === 8.625. Fail-closed: a non-integer
+  or out-of-range id returns 0. Throws after destroy().
+
+kernOf(a, b) -> number
+  Decoded pixel kerning between glyphs `a` and `b` at scale 1 (2.0.0), stored * 0.0625.
+  Fail-closed: a non-integer or out-of-range key returns 0. Throws after destroy().
 
 draw(ctx, text, x, y, scale = 1, align = 0) -> void
   Multi-line `\n`-aware renderer. `align`: 0=left, 1=center, 2=right; any value
@@ -301,8 +328,8 @@ function layoutWrap(font, text, maxWidth, out) {
             const id = text.charCodeAt(i);
             if (id === 10) break;
             if (id === 32) { lastBreak = i; lastBreakWidth = width; }
-            const advance = font.glyphs[id * 7 + 6];
-            const kern = prevId === -1 ? 0 : font.kerning[(prevId << 8) | id];
+            const advance = font.advanceOf(id);          // decodes the 1/16 store
+            const kern = prevId === -1 ? 0 : font.kernOf(prevId, id);
             const nextWidth = width + kern + advance;
             if (nextWidth > maxWidth && i > lineStart) {
                 if (lastBreak !== -1) { i = lastBreak + 1; width = lastBreakWidth; }

@@ -125,8 +125,8 @@ function layoutWrap(font, text, maxWidth, out) {
             if (id === 10) break;                       // \n
             if (id === 32) { lastBreak = i; lastBreakWidth = width; }
 
-            const advance = font.glyphs[id * 7 + 6];
-            const kern = prevId === -1 ? 0 : font.kerning[(prevId << 8) | id];
+            const advance = font.advanceOf(id);          // decodes the 1/16 store
+            const kern = prevId === -1 ? 0 : font.kernOf(prevId, id);
             const nextWidth = width + kern + advance;
 
             if (nextWidth > maxWidth && i > lineStart) {
@@ -212,10 +212,12 @@ are own properties. `chars: []` is **legal** -- a coherent zero-glyph font whose
 
 Two lanes: inputs with no correct reading (a null atlas, a NaN metric, a
 non-number id, a fractional kerning key) **always throw**; lossy-but-interpretable
-inputs (an atlas coord past Int16, a fractional `xadvance`, an id outside
+inputs (an atlas coord past Int16, an id outside
 `[0, 256)`) are skipped or truncated silently by default and throw only under
 `{ checked: true }`, which reports the exact drift (F-08 detection). Storage is
-unchanged in 1.3.0: unchecked output is byte-identical.
+changed in 2.0.0: `xadvance` and kerning `amount` are stored as
+`Math.round(value * 16)` in 1/16 fixed point. Use `advanceOf(id)` / `kernOf(a, b)`
+to decode; `glyphs[id * 7 + 6]` read raw is now 16x the pixel advance.
 
 A descriptor entry for id 10 (`\n`) is **discarded** at construction -- width,
 height, offsets, advance, and any kerning pair naming it. A newline is a layout
@@ -325,6 +327,17 @@ Does the descriptor cover this glyph id? Fail-closed on every non-integer: `NaN`
 `destroy()`. Use it to detect coverage gaps at load time instead of as
 overlapping text at runtime.
 
+### `advanceOf(id) -> number`
+Decoded pixel advance of glyph `id` at scale 1 (2.0.0). The store holds
+`Math.round(xadvance * 16)` in 1/16 fixed point, so an `xadvance: 8.6` font
+reports `advanceOf(65) === 8.625`. Fail-closed: a non-integer or out-of-range id
+returns `0`. Throws after `destroy()`.
+
+### `kernOf(a, b) -> number`
+Decoded pixel kerning between glyphs `a` and `b` at scale 1 (2.0.0), `stored *
+0.0625`. Fail-closed: a non-integer or out-of-range key returns `0`. Throws after
+`destroy()`.
+
 ### `draw(ctx, text, x, y, scale?, align?) -> void`
 Multi-line `\n`-aware renderer. `align`: `0` = left, `1` = center, `2` = right;
 any value outside `{0, 1, 2}` (`NaN`, negatives, fractionals) renders **left**.
@@ -416,8 +429,8 @@ object with a `drawImage` method.
 | `GLYPH_STRIDE` | `6` | float count per glyph record in a `layoutGlyphs` / `drawQuads` buffer (`[sx, sy, sw, sh, dx, dy]`); size the buffer with the safe upper bound `text.length * GLYPH_STRIDE` |
 | `DRAWFAST_MAX` | `1e21` | largest magnitude `drawFast` renders; outside `[-DRAWFAST_MAX, DRAWFAST_MAX]` it draws nothing (both endpoints inclusive) |
 | `DRAWFASTINT_MAX` | `Number.MAX_SAFE_INTEGER` | largest magnitude `drawFastInt` renders; outside `[-DRAWFASTINT_MAX, DRAWFASTINT_MAX]` it draws nothing (both endpoints inclusive). The correctness boundary, not a buffer boundary |
-| `opts.missingAdvance` | `0` (default) | xadvance written into every glyph id the descriptor did not cover, so an absent glyph leaves a gap instead of overprinting the next. Opt-in; the default is byte-identical to 1.2.x. Must be finite in `[0, 32767]` or the constructor throws `BitmapFontError` (which is a `RangeError`). Id 10 is never given a missing advance |
-| `opts.checked` | `false` (default) | must be a boolean. Opens the lossy validation lane: an atlas coord past Int16, a fractional `xadvance`/`amount`, or an id/kerning key outside `[0, 256)` throws a `BitmapFontError` naming the exact drift instead of being truncated/skipped silently (F-08 detection). Inputs with no correct reading throw in both lanes. Storage is unchanged in 1.3.0; unchecked output is byte-identical |
+| `opts.missingAdvance` | `0` (default) | xadvance written into every glyph id the descriptor did not cover, so an absent glyph leaves a gap instead of overprinting the next. Opt-in; the default is byte-identical to 1.2.x. Must be finite in `[0, 2047.9375]` -- the 1/16 fixed-point advance range (2.0.0, `decisions/0012` fork 1) -- or the constructor throws `BitmapFontError` (which is a `RangeError`). Stored as `Math.round(value * 16)`. Id 10 is never given a missing advance |
+| `opts.checked` | **`true` (default, 2.0.0)** | must be a boolean; pass `{ checked: false }` to opt out. Opens the lossy validation lane: an atlas coord past Int16, or an id/kerning key outside `[0, 256)`, throws a `BitmapFontError` naming the exact drift instead of being skipped silently. **A fractional `xadvance`/`amount` NO LONGER throws** -- 1/16 is the format's declared resolution, so a value it is designed to round is not lossy (`decisions/0012` forks 1 and 6). Out-of-RANGE advances still throw. Inputs with no correct reading throw in both lanes |
 
 ### `drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale?, align?, vAlign?) -> void`
 Renders a pre-laid-out `Float32Array` of lines into a box. See the **Wrapped Text** section above for buffer format and a layout helper recipe.

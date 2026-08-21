@@ -46,6 +46,15 @@ export const DRAWFAST_MAX = 1e21;
 export const DRAWFASTINT_MAX = Number.MAX_SAFE_INTEGER;
 
 /**
+ * The 1/16-fixed-point encoding of `xadvance` and kerning `amount` (0012 fork 1,
+ * C-folded). The store is `Math.round(value << GLYPH_ADVANCE_SHIFT)`; a reader
+ * recovers pixels with `stored * GLYPH_ADVANCE_SCALE`. Exposed so a consumer that
+ * reaches into `glyphs`/`kerning` decodes the format rather than guessing 16.
+ */
+export const GLYPH_ADVANCE_SHIFT = 4;          // 1/16 px resolution: value * 16
+export const GLYPH_ADVANCE_SCALE = 0.0625;     // 1 / (1 << GLYPH_ADVANCE_SHIFT)
+
+/**
  * The one error type the descriptor door throws (F-10). It EXTENDS `RangeError`
  * so that M2's two existing `RangeError` throws are not made uncatchable: a
  * caller who wrote `catch (e) { if (e instanceof RangeError) ... }` still catches
@@ -127,6 +136,28 @@ function _requireNumField(value, field, checked) {
 }
 
 /**
+ * Validate one 1/16-fixed-point advance field -- `xadvance` (slot 6) and kerning
+ * `amount` (0012 fork 1, C-folded; fork 6 the checked lane). Non-finite ALWAYS
+ * throws. Under `checked` the ONLY lane is a RANGE test: the store is
+ * `Math.round(value * 16)` into an Int16, so the representable range is
+ * [-2048, 2047.9375] (Int16 /16). There is NO integrality test -- the format has
+ * a DECLARED 1/16 resolution and does not throw on the values it is designed to
+ * round; round-to-nearest keeps every in-range value within 1/32px by
+ * construction, so a residual guard could never redden (inert shape 1) and is not
+ * shipped. This is the ONE slot C changes; slots 0-5 keep _requireNumField.
+ */
+function _requireAdvanceField(value, field, checked) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+        _throwField(field, value, 'must be a finite number');
+    }
+    if (checked && (value < -2048 || value > 2047.9375)) {
+        _throwField(field, value,
+            'is outside the 1/16 fixed-point advance range [-2048, 2047.9375] and ' +
+            'stores as ' + (Int16Array.of(Math.round(value * 16))[0] / 16));
+    }
+}
+
+/**
  * The `chars`/`kernings` array-shape pre-pass (fork 4). NOT a length test: a
  * string has a numeric length and yields a zero-glyph font (0.1a). Valid iff not
  * a string, integer length in [0, 2^32), and every index yields a non-null
@@ -173,7 +204,9 @@ export class BitmapFont {
      *   - `missingAdvance` (default **0**, v1.2.x byte-for-byte) is the xadvance
      *     written into every uncovered glyph id, so an absent glyph leaves a gap
      *     instead of letting the next glyph overprint it (F-12). Finite in
-     *     [0, 32767] or the constructor throws. Id 10 (`\n`) is never given one.
+     *     [0, 2047.9375] -- the 1/16 fixed-point advance range -- or the
+     *     constructor throws; it is stored as `Math.round(value * 16)` like any
+     *     other advance. Id 10 (`\n`) is never given one.
      *   - `checked` (default **false**, must be a boolean) opens the LOSSY lane.
      *     Two lanes: inputs with no correct reading (a null atlas, a NaN metric,
      *     a non-number id) ALWAYS throw; lossy-but-interpretable inputs (an atlas
@@ -237,7 +270,7 @@ export class BitmapFont {
         // it names the field a caller can branch on and so `e.message` contains
         // `e.field` -- a change to the shipped 1.2.x message, noted in CHANGELOG.
         let missingAdvance = 0;
-        let checked = false;
+        let checked = true;
         if (opts !== undefined && opts !== null) {
             if (typeof opts !== 'object') {
                 _throwField('opts', opts, 'must be an object');
@@ -256,9 +289,13 @@ export class BitmapFont {
             }
             if (Object.prototype.hasOwnProperty.call(opts, 'missingAdvance')) {
                 const m = opts.missingAdvance;
-                if (!(m >= 0 && m <= 32767)) {
+                // 0012 fork 1 (S-17): missingAdvance rides the C-folded advance
+                // lane, so its range is the 1/16 fixed-point range, NOT Int16.
+                // An accepted 30000 would become round(30000*16)=480000 in an
+                // Int16 and WRAP; the bound moves to [0, 2047.9375].
+                if (!(m >= 0 && m <= 2047.9375)) {
                     throw new BitmapFontError(
-                        'lite-bmfont: opts.missingAdvance must be a finite number in [0, 32767], got ' + m,
+                        'lite-bmfont: opts.missingAdvance must be a finite number in [0, 2047.9375], got ' + m,
                         'opts.missingAdvance', m);
                 }
                 missingAdvance = m;
@@ -291,9 +328,13 @@ export class BitmapFont {
                 // reading of x: NaN renders the glyph); a field past Int16 or a
                 // fractional field throws only under checked, else stores as it
                 // always did.
-                for (let n = 0; n < 7; n++) {
+                // Slots 0-5 (x,y,width,height,xoffset,yoffset) keep the Int16
+                // integrality test verbatim; slot 6 (xadvance) rides the C-folded
+                // advance lane -- range only, no integrality (0012 fork 1/6).
+                for (let n = 0; n < 6; n++) {
                     _requireNumField(char[GLYPH_FIELDS[n]], 'chars[' + i + '].' + GLYPH_FIELDS[n], checked);
                 }
+                _requireAdvanceField(char.xadvance, 'chars[' + i + '].xadvance', checked);
                 const ptr = id * 7;
                 this.glyphs[ptr]     = char.x;
                 this.glyphs[ptr + 1] = char.y;
@@ -301,7 +342,7 @@ export class BitmapFont {
                 this.glyphs[ptr + 3] = char.height;
                 this.glyphs[ptr + 4] = char.xoffset;
                 this.glyphs[ptr + 5] = char.yoffset;
-                this.glyphs[ptr + 6] = char.xadvance;
+                this.glyphs[ptr + 6] = Math.round(char.xadvance * 16);
                 // Mark coverage only for INTEGER ids. A fractional id already
                 // writes nothing to `glyphs` (a non-integer index on a typed
                 // array is discarded by spec), so marking it would make
@@ -352,7 +393,7 @@ export class BitmapFont {
             for (let id = 0; id < 256; id++) {
                 if (id === 10) continue;
                 if ((this._mapped[id >>> 5] >>> (id & 31) & 1) === 0) {
-                    this.glyphs[id * 7 + 6] = missingAdvance;
+                    this.glyphs[id * 7 + 6] = Math.round(missingAdvance * 16);
                 }
             }
         }
@@ -370,7 +411,7 @@ export class BitmapFont {
                 _requireIntKey(s, 'kernings[' + i + '].second');
                 // amount rides the F-08 lane: non-finite always throws, a lossy
                 // amount throws only under checked, else truncates as it did.
-                _requireNumField(k.amount, 'kernings[' + i + '].amount', checked);
+                _requireAdvanceField(k.amount, 'kernings[' + i + '].amount', checked);
                 // The id-10 half of the F-25 policy stays: a newline is not a
                 // glyph, so it cannot be a kerning partner (H7). M2 left the
                 // negative-key hole open and named it F-09; M3 closes it by
@@ -379,7 +420,7 @@ export class BitmapFont {
                 // the two must not diverge).
                 if (f >= 0 && f < 256 && s >= 0 && s < 256) {
                     if (f !== 10 && s !== 10) {
-                        this.kerning[(f << 8) | s] = k.amount;
+                        this.kerning[(f << 8) | s] = Math.round(k.amount * 16);
                     }
                 } else if (checked) {
                     const bad = (f < 0 || f >= 256) ? 'first' : 'second';
@@ -414,6 +455,11 @@ export class BitmapFont {
     _measureRange(text, start, end, scale) {
         let width = 0;
         let prevId = -1;
+        // C-folded (0012 fork 1): advance/kerning live in 1/16 fixed point,
+        // so fold the 1/16 into a per-CALL constant. This multiplies ONLY the
+        // slot-6 advance and kerning reads below -- x/y/width/height/xoffset/
+        // yoffset keep raw `* scale`, or every glyph would shrink 16x.
+        const s16 = scale * 0.0625;
 
         for (let i = start; i < end; i++) {
             const id = text.charCodeAt(i);
@@ -425,9 +471,9 @@ export class BitmapFont {
             // NaN, which is what poisoned the cursor for a whole line.
             if (id >= 0 && id < 256) {
                 if (prevId !== -1) {
-                    width += this.kerning[(prevId << 8) | id] * scale;
+                    width += this.kerning[(prevId << 8) | id] * s16;
                 }
-                width += this.glyphs[id * 7 + 6] * scale;
+                width += this.glyphs[id * 7 + 6] * s16;
                 prevId = id;
             }
         }
@@ -511,6 +557,11 @@ export class BitmapFont {
         let max = -Infinity;
         let width = 0;
         let prevId = -1;
+        // C-folded (0012 fork 1): advance/kerning live in 1/16 fixed point,
+        // so fold the 1/16 into a per-CALL constant. This multiplies ONLY the
+        // slot-6 advance and kerning reads below -- x/y/width/height/xoffset/
+        // yoffset keep raw `* scale`, or every glyph would shrink 16x.
+        const s16 = scale * 0.0625;
 
         for (let i = 0; i < len; i++) {
             const id = text.charCodeAt(i);
@@ -529,9 +580,9 @@ export class BitmapFont {
             // comparisons, so a NaN id is REJECTED.
             if (id >= 0 && id < 256) {
                 if (prevId !== -1) {
-                    width += this.kerning[(prevId << 8) | id] * scale;
+                    width += this.kerning[(prevId << 8) | id] * s16;
                 }
-                width += this.glyphs[id * 7 + 6] * scale;
+                width += this.glyphs[id * 7 + 6] * s16;
                 prevId = id;
             }
         }
@@ -630,6 +681,38 @@ export class BitmapFont {
     }
 
     /**
+     * Decoded pixel advance of glyph `id` at scale 1 (0012 fork 1). The store
+     * holds `Math.round(xadvance * 16)`; this returns `stored * 0.0625`, so an
+     * `xadvance: 8.6` font reports `advanceOf(65) === 8.625`. Cold path -- for a
+     * caller inspecting metrics, not the render loop, which folds the scale in.
+     * Fail-closed on a non-integer or out-of-range id: returns 0 (an uncovered id
+     * advances 0). Throws after `destroy()`, like every other read.
+     *
+     * @param {number} id
+     * @returns {number}
+     */
+    advanceOf(id) {
+        if (!(id >= 0 && id < 256) || id !== (id | 0)) return 0;
+        return this.glyphs[id * 7 + 6] * GLYPH_ADVANCE_SCALE;
+    }
+
+    /**
+     * Decoded pixel kerning between glyphs `a` and `b` at scale 1 (0012 fork 1/3).
+     * Returns `stored * 0.0625`. Fail-closed: a non-integer or out-of-range key
+     * returns 0 (the kerning table is 0 where no pair was named). Throws after
+     * `destroy()`.
+     *
+     * @param {number} a  first glyph id
+     * @param {number} b  second glyph id
+     * @returns {number}
+     */
+    kernOf(a, b) {
+        if (!(a >= 0 && a < 256) || a !== (a | 0) ||
+            !(b >= 0 && b < 256) || b !== (b | 0)) return 0;
+        return this.kerning[(a << 8) | b] * GLYPH_ADVANCE_SCALE;
+    }
+
+    /**
      * Render a (possibly multi-line) string. Newlines (`\n`) advance by `lineHeight`.
      *
      * **Pixel-snapped, per LINE ORIGIN in X and per BASELINE in Y** -- and that
@@ -695,6 +778,11 @@ export class BitmapFont {
         let lineIndex = 0;
         let cursorY = anchorY;
         let prevId = -1;
+        // C-folded (0012 fork 1): advance/kerning live in 1/16 fixed point,
+        // so fold the 1/16 into a per-CALL constant. This multiplies ONLY the
+        // slot-6 advance and kerning reads below -- x/y/width/height/xoffset/
+        // yoffset keep raw `* scale`, or every glyph would shrink 16x.
+        const s16 = scale * 0.0625;
 
         let lineEnd = 0;
         while (lineEnd < len && text.charCodeAt(lineEnd) !== 10) lineEnd++;
@@ -732,7 +820,7 @@ export class BitmapFont {
             if (!(id >= 0 && id < 256)) continue;
 
             if (prevId !== -1) {
-                cursorX += this.kerning[(prevId << 8) | id] * scale;
+                cursorX += this.kerning[(prevId << 8) | id] * s16;
             }
 
             const ptr = id * 7;
@@ -749,7 +837,7 @@ export class BitmapFont {
                 );
             }
 
-            cursorX += this.glyphs[ptr + 6] * scale;
+            cursorX += this.glyphs[ptr + 6] * s16;
             prevId = id;
         }
     }
@@ -887,10 +975,15 @@ export class BitmapFont {
         // Measure (iterating backwards through the scratch = forwards through the number)
         let width = 0;
         let prevId = -1;
+        // C-folded (0012 fork 1): advance/kerning live in 1/16 fixed point,
+        // so fold the 1/16 into a per-CALL constant. This multiplies ONLY the
+        // slot-6 advance and kerning reads below -- x/y/width/height/xoffset/
+        // yoffset keep raw `* scale`, or every glyph would shrink 16x.
+        const s16 = scale * 0.0625;
         for (let i = len - 1; i >= 0; i--) {
             const id = buf[i];
-            if (prevId !== -1) width += this.kerning[(prevId << 8) | id] * scale;
-            width += this.glyphs[id * 7 + 6] * scale;
+            if (prevId !== -1) width += this.kerning[(prevId << 8) | id] * s16;
+            width += this.glyphs[id * 7 + 6] * s16;
             prevId = id;
         }
 
@@ -904,7 +997,7 @@ export class BitmapFont {
         for (let i = len - 1; i >= 0; i--) {
             const id = buf[i];
             if (prevId !== -1) {
-                cursorX += this.kerning[(prevId << 8) | id] * scale;
+                cursorX += this.kerning[(prevId << 8) | id] * s16;
             }
             const ptr = id * 7;
             const gw = this.glyphs[ptr + 2];
@@ -920,7 +1013,7 @@ export class BitmapFont {
                 );
             }
 
-            cursorX += this.glyphs[ptr + 6] * scale;
+            cursorX += this.glyphs[ptr + 6] * s16;
             prevId = id;
         }
     }
@@ -1023,10 +1116,15 @@ export class BitmapFont {
         // Measure (iterating backwards through the scratch = forwards through the number)
         let width = 0;
         let prevId = -1;
+        // C-folded (0012 fork 1): advance/kerning live in 1/16 fixed point,
+        // so fold the 1/16 into a per-CALL constant. This multiplies ONLY the
+        // slot-6 advance and kerning reads below -- x/y/width/height/xoffset/
+        // yoffset keep raw `* scale`, or every glyph would shrink 16x.
+        const s16 = scale * 0.0625;
         for (let i = len - 1; i >= 0; i--) {
             const id = buf[i];
-            if (prevId !== -1) width += this.kerning[(prevId << 8) | id] * scale;
-            width += this.glyphs[id * 7 + 6] * scale;
+            if (prevId !== -1) width += this.kerning[(prevId << 8) | id] * s16;
+            width += this.glyphs[id * 7 + 6] * s16;
             prevId = id;
         }
 
@@ -1040,7 +1138,7 @@ export class BitmapFont {
         for (let i = len - 1; i >= 0; i--) {
             const id = buf[i];
             if (prevId !== -1) {
-                cursorX += this.kerning[(prevId << 8) | id] * scale;
+                cursorX += this.kerning[(prevId << 8) | id] * s16;
             }
             const ptr = id * 7;
             const gw = this.glyphs[ptr + 2];
@@ -1056,7 +1154,7 @@ export class BitmapFont {
                 );
             }
 
-            cursorX += this.glyphs[ptr + 6] * scale;
+            cursorX += this.glyphs[ptr + 6] * s16;
             prevId = id;
         }
     }
@@ -1178,6 +1276,11 @@ export class BitmapFont {
         // would break T0 law 1's exact, no-epsilon three-way equality.
         const anchorY = cursorY;
         const step = this.lineHeight * scale;
+        // C-folded (0012 fork 1): advance/kerning live in 1/16 fixed point,
+        // so fold the 1/16 into a per-CALL constant. This multiplies ONLY the
+        // slot-6 advance and kerning reads below -- x/y/width/height/xoffset/
+        // yoffset keep raw `* scale`, or every glyph would shrink 16x.
+        const s16 = scale * 0.0625;
 
         let ptr = 0;
         // F-13 checked-lane flag: read the per-font boolean ONCE here (per call),
@@ -1232,7 +1335,7 @@ export class BitmapFont {
                 // three sites; all three now read the same way.
                 if (!(id >= 0 && id < 256)) continue;
 
-                if (prevId !== -1) cursorX += this.kerning[(prevId << 8) | id] * scale;
+                if (prevId !== -1) cursorX += this.kerning[(prevId << 8) | id] * s16;
 
                 const gPtr = id * 7;
                 const gw = this.glyphs[gPtr + 2];
@@ -1247,7 +1350,7 @@ export class BitmapFont {
                         gw * scale, gh * scale
                     );
                 }
-                cursorX += this.glyphs[gPtr + 6] * scale;
+                cursorX += this.glyphs[gPtr + 6] * s16;
                 prevId = id;
             }
 
@@ -1258,16 +1361,27 @@ export class BitmapFont {
             // (FLAG_ELLIPSIS) appends "..."; a bit outside FLAG_MASK is a caller
             // error routed to the checked lane.
             const f = flags | 0;
+            // F-49 (0012 fork 4): the unknown-bit test must be REACHABLE when bit
+            // 0 is also set. It used to sit in the `else` of the ellipsis branch,
+            // so any odd `flags` (bit 0 set) skipped it and every bit 1..31 was
+            // silently ignored on odd values -- flags = 3 was SILENT. It runs
+            // FIRST now, before the ellipsis path, so flags = 3 throws under
+            // checked where it was silent, and flags = 1 still draws the ellipsis.
+            // Per LINE: one test of the hoisted `checked` local (false ->
+            // short-circuits before the mask), zero per glyph.
+            if (checked && (f & ~FLAG_MASK)) {
+                _throwField('flags', flags, 'has bits outside the known mask ' + FLAG_MASK);
+            }
             if (f & FLAG_ELLIPSIS) {
                 const dotPtr = 46 * 7;
                 const gw = this.glyphs[dotPtr + 2];
                 const gh = this.glyphs[dotPtr + 3];
-                const xadv = this.glyphs[dotPtr + 6] * scale;
+                const xadv = this.glyphs[dotPtr + 6] * s16;
 
                 if (gw > 0 && gh > 0) {
                     // Kern between the trailing glyph and the first '.' for parity with how
                     // a layout engine would have measured a run that ended in '.'.
-                    if (prevId !== -1) cursorX += this.kerning[(prevId << 8) | 46] * scale;
+                    if (prevId !== -1) cursorX += this.kerning[(prevId << 8) | 46] * s16;
 
                     for (let d = 0; d < 3; d++) {
                         ctx.drawImage(
@@ -1280,15 +1394,6 @@ export class BitmapFont {
                         cursorX += xadv;
                     }
                 }
-            } else if (checked && (f & ~FLAG_MASK)) {
-                // F-13 (fork 8): unknown flag bits stop being silent under
-                // checked. This costs, on a default font, one per-line test of
-                // the hoisted `checked` local (false -> short-circuits before the
-                // mask). Flags are per-line runtime data, so the unknown-bit
-                // throw cannot hoist to construction; only the `this.checked`
-                // READ is hoisted (above the loop). An opt-in checked font also
-                // pays the `f & ~FLAG_MASK`.
-                _throwField('flags', flags, 'has bits outside the known mask ' + FLAG_MASK);
             }
 
             // F-07 / B1. Per LINE: one multiply, one round, one add -- replacing
@@ -1330,6 +1435,11 @@ export class BitmapFont {
         let lineIndex = 0;
         let cursorY = anchorY;
         let prevId = -1;
+        // C-folded (0012 fork 1): advance/kerning live in 1/16 fixed point,
+        // so fold the 1/16 into a per-CALL constant. This multiplies ONLY the
+        // slot-6 advance and kerning reads below -- x/y/width/height/xoffset/
+        // yoffset keep raw `* scale`, or every glyph would shrink 16x.
+        const s16 = scale * 0.0625;
 
         let lineEnd = 0;
         while (lineEnd < len && text.charCodeAt(lineEnd) !== 10) lineEnd++;
@@ -1360,7 +1470,7 @@ export class BitmapFont {
             if (!(id >= 0 && id < 256)) continue;
 
             if (prevId !== -1) {
-                cursorX += this.kerning[(prevId << 8) | id] * scale;
+                cursorX += this.kerning[(prevId << 8) | id] * s16;
             }
 
             const ptr = id * 7;
@@ -1386,7 +1496,7 @@ export class BitmapFont {
                 out++;
             }
 
-            cursorX += this.glyphs[ptr + 6] * scale;
+            cursorX += this.glyphs[ptr + 6] * s16;
             prevId = id;
         }
         return out;

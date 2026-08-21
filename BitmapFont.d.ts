@@ -38,12 +38,13 @@ export interface BMFontJson {
 export interface BitmapFontOptions {
     /**
      * The xadvance written into every uncovered glyph id (default `0`,
-     * byte-identical to 1.2.x). Finite in `[0, 32767]` or the constructor throws.
+     * byte-identical to 1.2.x). Finite in `[0, 2047.9375]` -- the 1/16 fixed-point
+     * advance range -- or the constructor throws. Stored as `round(value * 16)`.
      */
     missingAdvance?: number;
     /**
      * Open the LOSSY validation lane (default `false`, must be a boolean). When
-     * `true`, an atlas coordinate past Int16, a fractional `xadvance` or `amount`,
+     * `true` (the 2.0.0 default), an atlas coordinate past Int16,
      * and an id or kerning key outside `[0, 256)` throw a `BitmapFontError`
      * naming the exact drift, instead of being truncated/skipped silently
      * (F-08 detection). Inputs with no correct reading throw in both lanes.
@@ -180,6 +181,21 @@ export class BitmapFont {
      * is discarded at construction. Throws after `destroy()`.
      */
     hasGlyph(id: number): boolean;
+
+    /**
+     * Decoded pixel advance of glyph `id` at scale 1. The store holds
+     * `Math.round(xadvance * 16)` in 1/16 fixed point (2.0.0, decisions/0012
+     * fork 1), so an `xadvance: 8.6` font reports `8.625`. Fail-closed: a
+     * non-integer or out-of-range id returns `0`. Throws after `destroy()`.
+     */
+    advanceOf(id: number): number;
+
+    /**
+     * Decoded pixel kerning between glyphs `a` and `b` at scale 1 --
+     * `stored * GLYPH_ADVANCE_SCALE`. Fail-closed: a non-integer or
+     * out-of-range key returns `0`. Throws after `destroy()`.
+     */
+    kernOf(a: number, b: number): number;
 
     /**
      * Render a (possibly multi-line) string. Newlines (`\n`) advance by `lineHeight`.
@@ -411,6 +427,20 @@ export const VERSION: string;
  * bound is `text.length * GLYPH_STRIDE`.
  */
 export const GLYPH_STRIDE: number;
+
+/**
+ * 1/16-fixed-point shift for `xadvance` and kerning amounts (2.0.0,
+ * decisions/0012 fork 1). The constructor stores
+ * `Math.round(value * (1 << GLYPH_ADVANCE_SHIFT))` into the Int16 tables.
+ */
+export const GLYPH_ADVANCE_SHIFT: number;
+
+/**
+ * `1 / (1 << GLYPH_ADVANCE_SHIFT)` = 0.0625. A reader recovers pixels from the
+ * raw store with `stored * GLYPH_ADVANCE_SCALE`; `advanceOf`/`kernOf` apply it
+ * so a consumer never has to know the encoding.
+ */
+export const GLYPH_ADVANCE_SCALE: number;
 
 /** Largest magnitude drawFast renders (1e21). Both endpoints inclusive. */
 export const DRAWFAST_MAX: number;

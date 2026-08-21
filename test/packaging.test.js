@@ -106,7 +106,7 @@ test('every tracked text file is ASCII-only (U+00D7 and U+00B5 excepted)', () =>
 // empty capture shares one sha, so ten mutually-distinct non-empty shas catch a
 // vacuous extraction directly (a 200-char floor would falsely redden `hasGlyph`
 // at 143 chars and `destroy` at 126).
-test('A11 (M5): the ten shipped method bodies are frozen (draw must not move)', () => {
+test('A11 (M9a): method bodies frozen -- seven MOVED this session; measure/measureLine/drawQuads must not', () => {
     const src = readFileSync(new URL('../BitmapFont.js', import.meta.url), 'utf8');
     const lines = src.split('\n');
     function methodSha(name) {
@@ -120,18 +120,29 @@ test('A11 (M5): the ten shipped method bodies are frozen (draw must not move)', 
         const block = lines.slice(start, end + 1).join('\n') + '\n';
         return createHash('sha256').update(block).digest('hex');
     }
-    // Captured on the 1.8.0 commit (1ab66eb) BEFORE the M5 edit.
+    // A11 stage 1 (0012 fork 1, SESSION-M9a section 7). The C-folded edit moves
+    // SEVEN bodies -- the seven direct advance/kerning readers -- and this is the
+    // one session where that is allowed. The three doors-and-delegates that read
+    // NO advance (measure, measureLine, drawQuads) MUST NOT move; their pins are
+    // UNCHANGED from 1.8.0 and reddening any of them means an unintended edit.
+    // layoutGlyphs and drawQuads (added in M5, after the 1.8.0 pin) are pinned
+    // here for the first time, closing that gap (R-9).
+    //   MOVED this session: measureWidest, draw, drawFast, drawFastInt,
+    //                       drawWrapped, _measureRange, layoutGlyphs (seven).
+    //   MUST NOT MOVE:      measure, measureLine, hasGlyph, destroy, drawQuads.
     const PINS = {
-        measure: '9967686a0e14e87b9751cb9b334e35bf7a4fa05b460474ab6dfe92a6864e45c1',
-        measureWidest: 'bb315f6f2e292bb866f95c4ec393c84fdfe1af0f70a3a3fcb3dcb5585da019c6',
-        measureLine: '50c28a69fe3e170e03bf0b50a3587c94c82ce91f5431aee2e10059742737e9d4',
-        hasGlyph: '5bdf08564c7ed450ad2ada75d43549bd7ccb4db5a986566ee455001c5c644dc5',
-        draw: '5a794f4afc3ae6d88225d121848afba9fe976467f3ae8b88224c390348907075',
-        drawFast: '143bafcb7d50c6497826d841a587fbdeae9ab4cdf92f8a6bae490eb58024d869',
-        drawFastInt: '3c5942448910181e71257ae15c4bb8c46439bfc5f27469b0e33c419ca8f7900e',
-        drawWrapped: 'bdae8ef4563b43b39ab6683b1370b3c1ceb3a64bab0ef96ac99de4a4505c29fd',
-        destroy: '6f7fd1459b1f452d4e2d5be976082fbabdd676958d1b11079b4bb955602fdf1c',
-        _measureRange: 'ba94f3bf4b9267fa55fc9d17c23aa4c7541edf2b9dac89e21c86d2ed335c5504',
+        measure: '9967686a0e14e87b9751cb9b334e35bf7a4fa05b460474ab6dfe92a6864e45c1',        // 1.8.0, unchanged
+        measureLine: '50c28a69fe3e170e03bf0b50a3587c94c82ce91f5431aee2e10059742737e9d4',    // 1.8.0, unchanged
+        hasGlyph: '5bdf08564c7ed450ad2ada75d43549bd7ccb4db5a986566ee455001c5c644dc5',       // 1.8.0, unchanged
+        destroy: '6f7fd1459b1f452d4e2d5be976082fbabdd676958d1b11079b4bb955602fdf1c',        // 1.8.0, unchanged
+        drawQuads: '3625e1f7c3c3d7d1e083da06d5091ddc1778d6886ff6e645c6f882c7ef3ad38c',      // M5, first pin -- reads no advance
+        measureWidest: '92114ba0d5eef66f75c71053253e2af9131914fd745dc64560c5df323391a42d',  // MOVED (s16)
+        draw: '29ad8b98df8f8aa829e0d6fec61becf5d4d334e92a0a1703f520662f543b015a',            // MOVED (s16)
+        drawFast: '30237560098d1cd99fdfe3fc741b07b5a4df56a33a4ce0907bf14acb8617eb69',        // MOVED (s16)
+        drawFastInt: '9c356aeb3739f79a86bd572d09d12c01fa00dd79823888473827d2a90bb3d843',     // MOVED (s16)
+        drawWrapped: '87e106414526112e59d81e765b763d50afd29de4a63aedbf5acaabfe8c36f579',     // MOVED (s16 + F-49)
+        _measureRange: 'd7ff407d3e886af23d4428a2d194eef86cec3072e82ddd904a70fe938505e999',   // MOVED (s16)
+        layoutGlyphs: 'cdabf73698117057dcf35a8e6f97ab53548aa2dd580ccfc8bdf3f208a4f9b47e',    // MOVED (s16), M5 first pin
     };
     const names = Object.keys(PINS);
     const got = names.map(methodSha);
@@ -145,7 +156,8 @@ test('A11 (M5): the ten shipped method bodies are frozen (draw must not move)', 
     for (let i = 0; i < names.length; i++) {
         assert.equal(got[i], PINS[names[i]],
             names[i] + ' body sha moved from its 1.8.0 pin -- ' +
-            (names[i] === 'draw' ? 'draw MUST NOT change in M5' : 'an unintended edit'));
+            (['measure', 'measureLine', 'drawQuads', 'hasGlyph', 'destroy'].indexOf(names[i]) >= 0
+                ? names[i] + ' MUST NOT move this session (0012 fork 1 stage 1)' : 'an unintended edit'));
     }
 });
 
@@ -187,4 +199,87 @@ test('F-26 source pin: exactly three NaN-safe glyph guards, zero NaN-accepting f
         'expected exactly three NaN-safe glyph guards (draw/drawWrapped/layoutGlyphs); found ' + safe +
         ' -- a reshape site was deleted, added or altered'
     );
+});
+
+// Fork 9 (0012) -- the ROSTER GATE. M9pre silently dropped a fork its own plan
+// specified (the F-08 deferral handoff); the file was internally consistent so
+// two review passes missed it. So decisions/0012 carries a LITERAL roster and
+// this gate extracts every `## Fork (n)` at column 0 -- OUTSIDE fenced code
+// blocks -- and asserts the set is exactly [1..9], each with a Decision and a
+// Rejected line. Proven in BOTH directions below: a deleted fork reddens, and a
+// `## Fork (n)` quoted inside a fence does NOT (a grep matching its own docs is
+// a shipped failure mode -- 0011 fork 2 had to strip comment lines for it).
+test('Fork 9 roster (0012): forks [1..9] each present with a Decision and a Rejected line', () => {
+    const src = readFileSync(new URL('../decisions/0012-two-oh.md', import.meta.url), 'utf8');
+    // Strip fenced code blocks so a ``` example quoting `## Fork (7)` cannot be
+    // counted as a real heading. Toggle on every ``` line.
+    const lines = src.split('\n');
+    let fenced = false;
+    const code = [];
+    for (const l of lines) {
+        if (l.startsWith('```')) { fenced = !fenced; code.push(''); continue; }
+        code.push(fenced ? '' : l);
+    }
+    const body = code.join('\n');
+    // Section bodies: split on the column-0 fork headings.
+    const parts = body.split(/^## Fork \((\d+)\)/m);
+    // parts = [pre, "1", text1, "2", text2, ...]
+    const nums = [];
+    for (let i = 1; i < parts.length; i += 2) {
+        const n = Number(parts[i]);
+        const text = parts[i + 1];
+        nums.push(n);
+        assert.match(text, /Decision:/,
+            'Fork (' + n + ') has no Decision: line');
+        assert.match(text, /Rejected/,
+            'Fork (' + n + ') has no Rejected line');
+    }
+    nums.sort((a, b) => a - b);
+    assert.deepEqual(nums, [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        'the 0012 fork roster is not exactly [1..9]: ' + JSON.stringify(nums));
+
+    // REVERSE direction: prove a `## Fork (n)` INSIDE a fence is NOT counted, so
+    // the strip is load-bearing and not decorative. If the strip were removed the
+    // roster would gain a spurious member and deepEqual above would redden.
+    const withFence = body + '\n```\n## Fork (42) -- this is prose in a fence, not a heading\n```\n';
+    const lines2 = withFence.split('\n');
+    let fenced2 = false; const code2 = [];
+    for (const l of lines2) {
+        if (l.startsWith('```')) { fenced2 = !fenced2; code2.push(''); continue; }
+        code2.push(fenced2 ? '' : l);
+    }
+    const nums2 = (code2.join('\n').match(/^## Fork \((\d+)\)/mg) || []).map((h) => Number(h.match(/\d+/)[0]));
+    assert.equal(nums2.indexOf(42), -1,
+        'a `## Fork (42)` quoted inside a fenced block was counted -- the strip is broken');
+});
+
+// A DOCS-CLAIM PIN for the advance range (M9a, 2026-08-21).
+//
+// T8's docs-drift guard checks PRESENCE and NAMING -- every prototype method has
+// a signature, every export has a heading. It cannot see a claim that is merely
+// FALSE. The prerelease docs check found four shipped statements that had become
+// wrong the moment the 1/16 format landed, and every gate was green through all
+// of them: README, llms.txt, BitmapFont.d.ts and BitmapFont.js's own JSDoc all
+// published `missingAdvance` as `[0, 32767]` while the code enforced
+// `[0, 2047.9375]` -- a caller passing the documented maximum gets a throw.
+//
+// That is the F-43/F-44 class: a number in prose that no gate reads. This pin is
+// the narrowest thing that closes it -- the bound is DERIVED from the exported
+// constant, so it cannot drift from the code, and the four shipped files must
+// carry the derived string. Scoped to those four files so it never matches its
+// own text (the greps-that-match-their-own-docs failure this repo has shipped).
+test('docs-claim pin: the advance range in the shipped docs equals the enforced bound', async () => {
+    const { GLYPH_ADVANCE_SCALE } = await import('../BitmapFont.js');
+    const bound = String(32767 * GLYPH_ADVANCE_SCALE);   // derived, never typed
+    assert.equal(bound, '2047.9375', 'the derived advance bound moved; update the docs and this pin together');
+
+    const SHIPPED = ['README.md', 'llms.txt', 'BitmapFont.d.ts', 'BitmapFont.js'];
+    for (const f of SHIPPED) {
+        const src = readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+        assert.ok(src.includes(bound),
+            f + ' does not publish the enforced advance bound ' + bound);
+        // The superseded Int16 bound must not survive as an ADVANCE range claim.
+        assert.ok(!/\[0,\s*32767\]/.test(src),
+            f + ' still publishes the superseded advance range [0, 32767]');
+    }
 });
