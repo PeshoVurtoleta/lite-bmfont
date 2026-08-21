@@ -19,13 +19,14 @@
  * `test/BitmapFont.test.js` (`describe('BitmapFont M4: metrics coherence and the
  * pixel-snap promise')`) and in the torture gate (`t5-fuzz.mjs`, `t0-laws.mjs`
  * law 12, `t6-alloc.mjs` windows E and F, `t9-controls.mjs` controls 11-13).
- * **F-06's SEMANTIC half remains OPEN and is M9's**: `measure` still sums across
- * newlines, which is a documented contract now, pinned in `BitmapFont.test.js`
- * block "F-06: measure still sums across newlines".
+ * **F-06's SEMANTIC half is CLOSED in 2.0.0** (decisions/0012 fork 2): `measure`
+ * now returns the widest line, pinned in `BitmapFont.test.js` block
+ * "F-06 (2.0.0 BREAKING)" and the T0 law tier.
  *
- * The ONE remaining watch-todo is F-14. F-18 was CLOSED in 1.8.0 (M7): its block
- * below flipped from a todo watching the demo duplication to a real test of the
- * CLOSED state (generateAtlas now ships as the `/atlas` subpath).
+ * There are now ZERO remaining watch-todos: F-14 was CLOSED in 2.0.0 (fork 5, the
+ * prototype freeze), and its block below flipped from a todo watching a mutable
+ * prototype to a real test of the frozen state. F-18 was CLOSED in 1.8.0 (M7):
+ * its block flipped likewise (generateAtlas now ships as the `/atlas` subpath).
  *
  * Every block below is `test.todo(...)`: it still RUNS and its result is
  * printed, but a todo failure does not fail `npm test`'s exit code. That is
@@ -110,15 +111,42 @@ test('F-07 (FIXED in 1.4.0): every baseline is pixel-snapped, not just the first
 // STORAGE half stays open (M9): the unchecked Int16 truncation is a documented
 // contract now, pinned in BitmapFont.test.js block "F-08: unchecked ...".
 
-test.todo('F-14 (freeze half): BitmapFont.prototype is still mutable -- deferred to M9', () => {
-    // The VERSION half of F-14 IS fixed by M0 -- assert that split explicitly.
+// F-14 CLOSED in 2.0.0 (decisions/0012 fork 5): the prototype is frozen at
+// module scope. Object.seal was REJECTED (it still permits overwriting an
+// existing method); freezing INSTANCES too was REJECTED because they carry the
+// per-font typed-array state the constructor and destroy() write.
+//
+// MEASURED BLAST RADIUS (wider than the F-14 roadmap row, discovered in
+// implementation): freezing the prototype makes the twelve inherited method
+// properties non-writable, so a plain-assignment method hijack throws whether it
+// targets the prototype OR is shadowed on an instance -- assignment-shadowing
+// routes through the inherited property's writable flag. The escape hatches are
+// UNTOUCHED: Object.defineProperty on the instance, own-DATA-field writes, and
+// subclassing all still work. The ALLOWED rows below are the non-vacuity twin --
+// a freeze that also broke subclassing or own-field writes would be a regression
+// and only they would catch it.
+test('F-14 CLOSED (2.0.0): BitmapFont.prototype is frozen; method patching throws, subclassing survives', () => {
     assert.equal(typeof BitmapFont, 'function');
-    assert.equal(Object.isFrozen(BitmapFont.prototype), false);
+    assert.equal(Object.isFrozen(BitmapFont.prototype), true);
+    // THROWS -- the intended close (a shared prototype hijack).
+    assert.throws(() => { BitmapFont.prototype.draw = () => 'hijacked'; }, TypeError);
+    assert.throws(() => { BitmapFont.prototype.injected = () => 1; }, TypeError);
     const f = new BitmapFont(ATLAS, JSON_ASCII);
-    const original = f.draw;
-    f.draw = () => 'hijacked';
-    assert.equal(f.draw(), 'hijacked'); // instance-level monkey-patch still succeeds
-    f.draw = original;
+    // THROWS -- the WIDER consequence: assignment-shadowing a method on an
+    // instance also throws, because the inherited property is non-writable.
+    assert.throws(() => { f.draw = () => 'hijacked'; }, TypeError);
+    // ALLOWED -- Object.defineProperty on the instance is the supported override.
+    assert.doesNotThrow(() => Object.defineProperty(f, 'draw', { value: () => 'ok', configurable: true }));
+    assert.equal(f.draw(), 'ok');
+    // ALLOWED -- own DATA fields stay mutable (the per-font state boundary).
+    f.myOwnField = 1;
+    assert.equal(f.myOwnField, 1);
+    f.checked = false;              // an existing own data property
+    assert.equal(f.checked, false);
+    // ALLOWED -- subclassing is untouched: a subclass may override `draw`.
+    class Sub extends BitmapFont { draw() { return 'sub'; } }
+    const s = new Sub(ATLAS, JSON_ASCII);
+    assert.equal(s.draw(), 'sub');
 });
 
 // F-18 is CLOSED in 1.8.0 (M7, decisions/0009): generateAtlas is no longer a

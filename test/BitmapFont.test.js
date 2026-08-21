@@ -867,10 +867,15 @@ describe('BitmapFont M2: cursor conservation', () => {
         assert.equal(rec.imgMismatch, 0);
     });
 
-    test('F-25: a descriptor mapping id 10 is discarded; measure is 24, not 31', () => {
-        // v1.2.2 FAILS: measure was 31 (it charged 7px for the newline).
+    test('F-25: a descriptor mapping id 10 is discarded; the cross-newline sum is 24, not 31', () => {
+        // v1.2.2 FAILS: it was 31 (it charged 7px for the newline).
+        // MIGRATED at 2.0.0 (decisions/0012 fork 2): `measure` now returns the
+        // widest line, so it can no longer witness that id 10 charges 0 across a
+        // break (widest never sums the newline). The cross-newline SUM this test
+        // exists to pin lives in `measureLine`, the ranged face of _measureRange;
+        // A(12) + \n(0) + A(12) = 24, and would be 31 if id 10 still charged 7.
         resetRec(ATLAS);
-        assert.equal(FONT_NL.measure('A\nA'), 24);
+        assert.equal(FONT_NL.measureLine('A\nA', 0, 3, 1), 24);
         assert.equal(rec.dropped, 0);
         assert.equal(rec.imgMismatch, 0);
     });
@@ -1167,39 +1172,46 @@ describe('BitmapFont M4: metrics coherence and the pixel-snap promise', () => {
         return b;
     })();
 
-    test('F-06: measureWidest returns the widest line where measure returns the sum', () => {
-        assert.equal(FONT_SNAP.measure('AA\nAA'), 32);
+    test('F-06 (2.0.0): measure returns the widest line, an exact alias of measureWidest', () => {
+        // MIGRATED at 2.0.0 (decisions/0012 fork 2). 1.x `measure` summed across
+        // newlines; it now returns the widest line. Old sums quoted inline.
+        assert.equal(FONT_SNAP.measure('AA\nAA'), 16);        // 1.x sum was 32
         assert.equal(FONT_SNAP.measureWidest('AA\nAA'), 16);
-        assert.equal(FONT_SNAP.measure('A\nAAAAAA'), 56);
+        assert.equal(FONT_SNAP.measure('A\nAAAAAA'), 48);     // 1.x sum was 56
         assert.equal(FONT_SNAP.measureWidest('A\nAAAAAA'), 48);
-        // 'A\nAAAAAA' is the string that catches a measureWidest returning the
-        // FIRST line instead of the max: the first line is 8, not 48.
-        assert.notEqual(FONT_SNAP.measureWidest('A\nAAAAAA'), 8);
+        // 'A\nAAAAAA' is the string that catches a widest returning the FIRST
+        // line instead of the max: the first line is 8, not 48.
+        assert.notEqual(FONT_SNAP.measure('A\nAAAAAA'), 8);
         // ...and 'AAA\n' catches one that drops the final (empty) line, which
         // 'AA\nAA' cannot see.
-        assert.equal(FONT_SNAP.measureWidest('AAA\n'), 24);
-        assert.equal(FONT_SNAP.measureWidest('\n\n\nAAA'), 24);
-        assert.equal(FONT_SNAP.measureWidest('\n'), 0);
-        assert.equal(FONT_SNAP.measureWidest(''), 0);
-        // The residual IS the F-06 number, asserted as an exact value.
-        assert.equal(FONT_SNAP.measure('AA\nAA') - FONT_SNAP.measureWidest('AA\nAA'), 16);
-        assert.equal(FONT_SNAP.measure('A\nAAAAAA') - FONT_SNAP.measureWidest('A\nAAAAAA'), 8);
+        assert.equal(FONT_SNAP.measure('AAA\n'), 24);
+        assert.equal(FONT_SNAP.measure('\n\n\nAAA'), 24);
+        assert.equal(FONT_SNAP.measure('\n'), 0);
+        assert.equal(FONT_SNAP.measure(''), 0);
+        // measure is now an EXACT alias: the residual the 1.x block pinned is 0.
+        assert.equal(FONT_SNAP.measure('AA\nAA') - FONT_SNAP.measureWidest('AA\nAA'), 0);
+        assert.equal(FONT_SNAP.measure('A\nAAAAAA') - FONT_SNAP.measureWidest('A\nAAAAAA'), 0);
     });
 
-    test('F-06: measure still sums across newlines, unchanged in 1.4.0', () => {
-        // PINNED CURRENT BEHAVIOUR, NOT DESIRED BEHAVIOUR. 2.0.0 promotes
-        // `measure` to the widest line (decisions/0004 fork 1); this block exists
-        // so that flip lands visibly instead of silently, and it is expected to
-        // go red in that session, which will own updating it.
-        assert.equal(FONT_SNAP.measure('AA\nAA'), 32);
-        assert.equal(FONT_SNAP.measure('A\nAAAAAA'), 56);
-        assert.equal(FONT_ASCII.measure('AA\nAA'), 48);
-        assert.equal(FONT_ASCII.measure('A\nAAAAAA'), 84);
+    test('F-06 (2.0.0 BREAKING): measure is the widest line, was the cross-newline sum', () => {
+        // MIGRATED at 2.0.0 (decisions/0012 fork 2). The v1.x pins that asserted
+        // the cross-newline SUM are replaced here with the widest-line values;
+        // the pre-flip numbers are quoted so the break stays legible:
+        //   FONT_SNAP  (adv 8):  'AA\nAA' 32 -> 16   'A\nAAAAAA' 56 -> 48
+        //   FONT_ASCII (adv 12): 'AA\nAA' 48 -> 24   'A\nAAAAAA' 84 -> 72
+        assert.equal(FONT_SNAP.measure('AA\nAA'), 16);
+        assert.equal(FONT_SNAP.measure('A\nAAAAAA'), 48);
+        assert.equal(FONT_ASCII.measure('AA\nAA'), 24);
+        assert.equal(FONT_ASCII.measure('A\nAAAAAA'), 72);
     });
 
-    test('F-06: measureWidest equals measure for a newline-free string', () => {
-        // The twin. A measureWidest that "fixes" measure too would redden the
-        // block above; one that resets its running max at every glyph dies here.
+    test('F-06 (assertion 2): single-line measure is UNCHANGED by the flip', () => {
+        // The non-vacuity twin. The flip touched ONLY the cross-newline case; a
+        // flip that also broke single-line measurement would hide behind the
+        // multi-line assertions above. Pin a concrete newline-free value that is
+        // byte-identical to 1.x, and prove measure === measureWidest on it.
+        assert.equal(FONT_SNAP.measure('ABC'), 24);                       // unchanged from 1.x
+        assert.equal(FONT_SNAP.measure('ABC'), FONT_SNAP.measureWidest('ABC'));
         for (const s of ['AAAA', 'A', 'Hello world', '~', ' ', 'The quick brown fox']) {
             assert.equal(FONT_SNAP.measureWidest(s), FONT_SNAP.measure(s), s);
             assert.equal(FONT_SNAP_KERN.measureWidest(s), FONT_SNAP_KERN.measure(s), s);
@@ -1396,7 +1408,7 @@ describe('BitmapFont M4: metrics coherence and the pixel-snap promise', () => {
         }
         // The twin: a text door that rejects strings passes every row above.
         assert.equal(FONT_SNAP.measure('AA'), 16);
-        assert.equal(FONT_SNAP.measure('AA\nAA'), 32);
+        assert.equal(FONT_SNAP.measure('AA\nAA'), 16);   // 2.0.0 widest (0012 fork 2); 1.x sum was 32
         assert.equal(FONT_SNAP.measureWidest('AA\nAA'), 16);
         assert.equal(FONT_SNAP.measureLine('AAAA', 0, 4, 1), 32);
         // The scale door is a RANGE test, not a NaN test: 0 and -1 are finite,

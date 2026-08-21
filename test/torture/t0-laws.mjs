@@ -238,57 +238,80 @@ export function run() {
     check(d2 !== w2,
         () => 'T0.law5/neg: the two renderers AGREED across a newline (' + d2 + '), scope may be widenable');
 
-    // ---- Law 6 -- the F-06 residual, pinned as today's WRONG answer (4.5) ---
+    // ---- Law 6 (2.0.0, F-06 / decisions/0012 fork 2) -- measure IS widest -----
+    // MIGRATED: 1.x pinned `measure` as the cross-newline SUM (48 and 84) as
+    // "today's WRONG answer" awaiting the flip. 2.0.0 promotes it to the widest
+    // line. The per-line walks stay in `_measureRange` -- what draw/drawWrapped
+    // actually render -- so the residual is still derivable from them.
     const m1 = FONT_ASCII.measure('AA\nAA');
     const l1a = FONT_ASCII._measureRange('AA\nAA', 0, 2, 1);
     const l1b = FONT_ASCII._measureRange('AA\nAA', 3, 5, 1);
-    check(m1 === 48, () => 'T0/F-06: measure("AA\\nAA") ' + m1 + ' != 48');
+    check(m1 === 24, () => 'T0/F-06: measure("AA\\nAA") ' + m1 + ' != 24 (widest; 1.x sum was 48)');
     check(l1a === 24 && l1b === 24, () => 'T0/F-06: per-line walks ' + l1a + ',' + l1b + ' != 24,24');
-    check(m1 === l1a + l1b, () => 'T0/F-06: measure is not the cross-line SUM');
-    check(m1 > (l1a > l1b ? l1a : l1b), () => 'T0/F-06: sum not greater than widest line -- bug gone?');
+    check(m1 === (l1a > l1b ? l1a : l1b), () => 'T0/F-06: measure is not the WIDEST line');
     const m2 = FONT_ASCII.measure('A\nAAAAAA');
+    const first = FONT_ASCII._measureRange('A\nAAAAAA', 0, 1, 1);
     const longest = FONT_ASCII._measureRange('A\nAAAAAA', 2, 8, 1);
-    check(m2 === 84, () => 'T0/F-06: measure("A\\nAAAAAA") ' + m2 + ' != 84');
+    check(m2 === 72, () => 'T0/F-06: measure("A\\nAAAAAA") ' + m2 + ' != 72 (widest; 1.x sum was 84)');
     check(longest === 72, () => 'T0/F-06: longest line ' + longest + ' != 72');
+    check(m2 === longest, () => 'T0/F-06: measure != the longest line');
+    // The witness for the flip itself: on unequal lines measure DROPS below the
+    // cross-newline sum. Reddens if measure reverts to summing (72 < 84).
+    check(m2 < longest + first, () => 'T0/F-06: measure is still summing across the newline');
 
-    // ---- Law 12 (M4) -- the per-line-vs-total RESIDUAL law (F-06) -----------
-    // Three equations, stated separately because they fail for different
-    // reasons:
+    // ---- Law 12 (M4; RE-DERIVED 2.0.0, F-06 / decisions/0012 fork 2) --------
+    // WHAT CHANGED, and why this is a re-derivation not a re-numbering. In 1.x
+    // this law pinned the RESIDUAL between two DISTINCT semantics:
     //
-    //   (i)   measure(s, k)        === sum over lines L of measure(L, k)
-    //   (ii)  measureWidest(s, k)  === max over lines L of measure(L, k)
+    //   (i)   measure(s, k)        === SUM over lines L of measure(L, k)
+    //   (ii)  measureWidest(s, k)  === MAX over lines L of measure(L, k)
     //   (iii) measure(s,k) - measureWidest(s,k) === sum of the NON-LONGEST lines
     //
-    // (i) is a property of `measure`, which M4 does not change, so it is the
-    // CONTROL: if it reddens, the session broke something it promised not to
-    // touch. (ii) is measureWidest's contract. (iii) IS THE F-06 NUMBER, asserted
-    // as an exact value rather than as an inequality -- it is the only one of the
-    // three that reads as a number in a failure message.
+    // Fork 2 makes `measure` a one-line DELEGATE to the widest-line walk, so the
+    // sum semantic (i) is GONE and (iii) collapses to `f(x) - f(x)`. RETIRED
+    // 2026-08-21: the residual rows are DELETED, not rewritten to `=== 0` -- a
+    // `=== 0` residual is a tautology true no matter how broken either function
+    // is, an inert assertion in the core law tier (decisions/0012 fork 2).
     //
-    // The two equalities directly above (48 and 84 on FONT_ASCII) are this law's
-    // control at scale 1; the residuals below re-derive them.
+    // WHAT REPLACES THEM. The load-bearing question fork 2 forces: with the old
+    // independent `measure` gone, what still proves `measureWidest` returns the
+    // RIGHT number? Answer: (ii), the MAX over per-line `_measureRange`, computed
+    // by a DIFFERENT code path than measureWidest's own inline walk (measureWidest
+    // does not call _measureRange). And _measureRange is itself pinned to the
+    // JSON-reading oracle by Law 1 over 50,000 tuples, so the chain
+    // `measureWidest === max(_measureRange) === max(oracle)` is independent end to
+    // end -- it is NOT measureWidest checked against itself. FONT_SNAP_KERN is the
+    // fixture that can SEE a walk that wrongly carries kerning across the break.
+    //
+    // (i') is now the ALIAS law `measure === measureWidest`. It is WEAK BY
+    // CONSTRUCTION while `measure` is a delegate (it cannot diverge today), but it
+    // is retained because it reddens the moment someone RE-IMPLEMENTS `measure` as
+    // an independent walk that disagrees -- exactly the AR-02 revert mutation.
     //
     // DEPENDENCY, stated because it is invisible: id 10's own advance is 0 for
     // every font (M2 zeroes its seven slots, BitmapFont.js F-25 block), so the
-    // sum-of-lines identity is EXACT and needs no id-10 correction term. If M9
-    // ever un-zeroes those slots, this law is the first thing to re-derive.
+    // per-line identity is EXACT and needs no id-10 correction term.
     //
-    // The right-hand side uses `_measureRange` over the ORIGINAL string rather
-    // than `measure` over a `slice`: identical arithmetic (each call starts a
-    // fresh kerning chain by construction) and no substring allocation.
-    check(FONT_ASCII.measure('AA\nAA') - FONT_ASCII.measureWidest('AA\nAA') === 24,
-        () => 'T0.law12/F-06: FONT_ASCII residual for "AA\\nAA" != 24');
-    check(FONT_ASCII.measure('A\nAAAAAA') - FONT_ASCII.measureWidest('A\nAAAAAA') === 12,
-        () => 'T0.law12/F-06: FONT_ASCII residual for "A\\nAAAAAA" != 12');
-    check(FONT_SNAP.measure('AA\nAA') === 32 && FONT_SNAP.measureWidest('AA\nAA') === 16,
-        () => 'T0.law12/F-06: FONT_SNAP "AA\\nAA" ' + FONT_SNAP.measure('AA\nAA') + '/' +
-            FONT_SNAP.measureWidest('AA\nAA') + ' != 32/16');
-    check(FONT_SNAP.measure('AA\nAA') - FONT_SNAP.measureWidest('AA\nAA') === 16,
-        () => 'T0.law12/F-06: FONT_SNAP residual for "AA\\nAA" != 16');
-    check(FONT_SNAP.measure('A\nAAAAAA') === 56 && FONT_SNAP.measureWidest('A\nAAAAAA') === 48,
-        () => 'T0.law12/F-06: FONT_SNAP "A\\nAAAAAA" != 56/48');
-    check(FONT_SNAP.measure('A\nAAAAAA') - FONT_SNAP.measureWidest('A\nAAAAAA') === 8,
-        () => 'T0.law12/F-06: FONT_SNAP residual for "A\\nAAAAAA" != 8');
+    // measureWidest's OWN direct pins (the independent-oracle values), quoting the
+    // now-retired 1.x cross-newline sums so the flip stays legible:
+    check(FONT_ASCII.measureWidest('AA\nAA') === 24 && FONT_ASCII.measure('AA\nAA') === 24,
+        () => 'T0.law12/F-06: FONT_ASCII widest/alias for "AA\\nAA" != 24/24 (1.x sum 48)');
+    check(FONT_ASCII.measureWidest('A\nAAAAAA') === 72 && FONT_ASCII.measure('A\nAAAAAA') === 72,
+        () => 'T0.law12/F-06: FONT_ASCII widest/alias for "A\\nAAAAAA" != 72/72 (1.x sum 84)');
+    check(FONT_SNAP.measureWidest('AA\nAA') === 16 && FONT_SNAP.measure('AA\nAA') === 16,
+        () => 'T0.law12/F-06: FONT_SNAP widest/alias for "AA\\nAA" != 16/16 (1.x sum 32)');
+    check(FONT_SNAP.measureWidest('A\nAAAAAA') === 48 && FONT_SNAP.measure('A\nAAAAAA') === 48,
+        () => 'T0.law12/F-06: FONT_SNAP widest/alias for "A\\nAAAAAA" != 48/48 (1.x sum 56)');
+    // The independent oracle at scale 1: widest === MAX over per-line _measureRange
+    // (a different path than measureWidest's walk; _measureRange === JSON oracle by
+    // Law 1). Reddens if measureWidest returns the sum, the first line, or a walk
+    // that carries kerning across the break.
+    {
+        const rA = FONT_SNAP._measureRange('A\nAAAAAA', 0, 1, 1);
+        const rB = FONT_SNAP._measureRange('A\nAAAAAA', 2, 8, 1);
+        check(FONT_SNAP.measureWidest('A\nAAAAAA') === (rA > rB ? rA : rB),
+            () => 'T0.law12(ii): measureWidest != max over _measureRange (' + rA + ',' + rB + ')');
+    }
     // The trailing-newline row. A `for` that stops at the last id 10 drops the
     // final line from the max and reddens ONLY here.
     check(FONT_SNAP.measureWidest('AAA\n') === 24 && FONT_SNAP.measureWidest('\n\n\nAAA') === 24,
@@ -300,7 +323,7 @@ export function run() {
     // kerningless font a measureWidest that carries the kerning chain across the
     // line break is arithmetically identical to one that resets it, so running
     // this only on FONT_SNAP would be vacuous (F-21's shape). Deleting the
-    // `prevId = -1` reset from measureWidest reddens (ii) and (iii) HERE.
+    // `prevId = -1` reset from measureWidest reddens (ii) HERE.
     const RESID_FONTS = [FONT_SNAP, FONT_SNAP_KERN, FONT_ASCII];
     let residSeen = 0, residNonZero = 0, residCrossKern = 0;
     for (let fi = 0; fi < RESID_FONTS.length; fi++) {
@@ -322,20 +345,35 @@ export function run() {
                 }
                 const total = font.measure(t, s);
                 const wide = font.measureWidest(t, s);
-                // (i) the CONTROL
-                check(total === sum,
-                    () => 'T0.law12(i): measure ' + total + ' != per-line sum ' + sum +
-                        ' (seed=' + SEED + ' fi=' + fi + ' i=' + i + ' s=' + s + ')');
-                // (ii) measureWidest's contract
+                // (ii) THE LOAD-BEARING law -- measureWidest === MAX over per-line
+                // _measureRange, an independent path (measureWidest inlines its own
+                // walk; _measureRange === JSON oracle by Law 1). This is what
+                // proves the widest-line NUMBER now that the old summing `measure`
+                // no longer witnesses it. Reddens on a walk that carries kerning
+                // across the break (the FONT_SNAP_KERN non-vacuity below).
                 check(wide === max,
                     () => 'T0.law12(ii): measureWidest ' + wide + ' != per-line max ' + max +
                         ' (seed=' + SEED + ' fi=' + fi + ' i=' + i + ' s=' + s + ')');
-                // (iii) THE F-06 NUMBER, exact
-                check(total - wide === sum - max,
-                    () => 'T0.law12(iii): residual ' + (total - wide) + ' != sum of non-longest ' +
-                        (sum - max) + ' (seed=' + SEED + ' fi=' + fi + ' i=' + i + ' s=' + s + ')');
+                // (i') the ALIAS law (2.0.0): measure delegates to measureWidest.
+                // WEAK while it is a delegate; reddens if measure is re-implemented
+                // as an independent walk that diverges (the AR-02 revert mutation
+                // restoring the cross-newline sum reddens it: total===sum!==wide).
+                check(total === wide,
+                    () => 'T0.law12(i\'): measure ' + total + ' != measureWidest ' + wide +
+                        ' (alias broke; seed=' + SEED + ' fi=' + fi + ' i=' + i + ' s=' + s + ')');
+                // The flip witness: where the lines DIFFER (sum !== max), measure
+                // must have DROPPED the cross-newline sum. Reddens if measure
+                // reverts to summing (then total === sum !== max).
+                if (sum !== max) {
+                    check(total !== sum,
+                        () => 'T0.law12/F-06: measure still sums across newlines (total ' + total +
+                            ' === sum ' + sum + '; seed=' + SEED + ' fi=' + fi + ' i=' + i + ' s=' + s + ')');
+                }
                 residSeen++;
-                if (total - wide !== 0) residNonZero++;
+                // The per-line residual is now derived from the INDEPENDENT walk,
+                // not from `measure`: it counts multi-line tuples with a non-longest
+                // line, which is what keeps residNonZero honest after the flip.
+                if (sum - max !== 0) residNonZero++;
                 // Non-vacuity for fork (6): count the multi-line strings on the
                 // KERNED snap font whose seam glyphs carry a non-zero kern. Those
                 // are the only tuples where crossing the newline would change the
@@ -359,18 +397,25 @@ export function run() {
         () => 'T0.law12: only ' + residCrossKern + ' kerned line seams on FONT_SNAP_KERN (< 100) -- ' +
             'fork (6) is VACUOUS again (F-21 shape); the newline-reset mutation would not be detected');
 
-    // Row 16: the newline-free twin. measureWidest === measure exactly, over the
-    // whole newline-free corpus at every scale. A measureWidest that resets its
-    // running max at every glyph passes every multi-line row above and dies here.
+    // Row 16: the newline-free twin. On a string with no id 10 the widest line IS
+    // the whole string, so measureWidest === _measureRange over the full range --
+    // an INDEPENDENT walk (_measureRange === JSON oracle by Law 1), which keeps
+    // this row load-bearing after 2.0.0. The second leg (=== measure) is the alias
+    // check, WEAK by construction while `measure` delegates; it reddens only if
+    // measure is re-implemented to diverge on single-line input.
     for (let i = 0; i < 512; i++) {
         const t = CORPUS[i];
         for (let k = 0; k < 5; k++) {
             const s = SCALES[k];
             const a = FONT_KERN.measureWidest(t, s);
+            const oracle = FONT_KERN._measureRange(t, 0, t.length, s);
             const b = FONT_KERN.measure(t, s);
-            check(a === b,
-                () => 'T0.law12/row16: measureWidest ' + a + ' != measure ' + b +
+            check(a === oracle,
+                () => 'T0.law12/row16: measureWidest ' + a + ' != _measureRange ' + oracle +
                     ' on a newline-free string (seed=' + SEED + ' i=' + i + ' s=' + s + ')');
+            check(a === b,
+                () => 'T0.law12/row16: measure ' + b + ' != measureWidest ' + a +
+                    ' (alias) on a newline-free string (seed=' + SEED + ' i=' + i + ' s=' + s + ')');
         }
     }
 
@@ -427,10 +472,14 @@ export function run() {
         () => 'T0.law7/row14: hasGlyph coverage wrong');
 
     // ---- Laws 9 & 10 -- fork (4), the newline (4.8) ------------------------
+    // MIGRATED 2.0.0 (F-06 / decisions/0012 fork 2): `measure` now returns the
+    // widest line, so it can no longer witness id 10's advance across a break --
+    // widest never sums the newline (12 either way). The cross-newline SUM these
+    // rows pin lives in `measureLine`, the ranged face of _measureRange.
     // row 15: id 10's advance is zeroed (was 31).
-    check(FONT_NL.measure('A\nA') === 24, () => 'T0.law9/row15: FONT_NL.measure(A\\nA) ' + FONT_NL.measure('A\nA') + ' != 24');
+    check(FONT_NL.measureLine('A\nA', 0, 3, 1) === 24, () => 'T0.law9/row15: FONT_NL.measureLine(A\\nA) ' + FONT_NL.measureLine('A\nA', 0, 3, 1) + ' != 24');
     // row 16: id-10 kernings are dropped (was 32). Independent of row 15.
-    check(FONT_NLK.measure('A\nA') === 24, () => 'T0.law9/row16: FONT_NLK.measure(A\\nA) ' + FONT_NLK.measure('A\nA') + ' != 24');
+    check(FONT_NLK.measureLine('A\nA', 0, 3, 1) === 24, () => 'T0.law9/row16: FONT_NLK.measureLine(A\\nA) ' + FONT_NLK.measureLine('A\nA', 0, 3, 1) + ' != 24');
     // row 17: the newline broke the chain, ordinary adjacency did not.
     // kernOf() DECODES the 1/16 store; `kerning[...]` raw is 16x pixels and must
     // never be added to pixel literals. Latent from M9a until caught in review:

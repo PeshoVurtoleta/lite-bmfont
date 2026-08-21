@@ -49,7 +49,7 @@ const ROOT = resolve(HERE, '..', '..');
 
 const SHIPPED = [
     'Atlas.d.ts', 'Atlas.js', 'BitmapFont.d.ts', 'BitmapFont.js',
-    'CHANGELOG.md', 'LICENSE', 'README.md', 'llms.txt', 'package.json',
+    'CHANGELOG.md', 'FORMAT.md', 'LICENSE', 'README.md', 'llms.txt', 'package.json',
 ];
 
 function stripFences(text) {

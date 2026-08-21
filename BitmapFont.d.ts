@@ -102,15 +102,18 @@ export class BitmapFont {
     );
 
     /**
-     * TOTAL advance of `text` at `scale`, kerning-aware.
+     * Width of the WIDEST LINE of `text` at `scale`, kerning-aware.
      *
-     * **It sums across newlines.** `measure('AA\nAA')` on an advance-8 font is
-     * `32`, not `16`: this is a total advance, NOT a layout width.
+     * **BREAKING in 2.0.0** (F-06, decisions/0012 fork 2): `measure('AA\nAA')`
+     * on an advance-8 font is `16`. In 1.x it SUMMED across newlines and
+     * returned `32`. It is now an exact alias of {@link BitmapFont.measureWidest}
+     * -- same walk, same number -- and a newline-free string is UNCHANGED.
+     * There is no `measureTotalAdvance`; the 1.x total had no consumer.
      *
      * Which width do I want:
-     * - one explicit range -> {@link BitmapFont.measureLine}
-     * - a box that will hold every line -> {@link BitmapFont.measureWidest}
-     * - the total advance of the whole string, newlines included -> `measure`
+     * - one explicit range -> {@link BitmapFont.measureLine}, which SUMS inside
+     *   the range you give it, `\n` included -- the one deliberate asymmetry
+     * - a box that will hold every line -> this, or {@link BitmapFont.measureWidest}
      *
      * Returns **`NaN`** if `text` is not a string, or if `scale` is outside
      * `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity` (F-36). A renderer
@@ -122,16 +125,14 @@ export class BitmapFont {
      * "has a length and a charCodeAt" test admits an object that never
      * terminates.
      *
-     * The cross-newline sum is pinned current behaviour, not a feature: 2.0.0
-     * promotes `measure` to the widest line.
      */
     measure(text: string, scale?: number): number;
 
     /**
      * Width of the WIDEST line of `text` at `scale`, kerning-aware -- the number
      * to size or centre a box with, and the one `draw` aligns each line against
-     * (F-06). `measureWidest('AA\nAA')` is `16` where `measure` is `32`; for a
-     * newline-free string the two are equal.
+     * (F-06). `measureWidest('AA\nAA')` is `16`, and since 2.0.0 `measure`
+     * returns that same number (it delegates here).
      *
      * Lines split at `\n` only, and the kerning chain RESETS at the break,
      * matching `draw`. A trailing newline yields a final empty line of width 0,

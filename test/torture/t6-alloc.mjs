@@ -165,10 +165,16 @@ const REGB_MAX = 15000000;
 //   B drawFast      37,152 B         81,443,776 B  (8-float/glyph)   ~2192x
 //   C drawWrapped        0 B        102,969,888 B  (8-float/glyph)   inf
 //   C2 align-path        0 B        102,969,936 B  (8-float/glyph)   inf
-//   D measure        5,024 B         28,042,592 B  (text.split)      ~5582x
-// R-15 RESOLVED: the split mutant measures 28,042,592 B here, confirming the
-// 28,042,664 B pinned at :112 (72 B apart, GC-noise); it does NOT reproduce the
-// ROADMAP F-37 row's 32,881,040 B, which is stale for this host/Node.
+//   D measure          0-65,088 B    30,805,288 B  (split widest)    ~473x
+// D was RE-MEASURED for 2.0.0 (0012 fork 2, B-3): F-06 makes `measure` a delegate
+// to the widest-line walk, so window D now drives measureWidest's body (the old
+// 1.x floor of 5,024 B on the cross-newline _measureRange no longer describes it,
+// and inheriting the old 400000 by analogy is the R-18 error). Re-measured on this
+// host (Node v26.3.1, 8 reps, 20,000-iter warmup): shipped floor 0-65,088 B worst,
+// split('\n') widest-measure mutant 30,805,288-30,967,464 B. D and E now measure
+// the SAME body through different entry points; VOLD_MAX landing on VOL_MAX (1 MB)
+// is an INDEPENDENT re-measurement that agrees, exactly as C/C2 agree -- not a copy.
+// R-15 RESOLVED (1.x): the old cross-newline split mutant measured 28,042,592 B.
 // Each limit sits between its own floor and its own mutant -- none is copied.
 // C and C2 measure the SAME body (drawWrapped, align 0 vs align 1); the identical
 // value is an independent measurement of each, not an analogy.
@@ -176,7 +182,7 @@ const VOLA_MAX = 2500000;    // A: floor 65,376 -> 38x margin; mutant 97.7M -> 3
 const VOLB_MAX = 1700000;    // B: floor 37,152 -> 46x margin; mutant 81.4M -> 48x below
 const VOLC_MAX = 3000000;    // C: floor 0 (drawWrapped self-collects); mutant 103.0M -> 34x below
 const VOLC2_MAX = 3000000;   // C2: floor 0 (same body, own measurement); mutant 103.0M -> 34x below
-const VOLD_MAX = 400000;     // D: floor 5,024 -> 80x margin; mutant 28.0M -> 70x below
+const VOLD_MAX = 1000000;    // D (2.0.0, F-06): floor 65,088 worst -> 15.4x margin; mutant 30.8M -> 30.8x below
 // Window K (F-32) drives only REJECT branches -- they return before any glyph
 // work, so the floor is JIT-warmup residue, not per-call allocation. Measured
 // cold in a fresh process (rep 0 is what the single in-run allocVolume call
@@ -385,6 +391,11 @@ export function run() {
     }
 
     // --- Window D: measure() -- no drawImage, 0 glyphs --------------------------
+    // 2.0.0 (F-06, decisions/0012 fork 2): `measure` is now a one-line delegate to
+    // the widest-line walk, so this window drives the SAME body as window E through
+    // a different entry point. Its pin flips from 744 (the 1.x cross-newline sum of
+    // S64) to 252 (the widest of S64's three lines, == measureWidest(S64)), and its
+    // volume floor is RE-MEASURED below because the body changed (0012 fork 2, B-3).
     {
         const OPS = 500000, WARMUP = 5000, GLYPHS = 0;
         resetRec(ATLAS); resetTotals();
@@ -395,14 +406,14 @@ export function run() {
         const { report, summary } = runOpsGate(hot, { ops: OPS, warmup: WARMUP });
         check(rec.total === (OPS + WARMUP) * GLYPHS,
             () => 'T6/D: rec.total ' + rec.total + ' != 0 (measure must not draw)');
-        check(sink === 744, () => 'T6/D: measure(S64) sink ' + sink + ' != 744');
+        check(sink === 252, () => 'T6/D: measure(S64) sink ' + sink + ' != 252');
         structural(FONT_ASCII, 'D');
         gateOps(report, summary, 'D');
         const { report: aReport, result } = runAllocGate(hot, { iterations: 5000, batches: 8 });
         gateAlloc(aReport, result, 'D');
-        // F-37 volume lane (M9pre). Floor 5,024 B, mutant 28.0 MB (text.split in
-        // the measure walk -- the R-15 mutant, re-measured on this host: it is
-        // 28,042,592 B, confirming :112's 28,042,664 and NOT the ROADMAP 32.9 MB).
+        // F-37 volume lane. RE-MEASURED for the F-06 delegate on this host (Node
+        // v26.3.1, 8 reps, 20,000-iter warmup): shipped floor 0-65,088 B, mutant
+        // 30.8-31.0 MB (the split('\n') widest-measure mistake). See VOLD_MAX.
         const volD = allocVolume(hot);
         check(volD <= VOLD_MAX,
             () => 'T6/D: measure allocated ' + volD + ' bytes over ' + VOL_OPS +

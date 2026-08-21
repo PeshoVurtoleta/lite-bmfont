@@ -1,0 +1,11 @@
+{
+  "_comment": "decisions/0012 fork 8 lane 1. The committed FORMAT_VERSION 2 stamp. Live exports and structure are asserted equal to this in test/packaging.test.js. Change a value here and the lane 1 test reddens; that is the mutation AR-02 watches. Keep in sync with FORMAT.md.",
+  "formatVersion": 2,
+  "glyphAdvanceShift": 4,
+  "glyphAdvanceScale": 0.0625,
+  "glyphRecordStride": 7,
+  "quadStride": 6,
+  "layoutStride": 4,
+  "kerningKey": "(first << 8) | second",
+  "kerningKeySample": { "first": 65, "second": 66, "key": 16706, "amount": -3 }
+}

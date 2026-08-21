@@ -2,6 +2,78 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 2.0.0 -- 2026-08-21
+
+The 1/16 fixed-point advance format, the `measure` semantics flip, checked mode
+on by default, the reserved-bit close, a frozen prototype, and a documented
+binary format with a version stamp. See `decisions/0012-two-oh.md` (nine forks)
+and `FORMAT.md`. The storage format landed in git on 1.9.0 UNRELEASED; this is
+its first published version, hence the major bump.
+
+### Breaking
+
+- **`measure` returns the WIDEST line, not the cross-newline sum** (F-06,
+  decisions/0012 fork 2). It is now an exact alias of `measureWidest`. A
+  newline-free string is UNCHANGED. There is no `measureTotalAdvance`: the old
+  cross-newline total had no consumer. For a single explicit range use
+  `measureLine`, which still sums (it is the ranged face of the internal walk).
+
+  | call (advance-8 font) | 1.x | 2.0.0 |
+  |---|---|---|
+  | `measure('ABC')` (no newline) | 24 | 24 (unchanged) |
+  | `measure('AA\nAA')` | 32 | 16 |
+  | `measure('A\nAAAAAA')` | 56 | 48 |
+  | `measureLine('A\nA', 0, 3)` (adv-12 font) | 24 | 24 (unchanged) |
+
+- **Advance and kerning are stored as 1/16 fixed point** (F-08/F-09,
+  decisions/0012 fork 1, C-folded): `Math.round(value * 16)`, read back as
+  `stored * GLYPH_ADVANCE_SCALE`. A fractional `xadvance` such as `8.6` is now
+  preserved to 1/16px (`advanceOf(id) === 8.625`) where 1.x truncated it to `8`
+  and lost 24px over a 40-glyph line. Worst-case rounding error improves from
+  0.5px to 0.03125px (16x). Slots 0-5 (`x/y/width/height/xoffset/yoffset`) stay
+  raw Int16.
+
+- **`checked` defaults to `true`** (decisions/0012 fork 6). The opt-out is
+  `{ checked: false }`. Under the new format a DECLARED 1/16 resolution does not
+  throw on the values it is designed to round: slot 6 and kerning `amount` are
+  validated by a RANGE test only, `[-2048, 2047.9375]` -- the integrality test is
+  retired for that slot. Slots 0-5 keep their Int16 range + integrality test.
+
+- **`BitmapFont.prototype` is FROZEN** (F-14, decisions/0012 fork 5), and the
+  break is WIDER than "no monkey-patching". Freezing a prototype makes its
+  inherited methods non-writable, and assignment-shadowing on an INSTANCE
+  resolves through that same writable flag -- so **both** of these now throw in
+  strict mode:
+
+  | operation | 1.x | 2.0.0 |
+  |---|---|---|
+  | `BitmapFont.prototype.draw = fn` (shared patch) | works | **throws `TypeError`** |
+  | `font.draw = fn` (per-instance shadow) | works | **throws `TypeError`** |
+  | `class Sub extends BitmapFont { draw() {} }` | works | works (unchanged) |
+  | `Object.defineProperty(font, 'draw', { value: fn })` | works | works (unchanged) |
+  | `font.anyOwnField = x` | works | works (unchanged) |
+
+  If you shadowed a method on an instance -- which needed no knowledge of the
+  prototype and so may have been done inadvertently -- **migrate to subclassing**,
+  or to `Object.defineProperty` on the instance if you must patch in place. Own
+  data fields on instances are unaffected. The per-instance case was NOT
+  anticipated when fork 5 was ratified; it was measured during implementation and
+  the fork carries the full radius.
+
+- **A reserved layout-flags bit now throws under `checked`** (F-13/F-49,
+  decisions/0012 fork 4). Bit 0 is the ellipsis flag; bits 1-31 are RESERVED and
+  a set reserved bit is a caller error. In 1.x an odd `flags` value took the
+  ellipsis path and never reached the unknown-bit test, so `flags = 3` was
+  silently accepted; it now throws.
+
+### Added
+
+- `FORMAT_VERSION` (currently `2`) and a `FORMAT.md` describing the glyph stride
+  (7), the seven slot meanings including slot 6's fixed point, the kerning key
+  `(first << 8) | second`, the layout-buffer 4-tuple with its flags mask and
+  reserved bits, and the quad stride (6). A persisting/exchanging peer pins the
+  stamp and fails closed when it moves (decisions/0012 fork 8).
+
 ## 1.9.0 -- 2026-08-20
 
 Glyph quads: two additive methods and one new export split `draw`'s single loop

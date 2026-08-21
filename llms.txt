@@ -15,7 +15,7 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0-255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '1.9.0'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '2.0.0'.
 
 ## Export: BitmapFontError (class extends RangeError)
 The one error the constructor throws (F-10). Extends RangeError, so a
@@ -100,17 +100,18 @@ instruction, not a glyph. `hasGlyph(10)` is always false.
 ### Methods
 
 measure(text, scale = 1) -> number
-  Kerning-aware TOTAL ADVANCE of `text` at `scale`. IT SUMS ACROSS NEWLINES:
-  measure('AA\nAA') on an advance-8 font is 32, not 16. This is a total advance,
-  NOT a layout width. Returns NaN if `text` is not a string, or if `scale` is
-  outside (0, Infinity) -- NaN, 0, a negative, or Infinity (F-36). Throws after
-  destroy(). The cross-newline sum is PINNED CURRENT BEHAVIOUR, not a feature;
-  2.0.0 promotes measure to the widest line.
+  Kerning-aware width of the WIDEST LINE of `text` at `scale`. BREAKING IN 2.0.0
+  (F-06, 0012 fork 2): measure('AA\nAA') on an advance-8 font is 16; in 1.x it
+  summed across newlines and returned 32. It is now an EXACT ALIAS of
+  measureWidest -- same walk, same number. A newline-free string is UNCHANGED.
+  There is no measureTotalAdvance: the 1.x cross-newline total had no consumer.
+  Returns NaN if `text` is not a string, or if `scale` is outside (0, Infinity)
+  -- NaN, 0, a negative, or Infinity (F-36). Throws after destroy().
 
 measureWidest(text, scale = 1) -> number
   Width of the WIDEST line -- the number to size or centre a box with, and the
-  one draw() aligns each line against (F-06). measureWidest('AA\nAA') is 16
-  where measure is 32; for a newline-free string the two are equal. Lines split
+  one draw() aligns each line against (F-06). measureWidest('AA\nAA') is 16, and
+  since 2.0.0 measure returns that same number (it delegates here). Lines split
   at \n only and the kerning chain RESETS at the break, matching draw(). A
   trailing newline yields a final empty line of width 0, so 'AAA\n' is 24.
   One pass, no split, no slice, zero allocation. CAN RETURN A NEGATIVE WIDTH: a
@@ -140,8 +141,13 @@ measureLine(text, start, end, scale = 1) -> number
 ### Which width do I want
   one explicit range                      -> measureLine(text, start, end, scale)
   a box that will hold every line          -> measureWidest(text, scale)
-  the total advance of the whole string,
-  newlines included                        -> measure(text, scale)
+  a box that will hold every line          -> measure(text, scale) [alias, 2.0.0]
+
+  NOTE the deliberate asymmetry: measure/measureWidest take the MAX over lines,
+  but measureLine SUMS whatever is inside the explicit [start, end) range you
+  hand it -- including a \n if you include one. On an advance-12 font
+  measureLine('A\nA', 0, 3) is 24 while measure('A\nA') is 12. A range is the
+  caller's assertion about what one line IS; drawWrapped never spans a break.
 
 ### The measure family's fail signal
 NaN, across all three public faces (F-36). The renderers answer a bad `scale` by
@@ -309,6 +315,14 @@ destroy() -> void
 Float count per glyph record in a layoutGlyphs / drawQuads buffer:
 [sx, sy, sw, sh, dx, dy], so 6. Size the buffer with it: the safe upper bound is
 text.length * GLYPH_STRIDE.
+
+## Export: FORMAT_VERSION (number)
+The on-the-wire binary format this build reads and writes: glyph stride 7 with a
+1/16-fixed-point advance in slot 6, the kerning key (first << 8) | second, the
+layout-buffer 4-tuple and the quad stride 6. See FORMAT.md. Currently 2 -- the
+C-folded fixed-point store (2.0.0, 0012 forks 1 and 8). Bumped only on a breaking
+change to any of those. A peer that persists or exchanges these buffers pins this
+constant and fails closed when it moves.
 
 ## drawWrapped layout helper (recipe)
 

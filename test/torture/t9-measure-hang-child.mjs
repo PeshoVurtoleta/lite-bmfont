@@ -219,10 +219,16 @@ if (mode === 'nodoor') {
 }
 
 if (mode === 'notext') {
+    // 2.0.0 (F-06, decisions/0012 fork 2): `measure` is now a doorless one-line
+    // delegate to `measureWidest`, so the TEXT_DOOR predicate lives ONLY in
+    // measureWidest and measureLine. Patch those two (one hit each) and call
+    // through the delegate: measure(HANGY) -> measureWidest with no door -> the
+    // walk hangs on the Infinity-length array-like. Including `measure` here
+    // would expect a door it no longer carries and mis-reconstruct the body.
     const BitmapFont = await load(TEXT_DOOR, '        // text door removed by t9 control 13 self-test\n', 1, 'TEXT_DOOR',
-        ['measure', 'measureWidest', 'measureLine']);
+        ['measureWidest', 'measureLine']);
     const f = new BitmapFont({}, JSON_SNAP);
-    const b = f.measure(HANGY);                                 // never returns
+    const b = f.measure(HANGY);                                 // never returns (via delegate)
     process.stdout.write(JSON.stringify({ mode, b: String(b) }) + '\n');
     process.exit(0);
 }

@@ -1,17 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { VERSION } from '../BitmapFont.js';
+import {
+    VERSION, FORMAT_VERSION, GLYPH_STRIDE,
+    GLYPH_ADVANCE_SHIFT, GLYPH_ADVANCE_SCALE, BitmapFont,
+} from '../BitmapFont.js';
 
 test('version is synced across package.json, VERSION and the CHANGELOG heading', () => {
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
     const head = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8')
         .split('\n').find(l => /^##\s+\d+\.\d+\.\d+/.test(l));
-    assert.equal(VERSION, '1.9.0');
+    assert.equal(VERSION, '2.0.0');
     assert.equal(pkg.version, VERSION);
     assert.equal(head.replace(/^##\s+/, '').split(/\s/)[0], VERSION);
 });
@@ -106,7 +109,7 @@ test('every tracked text file is ASCII-only (U+00D7 and U+00B5 excepted)', () =>
 // empty capture shares one sha, so ten mutually-distinct non-empty shas catch a
 // vacuous extraction directly (a 200-char floor would falsely redden `hasGlyph`
 // at 143 chars and `destroy` at 126).
-test('A11 (M9a): method bodies frozen -- seven MOVED this session; measure/measureLine/drawQuads must not', () => {
+test('A11 (M9b stage 2): method bodies frozen -- ONLY measure moved (F-06 delegate); the other eleven must not', () => {
     const src = readFileSync(new URL('../BitmapFont.js', import.meta.url), 'utf8');
     const lines = src.split('\n');
     function methodSha(name) {
@@ -120,18 +123,19 @@ test('A11 (M9a): method bodies frozen -- seven MOVED this session; measure/measu
         const block = lines.slice(start, end + 1).join('\n') + '\n';
         return createHash('sha256').update(block).digest('hex');
     }
-    // A11 stage 1 (0012 fork 1, SESSION-M9a section 7). The C-folded edit moves
-    // SEVEN bodies -- the seven direct advance/kerning readers -- and this is the
-    // one session where that is allowed. The three doors-and-delegates that read
-    // NO advance (measure, measureLine, drawQuads) MUST NOT move; their pins are
-    // UNCHANGED from 1.8.0 and reddening any of them means an unintended edit.
-    // layoutGlyphs and drawQuads (added in M5, after the 1.8.0 pin) are pinned
-    // here for the first time, closing that gap (R-9).
-    //   MOVED this session: measureWidest, draw, drawFast, drawFastInt,
-    //                       drawWrapped, _measureRange, layoutGlyphs (seven).
-    //   MUST NOT MOVE:      measure, measureLine, hasGlyph, destroy, drawQuads.
+    // A11 stage 2 (0012 fork 2, SESSION-M9b section 4). F-06 makes `measure` a
+    // one-line delegate to measureWidest -- so EXACTLY ONE body moves this
+    // session, and it is `measure`. The other eleven are byte-identical to their
+    // M9a stage-1 pins; reddening any of them means a second body moved, which the
+    // session plan says is a STOP-and-report, not a re-pin. (Stage 1 -- the seven
+    // C-folded advance/kerning readers moving under s16 -- was M9a's and its pins
+    // are UNCHANGED below.)
+    //   MOVED this session: measure (F-06 delegate flip) -- ONE.
+    //   MUST NOT MOVE:      measureWidest, measureLine, hasGlyph, destroy,
+    //                       drawQuads, draw, drawFast, drawFastInt, drawWrapped,
+    //                       _measureRange, layoutGlyphs (eleven).
     const PINS = {
-        measure: '9967686a0e14e87b9751cb9b334e35bf7a4fa05b460474ab6dfe92a6864e45c1',        // 1.8.0, unchanged
+        measure: 'e702a3964c16973d9ec15d8b3b2a9c5a03235235ad774e8854389e54b0fa1750',        // MOVED (F-06 delegate, 2.0.0)
         measureLine: '50c28a69fe3e170e03bf0b50a3587c94c82ce91f5431aee2e10059742737e9d4',    // 1.8.0, unchanged
         hasGlyph: '5bdf08564c7ed450ad2ada75d43549bd7ccb4db5a986566ee455001c5c644dc5',       // 1.8.0, unchanged
         destroy: '6f7fd1459b1f452d4e2d5be976082fbabdd676958d1b11079b4bb955602fdf1c',        // 1.8.0, unchanged
@@ -146,18 +150,20 @@ test('A11 (M9a): method bodies frozen -- seven MOVED this session; measure/measu
     };
     const names = Object.keys(PINS);
     const got = names.map(methodSha);
-    // Guard on the guard: every capture is non-empty and all ten are DISTINCT,
+    // Guard on the guard: every capture is non-empty and all twelve are DISTINCT,
     // so a failed awk-style extraction (empty string, shared sha) cannot pass.
     for (let i = 0; i < names.length; i++) {
         assert.notEqual(got[i], '', names[i] + ': body extraction was empty (regex missed the method)');
     }
     assert.equal(new Set(got).size, names.length, 'two method bodies hashed identically -- an extraction went vacuous');
-    // The freeze itself.
+    // The freeze itself. Everything EXCEPT measure must be byte-identical to M9a;
+    // measure is the one body fork 2 is allowed to move this session.
     for (let i = 0; i < names.length; i++) {
         assert.equal(got[i], PINS[names[i]],
-            names[i] + ' body sha moved from its 1.8.0 pin -- ' +
-            (['measure', 'measureLine', 'drawQuads', 'hasGlyph', 'destroy'].indexOf(names[i]) >= 0
-                ? names[i] + ' MUST NOT move this session (0012 fork 1 stage 1)' : 'an unintended edit'));
+            names[i] + ' body sha moved from its pin -- ' +
+            (names[i] === 'measure'
+                ? 'measure moved but not to the F-06 delegate pin (0012 fork 2 stage 2)'
+                : names[i] + ' MUST NOT move this session -- a SECOND body moved, STOP and report (0012 fork 2 stage 2)'));
     }
 });
 
@@ -281,5 +287,135 @@ test('docs-claim pin: the advance range in the shipped docs equals the enforced 
         // The superseded Int16 bound must not survive as an ADVANCE range claim.
         assert.ok(!/\[0,\s*32767\]/.test(src),
             f + ' still publishes the superseded advance range [0, 32767]');
+    }
+});
+
+// The SECOND docs-claim pin (M9b, 2026-08-21), and it exists because the first
+// one was too narrow. The advance-range pin above caught nothing when F-06
+// flipped `measure`: all THREE shipped API docs -- README, llms.txt and the
+// .d.ts -- kept saying "it sums across newlines ... `measure('AA\nAA')` is 32,
+// not 16" and described the flip in FUTURE tense ("2.0.0 promotes measure"),
+// inside the 2.0.0 commit itself. `npm test`, torture, the T8 docs-drift guard
+// and the advance-range pin were all green through it. An IDE hover would have
+// shipped every consumer the exact F-06 confusion this major exists to end.
+//
+// So this pin derives BOTH numbers from the live code and asserts the shipped
+// docs publish the current one and not the superseded one. Scoped to the three
+// files so it never matches its own text.
+test('docs-claim pin: the measure semantics in the shipped docs match the code', async () => {
+    const { BitmapFont } = await import('../BitmapFont.js');
+    const chars = [];
+    for (let c = 32; c < 127; c++) {
+        chars.push({ id: c, x: 0, y: 0, width: 8, height: 8, xoffset: 0, yoffset: 0, xadvance: 8 });
+    }
+    const font = new BitmapFont({ width: 256, height: 256 },
+        { common: { lineHeight: 10, base: 8 }, chars, kernings: [] });
+
+    // Derived, never typed: the advance-8 font the docs use as their example.
+    const widest = font.measure('AA\nAA');          // 2.0.0: 16
+    const oneLine = font.measure('ABC');             // unchanged by F-06
+    assert.equal(widest, 16, 'the documented example moved; update the docs and this pin together');
+    assert.equal(oneLine, font.measureWidest('ABC'), 'measure must equal measureWidest on a newline-free string');
+    assert.equal(widest, font.measureWidest('AA\nAA'), 'measure must be an exact alias of measureWidest');
+
+    for (const f of ['README.md', 'llms.txt', 'BitmapFont.d.ts']) {
+        const src = readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+        // The 1.x claim must be gone in every form it was written in.
+        assert.ok(!/sums across newlines/i.test(src),
+            f + ' still claims `measure` sums across newlines (1.x semantics)');
+        assert.ok(!/2\.0\.0 promotes/.test(src),
+            f + ' still describes the F-06 flip in the FUTURE tense');
+        assert.ok(!/is `?32`?, not `?16`?/.test(src),
+            f + ' still publishes the superseded 32-not-16 example');
+    }
+});
+
+// decisions/0012 fork 8 -- FORMAT_VERSION and the two-lane drift guard. The suite
+// has been bitten twice by a peer-asserted contract that silently SKIPS when the
+// peer is unwired, turning the drift guard into a no-op. So neither lane may skip:
+// lane 1 always runs (no peer needed), lane 2 FAILS closed when the peer is absent.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PKG_ROOT = resolve(HERE, '..');
+
+// LANE 1 -- the committed FORMAT_VERSION 2 stamp vs the LIVE exports and structure.
+// No peer required; always executes. Changing any value in the stamp reddens this
+// (the AR-02 mutation). The stamp is the human-readable source of truth that the
+// binary format's five load-bearing numbers have not drifted from the code.
+test('fork 8 lane 1: the live format matches the committed FORMAT_VERSION 2 stamp', () => {
+    const stamp = JSON.parse(readFileSync(join(PKG_ROOT, 'test', 'fixtures', 'format-stamp.json'), 'utf8'));
+    // Exported constants, straight from the module.
+    assert.equal(FORMAT_VERSION, stamp.formatVersion, 'FORMAT_VERSION drifted from the stamp');
+    assert.equal(GLYPH_ADVANCE_SHIFT, stamp.glyphAdvanceShift, 'GLYPH_ADVANCE_SHIFT drifted from the stamp');
+    assert.equal(GLYPH_ADVANCE_SCALE, stamp.glyphAdvanceScale, 'GLYPH_ADVANCE_SCALE drifted from the stamp');
+    assert.equal(GLYPH_STRIDE, stamp.quadStride, 'GLYPH_STRIDE (quad stride) drifted from the stamp');
+    // Internal consistency: scale is exactly 1 / (1 << shift).
+    assert.equal(GLYPH_ADVANCE_SCALE, 1 / (1 << GLYPH_ADVANCE_SHIFT), 'scale is not 1/(1<<shift)');
+    // Structure derived from a LIVE font, not from a literal.
+    const ATLAS = {};
+    const font = new BitmapFont(ATLAS, {
+        common: { lineHeight: 12, base: 10 },
+        chars: [
+            { id: 65, x: 0, y: 0, width: 8, height: 8, xoffset: 0, yoffset: 0, xadvance: 10 },
+            { id: 66, x: 8, y: 0, width: 8, height: 8, xoffset: 0, yoffset: 0, xadvance: 10 },
+        ],
+        kernings: [{ first: 65, second: 66, amount: stamp.kerningKeySample.amount }],
+    });
+    assert.equal(font.glyphs.length / 256, stamp.glyphRecordStride, 'glyph record stride (glyphs.length/256) drifted from the stamp');
+    // Kerning key formula: the sample key is (first << 8) | second, and a LIVE
+    // font stores/reads the amount at exactly that key. kernOf reading it back
+    // proves the key AND the 1/16 store; the reversed pair reads 0, proving the
+    // key is ORDERED, not symmetric.
+    const { first, second, key, amount } = stamp.kerningKeySample;
+    assert.equal((first << 8) | second, key, 'the stamped kerning key sample is not (first << 8) | second');
+    assert.equal(font.kernOf(first, second), amount, 'live kernOf did not round-trip the stamped amount at the stamped key');
+    assert.equal(font.kernOf(second, first), 0, 'the kerning key is not ordered -- reversed pair should be 0');
+    // Layout stride 4: a LIVE drawWrapped reads 4-slot line records. Two lines in
+    // an 8-float buffer draw both; a wrong stride would misread the second line.
+    const rec = [];
+    const ctx = { drawImage() { rec.push(1); } };
+    const layout = Float32Array.of(0, 1, 10, 0,   1, 2, 10, 0);   // 2 lines x stride 4
+    font.drawWrapped(ctx, 'AB', layout, 2, 1000, 1000, 0, 0, 1, 0, 0);
+    assert.equal(stamp.layoutStride, 4, 'the stamped layout stride is not 4');
+    assert.ok(rec.length >= 2, 'a stride-4 layout of 2 lines drew fewer than 2 glyphs -- layout stride contract broke');
+});
+
+// LANE 2 -- the PEER. Reads whatever @zakkster/lite-bmfont is installed in the
+// sibling LiteTextLayout and asserts the WIRING and the CONTRACT. It FAILS, never
+// skips, when the peer is absent -- a silent skip is the no-op this guard exists
+// to prevent (MEMORY: bitten twice). Per decisions/0012 B-7 the installed peer is
+// 1.6.0, which PREDATES the 1/16 format and whose range `^1.6.0` cannot accept
+// 2.0.0 through semver. So the honest current assertion is that the peer is still
+// on the pre-format 1.x line: this reddens the day the peer is deliberately bumped
+// to >= 2.0.0, forcing whoever does it to re-verify FORMAT_VERSION against the peer
+// and convert this lane into the real `peer.FORMAT_VERSION === FORMAT_VERSION`
+// drift check, rather than have the format silently drift across the boundary.
+test('fork 8 lane 2: the LiteTextLayout peer is wired and read (fails closed, never skips)', () => {
+    const peerRoot = resolve(PKG_ROOT, '..', 'LiteTextLayout');
+    assert.ok(existsSync(peerRoot),
+        'peer LiteTextLayout absent at ' + peerRoot + ' -- the format drift guard cannot run; wire the sibling locally, do NOT skip');
+    const peerManifest = JSON.parse(readFileSync(join(peerRoot, 'package.json'), 'utf8'));
+    const declared = (peerManifest.dependencies || {})['@zakkster/lite-bmfont']
+        || (peerManifest.devDependencies || {})['@zakkster/lite-bmfont'];
+    assert.ok(declared,
+        'LiteTextLayout/package.json no longer declares @zakkster/lite-bmfont -- the peer wiring is gone');
+    const peerCopyManifest = join(peerRoot, 'node_modules', '@zakkster', 'lite-bmfont', 'package.json');
+    assert.ok(existsSync(peerCopyManifest),
+        'LiteTextLayout has no INSTALLED @zakkster/lite-bmfont copy at ' + peerCopyManifest + ' -- wire it locally, do NOT skip');
+    const peerVersion = JSON.parse(readFileSync(peerCopyManifest, 'utf8')).version;
+    const peerMajor = Number(peerVersion.split('.')[0]);
+    assert.ok(Number.isInteger(peerMajor), 'peer lite-bmfont version is unparseable: ' + peerVersion);
+    // THE CONTRACT (B-7). The peer predates FORMAT_VERSION and its range cannot
+    // reach 2.0.0. When it is bumped past 1.x this reddens ON PURPOSE.
+    assert.ok(peerMajor < 2,
+        'the installed peer lite-bmfont is now ' + peerVersion + ' (>= 2.0.0): re-verify the binary format against ' +
+        'the peer and replace this line with `peer.FORMAT_VERSION === ' + FORMAT_VERSION + '` -- the format now crosses the boundary');
+    // And prove the format has genuinely NOT reached the peer copy: its source
+    // exports no FORMAT_VERSION (it is a pre-stamp build), so there is nothing to
+    // agree with yet -- exactly why the contract above is the honest assertion.
+    const peerMain = join(peerRoot, 'node_modules', '@zakkster', 'lite-bmfont', 'BitmapFont.js');
+    if (existsSync(peerMain)) {
+        const peerSrc = readFileSync(peerMain, 'utf8');
+        assert.ok(!/export const FORMAT_VERSION/.test(peerSrc),
+            'the peer copy ' + peerVersion + ' unexpectedly exports FORMAT_VERSION -- it is no longer pre-format; update this lane to the real drift check');
     }
 });

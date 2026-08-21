@@ -232,28 +232,37 @@ honest widths. Pick by the question you are asking, not by the shortest name.
 |---|---|---|
 | How wide is this one range? | `measureLine(text, start, end, scale?)` | `measureLine(s, 0, 2)` -> `16` |
 | How wide must a box be to hold every line? | `measureWidest(text, scale?)` | `16` |
-| What is the total advance of the whole string, newlines included? | `measure(text, scale?)` | `32` |
+| How wide must a box be to hold every line (alias of `measureWidest`)? | `measure(text, scale?)` | `16` |
 
-**`measure` sums across newlines.** It is a total advance, not a layout width.
-Centring a multi-line string with `measure` is wrong by the width of every line
-that is not the longest -- use `measureWidest`, which is the number `draw`
-aligns each line against.
+**`measure` returns the widest line (2.0.0, BREAKING).** In 1.x it summed
+across newlines, so centring a multi-line string with it was wrong by the width
+of every line that is not the longest. It is now an exact alias of
+`measureWidest` -- the number `draw` aligns each line against -- and a
+newline-free string is unchanged.
+
+**One deliberate asymmetry:** `measure`/`measureWidest` take the MAX over lines,
+but `measureLine` **sums** whatever is inside the explicit `[start, end)` range
+you give it, including a `\n` if you include one. On an advance-12 font
+`measureLine('A\nA', 0, 3)` is `24` while `measure('A\nA')` is `12`. That is
+intended: a range is the caller's assertion about what one line is, and
+`drawWrapped` never hands it a range that spans a break.
 
 ### `measure(text, scale?) -> number`
-Kerning-aware **total advance** of `text`. **Sums across newlines**:
-`measure('AA\nAA')` on an advance-8 font is `32`, not `16`.
+Kerning-aware width of the **widest line** of `text`. **BREAKING in 2.0.0**
+(F-06): `measure('AA\nAA')` on an advance-8 font is `16`; in 1.x it summed
+across newlines and returned `32`. Now an exact alias of `measureWidest`.
 
 Returns **`NaN`** if `text` is not a string, or if `scale` is outside
 `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity`. Throws after
 `destroy()`.
 
-The cross-newline sum is pinned current behaviour, not a feature: 2.0.0 promotes
-`measure` to the widest line, with a migration note.
+There is no `measureTotalAdvance`: the 1.x cross-newline total had no consumer.
+See the CHANGELOG's 2.0.0 Breaking section for the migration table.
 
 ### `measureWidest(text, scale?) -> number`
 Width of the **widest line** -- the number to size or centre a box with.
-`measureWidest('AA\nAA')` is `16` where `measure` is `32`; for a newline-free
-string the two are equal.
+`measureWidest('AA\nAA')` is `16`, and since 2.0.0 `measure` returns that same
+number (it delegates here).
 
 Lines split at `\n` only, and the kerning chain **resets at the break**, matching
 `draw`. A trailing newline yields a final empty line of width 0, so `'AAA\n'` is

@@ -481,49 +481,40 @@ export class BitmapFont {
     }
 
     /**
-     * TOTAL advance of `text` at `scale`, kerning-aware.
+     * Width of the WIDEST line of `text` at `scale`, kerning-aware -- the number
+     * `draw` aligns each line against, and the one to size or centre a box that
+     * `draw` will fill.
      *
-     * **It SUMS ACROSS NEWLINES.** `measure('AA\nAA')` on an advance-8 font is
-     * **32**, not 16: this is a total advance, NOT a layout width. For the width
-     * of the widest line -- the number you want when sizing or centring a box
-     * that `draw` will fill -- use {@link BitmapFont#measureWidest}. For one
-     * explicit range use {@link BitmapFont#measureLine}. The cross-newline sum
-     * is PINNED CURRENT BEHAVIOUR, not a feature: 2.0.0 promotes `measure` to
-     * the widest line (F-06, decisions/0004 fork 1).
+     * **2.0.0 (BREAKING, F-06, decisions/0012 fork 2):** `measure` now returns
+     * the WIDEST LINE, an exact alias of {@link BitmapFont#measureWidest}. It no
+     * longer sums across newlines. On an advance-8 font `measure('AA\nAA')` is
+     * **16** where 1.x returned 32, and `measure('A\nAAAAAA')` is **48** where 1.x
+     * returned 56; a newline-free string is UNCHANGED (`measure('ABC')` equals
+     * both its 1.x value and `measureWidest('ABC')`). The old cross-newline total
+     * has no consumer in the tree, so `measureTotalAdvance` is deliberately NOT
+     * added (fork 2, on evidence). For one explicit range use
+     * {@link BitmapFont#measureLine}.
      *
      * Fail signal is **NaN**, shared by the whole measure family
      * (decisions/0004 fork 4). A non-string `text`, or a `scale` outside
      * `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity` -- returns NaN.
-     * The text door is `typeof text === 'string'`, so a **boxed** `String`
-     * object (`new String('AA')`) is REJECTED and returns NaN, deliberately: the
-     * looser "has a length and a charCodeAt" test admits
-     * `{length: Infinity, charCodeAt(){...}}`, which does not terminate.
-     * The asymmetry with the renderers is deliberate: a renderer can decline to
-     * act (`draw` draws nothing), a query cannot decline to answer. Door order
-     * is text, then scale. Throws after `destroy()`, like every other read.
+     * Throws after `destroy()`, like every other read.
      *
      * @param {string} text
      * @param {number} [scale=1.0]
      * @returns {number}  NaN if `text` is not a string or `scale` is out of range.
      */
     measure(text, scale = 1.0) {
-        // F-36 doors, per CALL, zero per glyph. The text door is `typeof`, NOT
-        // an array-like test: `{length: Infinity, charCodeAt(){return 65}}` has
-        // a numeric length and a charCodeAt and is exactly the input that hung
-        // 1.3.0 forever (F-34). The scale door is a RANGE test, not a NaN test
-        // -- `0` and `-1` are finite and returned `0` and a NEGATIVE width,
-        // which `scale !== scale` cannot see (ROADMAP law 4 idiom).
-        if (typeof text !== 'string') return NaN;
-        if (!(scale > 0 && scale < Infinity)) return NaN;
-        return this._measureRange(text, 0, text.length, scale);
+        return this.measureWidest(text, scale);
     }
 
     /**
      * Width of the WIDEST line of `text` at `scale`, kerning-aware -- the number
      * `draw` aligns each line against, and the one to size a box with (F-06).
      *
-     * `measureWidest('AA\nAA')` on an advance-8 font is **16** where `measure`
-     * is 32. For a newline-free string the two are equal.
+     * `measureWidest('AA\nAA')` on an advance-8 font is **16**. Since 2.0.0
+     * `measure` is an exact alias of this method (F-06, decisions/0012 fork 2);
+     * for a newline-free string both equal `_measureRange`.
      *
      * Lines are split at id 10 (`\n`) only, and the kerning chain RESETS at the
      * break, exactly as `draw` resets `prevId` there (decisions/0004 fork 6). A
@@ -1543,6 +1534,12 @@ export class BitmapFont {
         this.glyphs = this.kerning = this._charScratch = this._mapped = null;
     }
 }
+// F-14 (decisions/0012 fork 5): freeze the prototype so the twelve own method
+// names cannot be monkey-patched on a shared font. Object.seal was REJECTED --
+// it still permits overwriting an EXISTING method, which is the exposure. One
+// module-scope freeze; instances stay mutable because they carry per-font typed
+// arrays. Under strict mode `BitmapFont.prototype.draw = fn` now THROWS.
+Object.freeze(BitmapFont.prototype);
 export default BitmapFont;
 
 /**
@@ -1552,4 +1549,14 @@ export default BitmapFont;
  */
 export const GLYPH_STRIDE = 6;
 
-export const VERSION = '1.9.0';
+/**
+ * The on-the-wire binary format this build reads and writes: glyph stride 7 with
+ * a 1/16 fixed-point advance in slot 6, the kerning key `(first << 8) | second`,
+ * the layout-buffer 4-tuple and the quad stride 6. See `FORMAT.md`. Bumped only
+ * on a breaking change to any of those; `2` is the C-folded fixed-point store
+ * (decisions/0012 forks 1 and 8). A peer that persists or exchanges these buffers
+ * pins this constant and fails closed when it moves.
+ */
+export const FORMAT_VERSION = 2;
+
+export const VERSION = '2.0.0';

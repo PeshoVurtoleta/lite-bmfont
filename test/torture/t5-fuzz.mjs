@@ -572,9 +572,12 @@ export function run() {
             () => 'T5/R9: measureLine(' + String(bad) + ') is not NaN');
     }
     // R10 -- THE TWIN FOR R9. A text door that rejects strings passes every R9 row.
-    check(FONT_SNAP.measure('AA') === 16 && FONT_SNAP.measure('AA\nAA') === 32,
+    // MIGRATED 2.0.0 (F-06 / decisions/0012 fork 2): measure('AA\nAA') is the
+    // widest line, 16, where 1.x returned the cross-newline sum 32. Single-line
+    // measure('AA') is UNCHANGED at 16.
+    check(FONT_SNAP.measure('AA') === 16 && FONT_SNAP.measure('AA\nAA') === 16,
         () => 'T5/R10: measure("AA")/"AA\\nAA" ' + FONT_SNAP.measure('AA') + '/' +
-            FONT_SNAP.measure('AA\nAA') + ' != 16/32');
+            FONT_SNAP.measure('AA\nAA') + ' != 16/16');
     check(FONT_SNAP.measureWidest('AA\nAA') === 16 && FONT_SNAP.measureLine('AAAA', 0, 4, 1) === 32,
         () => 'T5/R10: measureWidest/measureLine twin failed');
     // R11 -- twelve cases. A NaN-only door passes the NaN and Infinity rows and

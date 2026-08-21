@@ -177,6 +177,49 @@ not be added, and no caller in the suite consumes it. Recorded so the omission i
 deliberate, not forgotten. Executed in M9b (it is a semantic flip on a hot door,
 not a storage change, and does not belong in the same tarball as the format).
 
+
+### EXECUTED 2026-08-21 (M9b) -- and what it cost T0 law 12
+
+Implemented as ratified: the walk STAYS in `measureWidest`, `measure` is a
+one-line delegate. A11 stage 2 confirms the blast radius was exactly one pin --
+`measure` moved, the other ELEVEN bodies byte-identical to M9a's `2e4d5bb`.
+
+**T0 law 12 could not be migrated by changing its numbers, and this is the part
+worth reading.** Law 12's subject was the RESIDUAL between two semantics:
+`measure(s) - measureWidest(s) === 24` and friends. Fork 2 merges those
+semantics, so that expression became `f(x) - f(x)` and the obvious migration --
+change 24 to 0 -- would have produced **a tautology that cannot fail however
+broken either function is**, sitting in the tier that carries this package's
+central law. That is inert-assertion shape (1), and M9a shipped one instance of
+the same class (T0 law 9 row 17, green only because a fixture's kern was 0).
+
+What was done instead, in three parts:
+
+1. **The residual rows are RETIRED, not rewritten to zero.** They are replaced by
+   ABSOLUTE assertions on both faces -- `measureWidest('AA\nAA') === 24 &&
+   measure('AA\nAA') === 24` -- and **every failure message quotes the 1.x
+   value** (`!= 24/24 (1.x sum 48)`), so the migration is legible from a red run.
+2. **An INDEPENDENT witness replaces the one F-06 removed.** The old `measure`
+   was the cross-newline sum, and it was what checked `measureWidest` from a
+   different direction. With it gone, law12(ii) asserts
+   `measureWidest === MAX over per-line _measureRange` -- a DIFFERENT PATH from
+   `measureWidest`'s own walk, and `_measureRange === the JSON oracle` by law 1,
+   so the chain terminates outside the subject. It reddens if `measureWidest`
+   returns the sum, the first line, or a walk that carries kerning across a break.
+   **An oracle that mirrors its subject agrees by construction and witnesses
+   nothing** -- the standard M9a's review applied to the T0 store oracle, applied
+   here.
+3. **Non-vacuity is fixture-dependent and is stated in-file.** The sweep runs on
+   `FONT_SNAP_KERN`, because on a KERNINGLESS font a `measureWidest` that carries
+   the kerning chain across the line break is arithmetically identical to one
+   that resets it -- running it only on `FONT_SNAP` would be F-21's shape. The
+   named mutation: deleting `prevId = -1` from `measureWidest` reddens law12(ii)
+   on that fixture and nowhere else.
+
+Rows untouched by F-06 -- `measureWidest('AAA\n')`, `('\n\n\nAAA')`, `('\n')`,
+`('')` -- are kept VERBATIM. They pin `measureWidest` directly and the flip does
+not reach them.
+
 ## Fork (3) -- F-09: kerning keys and amount
 
 The negative-key hole (`first: -1`) was CLOSED by M3 (`BitmapFont.js:380` tests
@@ -218,6 +261,35 @@ names an adversary can monkey-patch.
 carry the typed-array fields and are per-font; freezing the prototype is the whole
 of the exposure. Executed in M9b (a one-line freeze that does not belong in the
 format tarball).
+
+
+### EXECUTED 2026-08-21 (M9b) -- the blast radius is WIDER than this fork assumed
+
+Measured on the frozen build, not reasoned. This fork (and F-14's ROADMAP row)
+justified the freeze against **prototype monkey-patching**. Freezing a prototype
+makes its inherited methods non-writable, and assignment-shadowing on an INSTANCE
+resolves through the inherited property's writable flag -- so it throws too:
+
+```
+isFrozen(BitmapFont.prototype)                  true
+BitmapFont.prototype.draw = fn      (patch)     THROWS TypeError   <- intended
+instance.draw = fn                  (shadow)    THROWS TypeError   <- NOT anticipated
+Object.defineProperty(instance,'draw',{...})    ALLOWED
+instance.myOwnField = 1             (new own)   ALLOWED
+instance.checked = false            (existing)  ALLOWED
+class Sub extends BitmapFont { draw(){} }       ALLOWED
+```
+
+So a consumer who never touched the prototype, and only ever shadowed a method on
+their own instance, breaks in 2.0.0. That is a real migration row and it is in
+the CHANGELOG, with the two supported alternatives: **subclassing, which is
+untouched**, or `Object.defineProperty` on the instance.
+
+Recorded because the discovery was made in IMPLEMENTATION, not at plan time: this
+fork ratified a narrower break than the one that shipped. The assertions cover
+both directions -- the two THROW cases AND the four ALLOWED cases -- because a
+freeze that also broke subclassing or own-field writes would be a regression that
+only the ALLOWED rows can catch.
 
 ## Fork (6) -- checked mode defaults ON (ONE record with fork 1: the blocker)
 
