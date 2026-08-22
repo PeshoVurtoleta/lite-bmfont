@@ -2,6 +2,59 @@
 
 All notable changes to `@zakkster/lite-bmfont`.
 
+## 2.0.2 -- 2026-08-22
+
+A docs + attribution release. No hot body moved; the twelve method SHAs are
+unchanged. One shipped runtime byte changes -- an error attribution on a path
+that is only reachable when `generateAtlas` is itself broken.
+
+### Changed
+
+- **`generateAtlas` now attributes an INTERNAL bug to itself, not the caller's
+  DOM** (F-48). The single `try` in `Atlas.js` spans both the hostile-DOM calls
+  and generateAtlas's own pure-JS glyph arithmetic, so a bug in that arithmetic
+  used to be re-thrown as `AtlasError { field: 'dom' }` -- a library fault blamed
+  on the caller's environment. An `inDom` flag now marks the pure-JS regions, so
+  a hostile DOM call still throws `field: 'dom'` while an internal arithmetic bug
+  throws `field: 'internal'` with a message that says so. `field: 'internal'` is
+  documented in `Atlas.d.ts` and `llms.txt` (both already state the `field`
+  values are examples, so this is not breaking). Marking the pure regions rather
+  than the DOM regions is the fail-closed direction: an unmarked region defaults
+  to `'dom'`, the pre-2.0.2 label, so a real DOM fault can never be mislabeled
+  `'internal'`. Covered both directions in `test/findings.test.js`, including a
+  throwing property setter, a throwing method, and a fault-injected copy.
+
+### Docs
+
+- **`README.md` rebuilt on the suite blueprint spine** (F-47). Adds the one-line
+  tagline, positioning H2 with an inline runnable quick-start, table of contents,
+  "What you get", a core-surface deep-dive, a Composability pipeline, a Zero-GC
+  design-notes block with an allocation table, "Design decisions worth knowing",
+  "What this is not", and "Ecosystem". The per-method API reference keeps one
+  backticked heading per export (the T8/A4 contract); constants stay a table. The
+  Unicode/emoji half of F-47 was already closed in 1.6.1; no test count is
+  published, by the F-43 precedent (`decisions/0014` records the deviation).
+- **F-54 diagnosed and NARROWED, not closed by prose** (`decisions/0014`). The
+  volume lane's "blind at ~2 strings/frame" mechanism was a MISDIAGNOSIS: the
+  score scene's OLD (string-allocating) and NEW bodies separate deterministically
+  by ~11 MB (58.4M vs 69.4M, reproducible to the byte). A 10x gate is not
+  buildable for it because the NEW body itself carries ~58 MB of its OWN real
+  per-frame float garbage (LINEAR in op-count: 233M at 800k, ~291 B/frame -- not
+  a working-set artifact), so a small string-garbage delta cannot beat a large
+  real float-garbage floor (SNR ~1.19x). Score/stress stay behaviourally +
+  source-text covered, for the corrected reason. Single-method torture windows
+  floor at ~0, so the twelve volume windows are unaffected.
+- **Retraction of a 2.0.1 overclaim (F-55, filed, unscheduled).** The 2.0.1
+  entry below says the four demo scene bodies "were rewritten to allocate nothing
+  per frame". Measured under op-count scaling, that is FALSE: all four allocate
+  real per-frame float garbage (wave 31.5, score 291.5, typewriter 7.4, stress
+  62.0 B/frame), from the scenes' OWN float-on-object-field arithmetic, not from
+  any library call. What 2.0.1 actually removed is the per-frame STRING garbage
+  (substring / padStart / concat) the scenes were built to shed. The honest claim
+  is scoped to the library: the LIBRARY draw path is zero-alloc and gated at 0 by
+  the torture tier; a JS scene body doing float math on object fields is not, on
+  this V8. Recorded, not fixed here (F-55 owns the fix).
+
 ## 2.0.1 -- 2026-08-21
 
 No shipped library byte behaviour changed. This is a docs + demo release.

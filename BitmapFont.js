@@ -1559,4 +1559,4 @@ export const GLYPH_STRIDE = 6;
  */
 export const FORMAT_VERSION = 2;
 
-export const VERSION = '2.0.1';
+export const VERSION = '2.0.2';

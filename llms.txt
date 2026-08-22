@@ -15,7 +15,7 @@ import { BitmapFont } from '@zakkster/lite-bmfont';
 - ASCII 0-255 only (Unicode intentionally excluded for performance)
 
 ## Export: VERSION (string)
-Semver of this package, synced with package.json and CHANGELOG.md. Currently '2.0.1'.
+Semver of this package, synced with package.json and CHANGELOG.md. Currently '2.0.2'.
 
 ## Export: BitmapFontError (class extends RangeError)
 The one error the constructor throws (F-10). Extends RangeError, so a
@@ -397,14 +397,17 @@ generateAtlas(size, fontCSS, fillColor, shadowColor?) -> { atlas, json }
 Fails closed with AtlasError, never a bare Error/TypeError: a missing DOM
 (globalThis.document.createElement), a null/unusable getContext('2d'), and a
 hostile DOM whose createElement/getContext/measureText/fillText throws are all
-re-thrown as AtlasError (carrying the original). A non-integer or out-of-range
+re-thrown as AtlasError with field 'dom'; a bug in generateAtlas's own glyph
+arithmetic throws AtlasError with field 'internal' instead, so a library bug is
+not mislabeled a caller DOM fault (field values are examples, not exhaustive).
+A non-integer or out-of-range
 size throws rather than normalizing -- size feeds common.base and { checked: true }
 would reject a fractional base, so a silent snap would launder a caller bug.
 
 ## Export: AtlasError (class extends Error)
 The one error generateAtlas throws. name === 'AtlasError'; own properties field
-(the offending field, 'document' or 'size') and value (the received value). Every
-message starts 'lite-bmfont: '.
+(the offending field, e.g. 'document', 'size', 'dom' or 'internal' -- not
+exhaustive) and value (the received value). Every message starts 'lite-bmfont: '.
 
 See source file BitmapFont.js for full JSDoc API documentation.
 

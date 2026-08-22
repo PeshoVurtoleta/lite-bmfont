@@ -70,7 +70,15 @@ export function generateAtlas(size, fontCSS, fillColor, shadowColor) {
     // AtlasError this file's header promises -- never a bare Error or TypeError
     // escaping one call deeper (door 3c, below). Our own malformed-return doors
     // (3a/3b) throw AtlasError and are re-thrown unchanged.
-    let c, x;
+    // F-48 (2.0.2): the try below spans hostile-DOM calls AND generateAtlas's
+    // own pure-JS glyph arithmetic. `inDom` marks which region is live so a bug
+    // in OUR arithmetic is reported as field 'internal', not blamed on the
+    // caller's DOM as field 'dom'. It DEFAULTS true and the PURE-JS regions turn
+    // it off, so any region left unmarked degrades to 'dom' -- the pre-2.0.2
+    // label. That direction is fail-closed: a real DOM fault can never be
+    // mislabeled 'internal'; only arithmetic explicitly marked pure can be
+    // 'internal'. This is a COLD boot-time helper, so the extra stores are free.
+    let c, x, inDom = true;
     try {
         c = doc.createElement('canvas');
         // COLD door 3a: createElement may hand back an element with no getContext.
@@ -80,8 +88,10 @@ export function generateAtlas(size, fontCSS, fillColor, shadowColor) {
                 'document.createElement -- not a usable <canvas>',
                 'canvas', c);
         }
+        inDom = false;   // pure-JS: grid arithmetic
         const cols = 16, cellW = size * 1.2 | 0, cellH = size * 1.4 | 0;
         const rows = Math.ceil(chars.length / cols);
+        inDom = true;    // DOM: canvas dimension writes can throw on a hostile element
         c.width = cols * cellW;
         c.height = rows * cellH;
         x = c.getContext('2d');
@@ -99,9 +109,11 @@ export function generateAtlas(size, fontCSS, fillColor, shadowColor) {
         const json = {common: {lineHeight: cellH, base: size}, chars: [], kernings: []};
 
         for (let i = 0; i < chars.length; i++) {
+            inDom = false;   // pure-JS: per-glyph grid arithmetic
             const ch = chars[i];
             const col = i % cols, row = (i / cols) | 0;
             const px = col * cellW + 2, py = row * cellH + 2;
+            inDom = true;    // DOM: measureText / the m.width read can throw
             const m = x.measureText(ch);
             const w = Math.ceil(m.width) + 4;
 
@@ -115,6 +127,7 @@ export function generateAtlas(size, fontCSS, fillColor, shadowColor) {
             x.fillText(ch, px, py);
             x.shadowBlur = 0;
 
+            inDom = false;   // pure-JS: descriptor record assembly
             json.chars.push({
                 id: ch.charCodeAt(0),
                 x: px,
@@ -129,11 +142,18 @@ export function generateAtlas(size, fontCSS, fillColor, shadowColor) {
         return {atlas: c, json};
     } catch (err) {
         // COLD door 3c: re-throw our own AtlasErrors unchanged; wrap any other
-        // throw (a hostile DOM call) as AtlasError, carrying the original.
+        // throw as AtlasError, carrying the original. `inDom` (F-48, 2.0.2)
+        // decides the attribution: a hostile DOM call throws with inDom true
+        // (field 'dom'); a bug in our own pure-JS arithmetic throws with inDom
+        // false (field 'internal') -- a library bug is no longer reported as a
+        // caller-environment fault.
         if (err instanceof AtlasError) throw err;
+        const detail = err && err.message ? err.message : String(err);
         throw new AtlasError(
-            'lite-bmfont: generateAtlas failed while building the atlas from the DOM: ' +
-            (err && err.message ? err.message : String(err)),
-            'dom', err);
+            inDom
+                ? 'lite-bmfont: generateAtlas failed while building the atlas from the DOM: ' + detail
+                : 'lite-bmfont: generateAtlas failed inside its own glyph arithmetic ' +
+                  '(a library bug, not a DOM fault): ' + detail,
+            inDom ? 'dom' : 'internal', err);
     }
 }

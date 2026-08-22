@@ -7,19 +7,30 @@
 // the shared recording ctx -- so the claim the demo prints is covered here.
 //
 // WHAT THIS FILE CAN AND CANNOT PROVE (measured, host-specific -- see F-54):
-//   * WAVE and TYPEWRITER carry a large enough per-frame string signal that the
-//     allocation-VOLUME lane separates the OLD (allocating) body from the NEW
-//     (zero-alloc) one on this host. Those two get volume rows.
-//   * SCORE (2 short strings/frame) and STRESS (1 concat/frame) are BELOW the
-//     lane's resolution on this host -- the OLD and NEW numbers overlap. The
-//     volume lane is BLIND to them (F-54). They are covered instead by a
-//     BEHAVIOURAL row (the drawn glyphs are decoded from the recording ctx and
-//     compared to the exact 2.0.0 output) plus a SOURCE-TEXT pin.
+//   * WAVE and TYPEWRITER carry a large enough per-frame STRING signal that the
+//     allocation-VOLUME lane separates the OLD (string-allocating) body from the
+//     NEW one on this host. Those two get volume rows.
+//   * SCORE (2 strings + 6 array literals/frame) and STRESS (1 concat/frame)
+//     are NOT below the lane's resolution -- that was F-54's MISDIAGNOSIS,
+//     corrected by measurement in 2.0.2 (M11). The score scene's OLD and NEW
+//     bodies separate DETERMINISTICALLY: NEW floors at 58,392,864 B, OLD at
+//     69,387,384 B, a reproducible-to-the-byte 10,994,520 B gap across fresh
+//     processes. What defeats a GATE is the RATIO, not invisibility: the NEW
+//     body is NOT zero-alloc -- it carries ~58 MB of its OWN real per-frame
+//     float garbage (LINEAR in op-count: 233M at 800k, ~291 B/frame; not a
+//     working-set artifact -- a plateau would be flat, the noop control is), so
+//     the 11 MB string-garbage delta is only 1.19x of that real float floor --
+//     far under the 10x a derived limit needs, and a drift could swamp it. That
+//     the scene bodies allocate per frame at all is filed as F-55. So they
+//     are covered by a BEHAVIOURAL row (drawn glyphs decoded from the recording
+//     ctx, compared to the exact 2.0.0 output) plus a SOURCE-TEXT pin instead.
 //   * The SOURCE-TEXT pin is a source-text gate, NOT behavioural coverage of
-//     zero allocation: it proves the allocating TOKENS are gone from the render
-//     bodies, nothing more. The volume lane cannot see a 2-string-per-frame
-//     regression, so nothing here proves the score/stress scenes allocate zero.
-//     That gap is F-54.
+//     zero allocation: it proves the STRING-allocating TOKENS are gone from the
+//     render bodies, nothing more. No ROW here builds a 10x-gate on the
+//     score/stress scenes, because their string-delta SNR against their own
+//     float-garbage floor is ~1.19x. That narrowed boundary is F-54, and the
+//     scenes' residual per-frame float garbage is F-55 (see ROADMAP.md and
+//     decisions/0014).
 //
 // Requires --expose-gc (npm test passes it). The gc assert below FAILS CLOSED:
 // a missing gc is a hard failure, never a skipped no-op gate.
@@ -49,11 +60,13 @@ import * as scenes from '../demo/scenes.mjs';
 // BOTH margins are UNDER 10x. Per the derivation rule that is a FINDING, not a
 // number to tune -- filed as F-54. The floor is NOT the ~0 the coordinator's
 // host measured: on Node 26.3.1 allocVolume returns a non-zero, deterministic
-// new-space-working-set floor for float-heavy multi-call frame bodies that does
-// NOT correlate with real garbage (a heap-sampling profiler attributes ~504 B
-// to the NEW wave body over 400k frames -- it is zero-alloc). The limits below
-// still SEPARATE old from new deterministically on this host, so the mutation
-// rows (A1/A6) redden; they are not widened to pass anything.
+// floor for these multi-call frame bodies that IS real per-frame garbage -- it
+// scales LINEARLY with op-count (renderScore 58M at 200k, 233M at 800k, ~291
+// B/frame), from the scenes' own float-on-object-field arithmetic, not from any
+// library call (the library draw path is gated at 0 by T6). The residual is
+// filed as F-55. The limits below still SEPARATE the old string body from the
+// new one deterministically on this host, so the mutation rows (A1/A6) redden;
+// they are not widened to pass anything.
 const WAVE_VOL_MAX = 12000000;
 const TW_VOL_MAX = 1600000;
 

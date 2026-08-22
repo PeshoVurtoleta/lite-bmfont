@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>lite-bmfont x lite-text-layout -- the compound pipeline</title>
+
+<!--
+  COMPOUND DEMO. Five packages, each earning its place:
+    @zakkster/lite-bmfont       the renderer (LOCAL working tree, not the CDN)
+    @zakkster/lite-text-layout  the wrapper -- writes the exact buffer bmfont reads
+    @zakkster/lite-ring-buffer  frame-time samples
+    @zakkster/lite-canvas-graph the scope trace over that ring
+    @zakkster/lite-color        the OKLCH phosphor ramp, baked once at boot
+
+  REJECTED, recorded so nobody re-proposes it: @zakkster/lite-axis. Its
+  formatNumber writes CHAR CODES into a Uint8Array, and bmfont's draw and
+  drawWrapped both hard-require `typeof text === 'string'` (BitmapFont.js:743,
+  :1217 -- the F-42 door). Bridging the two means building a string per frame,
+  which is the exact allocation this pipeline exists to avoid. The pairing looks
+  natural on the cards and does not survive reading the code.
+
+  The library under test is loaded from ../BitmapFont.js so this demo exercises
+  the WORKING TREE. The four peers come from the CDN via the import map.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-text-layout": "https://esm.run/@zakkster/lite-text-layout@1.3.0",
+    "@zakkster/lite-ring-buffer": "https://esm.run/@zakkster/lite-ring-buffer@1.0.1",
+    "@zakkster/lite-canvas-graph": "https://esm.run/@zakkster/lite-canvas-graph@1.0.1",
+    "@zakkster/lite-color": "https://esm.run/@zakkster/lite-color@2.1.0"
+  }
+}
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+<style>
+  /* Phosphor tokens: hex first, oklch second (demo CSS law). */
+  :root {
+    --bg:        #05090b;
+    --bg-2:      #0a1014;
+    --grid:      #0e1f18;
+    --phosphor:  #39ff85;
+    --phosphor-2:#8affc0;
+    --amber:     #ffc23d;
+    --dim:       #4d6b5c;
+    --rule:      #163326;
+    --danger:    #ff5c7a;
+  }
+  @supports (color: oklch(0.5 0.1 150)) {
+    :root {
+      --bg:        oklch(0.16 0.015 190);
+      --bg-2:      oklch(0.21 0.022 190);
+      --grid:      oklch(0.27 0.032 165);
+      --phosphor:  oklch(0.89 0.20 152);
+      --phosphor-2:oklch(0.93 0.10 152);
+      --amber:     oklch(0.85 0.16 85);
+      --dim:       oklch(0.58 0.035 165);
+      --rule:      oklch(0.34 0.045 160);
+      --danger:    oklch(0.70 0.19 15);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--phosphor);
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  /* CRT grid backdrop. Pure paint, never animated -- no layout cost. */
+  #grid {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      repeating-linear-gradient(0deg, var(--grid) 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px 40px);
+    opacity: .55;
+  }
+  #scan {
+    position: fixed; inset: 0; z-index: 3; pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px);
+    mix-blend-mode: multiply;
+  }
+
+  #c { position: fixed; inset: 0; z-index: 1; display: block; touch-action: none; }
+
+  header {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 4;
+    display: flex; align-items: center; gap: 1rem;
+    padding: .7rem 1rem; border-bottom: 1px solid var(--rule);
+    background: linear-gradient(180deg, var(--bg-2), transparent);
+  }
+  h1 { font-size: .95rem; margin: 0; font-weight: 700; letter-spacing: .06em; }
+  h1 small { color: var(--dim); font-weight: 400; }
+
+  #tabs { display: flex; gap: .35rem; margin-left: auto; }
+  .tab {
+    font: inherit; font-size: .78rem; letter-spacing: .08em;
+    padding: .35rem .8rem; cursor: pointer;
+    color: var(--dim); background: transparent;
+    border: 1px solid var(--rule); border-radius: 2px;
+  }
+  .tab[aria-selected="true"] { color: var(--bg); background: var(--phosphor); border-color: var(--phosphor); }
+  @media (hover: hover) {
+    .tab:not([aria-selected="true"]):hover { color: var(--phosphor-2); border-color: var(--phosphor); }
+  }
+
+  #hud {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 4;
+    display: flex; align-items: stretch; gap: 0;
+    border-top: 1px solid var(--rule);
+    background: linear-gradient(0deg, var(--bg-2), transparent);
+  }
+  #readouts {
+    display: flex; gap: 1.1rem; align-items: center;
+    padding: .5rem 1rem; font-size: .74rem; letter-spacing: .05em;
+    white-space: nowrap;
+  }
+  #readouts b { color: var(--dim); font-weight: 400; }
+  #readouts span.v { color: var(--phosphor); font-weight: 700; }
+  #readouts span.v.warn { color: var(--amber); }
+  #scope { display: block; margin-left: auto; }
+
+  #hint {
+    position: fixed; z-index: 4; left: 1rem; bottom: 3.2rem;
+    font-size: .72rem; color: var(--dim); max-width: 28rem; line-height: 1.5;
+  }
+  code { color: var(--phosphor-2); }
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<canvas id="c"></canvas>
+<div id="scan"></div>
+
+<header>
+  <h1>lite-bmfont <small>x</small> lite-text-layout <small>-- compound pipeline</small></h1>
+  <nav id="tabs" role="tablist">
+    <button class="tab" role="tab" data-scene="0" aria-selected="true">WRAP</button>
+    <button class="tab" role="tab" data-scene="1" aria-selected="false">TRUNCATE</button>
+    <button class="tab" role="tab" data-scene="2" aria-selected="false">SCOPE</button>
+    <button class="tab" role="tab" data-scene="3" aria-selected="false">STRESS</button>
+  </nav>
+</header>
+
+<div id="hint"></div>
+
+<div id="hud">
+  <div id="readouts">
+    <span><b>FPS</b> <span class="v" id="r-fps">--</span></span>
+    <span><b>FRAME</b> <span class="v" id="r-ms">--</span></span>
+    <span><b>LINES</b> <span class="v" id="r-lines">--</span></span>
+    <span><b>FLAG</b> <span class="v" id="r-flag">--</span></span>
+    <span><b>RE-WRAPS/S</b> <span class="v" id="r-wraps">--</span></span>
+    <span><b>STRING ALLOCS/FRAME</b> <span class="v" id="r-alloc">0</span></span>
+  </div>
+  <canvas id="scope" width="320" height="52"></canvas>
+</div>
+
+<script type="module">
+// =============================================================================
+//  IMPORTS
+// =============================================================================
+import { BitmapFont } from '../BitmapFont.js';
+import { generateAtlas } from '../Atlas.js';
+// NAMED export -- TextLayout.js has no default export. `import TextLayout from`
+// would bind undefined and every computeWrap call would throw on a live page.
+import { TextLayout } from '@zakkster/lite-text-layout';
+import { RingBuffer } from '@zakkster/lite-ring-buffer';
+import { CanvasGraph } from '@zakkster/lite-canvas-graph';
+import { bakeCssGradient } from '@zakkster/lite-color';
+
+import {
+  makeState, renderWrap, renderTruncate, renderScope, renderStress,
+  LAYOUT_STRIDE, FLAG_NAMES, BODY_TEXT, STRESS_TEXT,
+  S_NOW, S_DT, S_W, S_H, S_BOXW, S_BOXH, S_LINES, S_FLAG,
+  S_DRAWS, S_DIRTY, S_PHASE, S_SCENE,
+} from './pipeline.mjs';
+
+// =============================================================================
+//  DOM HANDLES -- cached once at init, never looked up in a handler
+// =============================================================================
+const $c      = document.getElementById('c');
+const $scope  = document.getElementById('scope');
+const $tabs   = document.getElementById('tabs');
+const $hint   = document.getElementById('hint');
+const $rFps   = document.getElementById('r-fps');
+const $rMs    = document.getElementById('r-ms');
+const $rLines = document.getElementById('r-lines');
+const $rFlag  = document.getElementById('r-flag');
+const $rWraps = document.getElementById('r-wraps');
+const $tabEls = Array.prototype.slice.call($tabs.querySelectorAll('.tab'));
+
+const ctx = $c.getContext('2d');
+
+// =============================================================================
+//  BOOT -- fonts, palette, buffers. Everything cold happens here, once.
+// =============================================================================
+// lite-color bakes the phosphor ramp to CSS strings ONCE. Cold by construction:
+// bakeCssGradient returns an array of strings, so it must never be per-frame.
+const RAMP = bakeCssGradient(
+  [{ l: 0.55, c: 0.12, h: 160 }, { l: 0.89, c: 0.20, h: 152 }], 8);
+
+const fontHead  = mkFont(30, "700 30px 'JetBrains Mono', monospace", '#8affc0', '#00120a');
+const fontBody  = mkFont(19, "400 19px 'JetBrains Mono', monospace", '#39ff85', '#00120a');
+const fontSmall = mkFont(14, "400 14px 'JetBrains Mono', monospace", RAMP[2], '#00120a');
+
+function mkFont(px, css, fill, shadow) {
+  const g = generateAtlas(px, css, fill, shadow);
+  return new BitmapFont(g.atlas, g.json);
+}
+
+const LINE_HEIGHT = fontBody.lineHeight;
+
+// =============================================================================
+//  THE 1/16 ADAPTER -- read this before changing anything above
+// =============================================================================
+// lite-text-layout@1.3.0 reads `font.glyphs[id * 7 + 6]` and `font.kerning[k]`
+// RAW (TextLayout.js:341,377,443,515,662,697). lite-bmfont 2.0.0 changed both
+// stores to 1/16 FIXED POINT, recovered with `stored * GLYPH_ADVANCE_SCALE`.
+// The peer never decodes, so every advance it computes against a 2.x font is
+// EXACTLY 16x too large: measured, a 10-glyph string at xadvance 10 gives
+// bmfont 100 px and text-layout 1600 px, and a 306-char paragraph wraps to 97
+// lines instead of 7. It fails SILENTLY -- no throw, no warning.
+//
+// This is filed as F-56. bmfont's own boundary guard (packaging.test.js:441) is
+// honest and green: it pins the peer's INSTALLED bmfont below 2.0.0 and reddens
+// when someone bumps it. text-layout pins `^1.6.0`, so its tests are green too.
+// Neither repo is wrong internally; the break lives in the gap between them,
+// and both packages' published docs still advertise the pairing.
+//
+// So the demo adapts rather than pretends: it hands text-layout a font-shaped
+// view in the 1.x whole-pixel format it was written against.
+//
+// LOSSLESS ONLY IF ADVANCES ARE INTEGRAL, and that is asserted, not assumed.
+// Int16Array cannot hold a fraction, so a 10.5 px advance would round here and
+// wrap could drift up to 0.5 px per glyph. Atlas.js computes
+// `w = Math.ceil(m.width) + 4` and `xadvance = w - 2`, so every advance this
+// demo generates is a whole number and the round-trip is exact. A font loaded
+// from a hand-authored BMFont JSON with fractional advances would NOT satisfy
+// this, which is why the check below fails closed instead of trusting it.
+function toWholePixelFont(font, label) {
+  const SCALE = 0.0625;                 // 1/16, = GLYPH_ADVANCE_SCALE
+  const g = new Int16Array(font.glyphs.length);
+  g.set(font.glyphs);
+  for (let id = 0; id < 256; id++) {
+    const p = id * 7 + 6;
+    const px = font.glyphs[p] * SCALE;
+    if (px !== Math.round(px)) {
+      throw new Error('[F-56 adapter] ' + label + ': glyph ' + id + ' has a FRACTIONAL advance ' +
+        px + ' px. The Int16 whole-pixel view lite-text-layout@1.3.0 requires cannot represent ' +
+        'it, so wrap would drift silently. Fix the peer to decode GLYPH_ADVANCE_SCALE instead ' +
+        'of widening this shim.');
+    }
+    g[p] = px;
+  }
+  const k = new Int16Array(font.kerning.length);
+  for (let i = 0; i < font.kerning.length; i++) {
+    const v = font.kerning[i];
+    if (v !== 0) k[i] = Math.round(v * SCALE);
+  }
+  return { glyphs: g, kerning: k };
+}
+
+const wrapBody  = toWholePixelFont(fontBody, 'fontBody');
+const wrapSmall = toWholePixelFont(fontSmall, 'fontSmall');
+
+// Layout buffers, sized ONCE with countLines so FLAG_OVERFLOW is impossible
+// here rather than merely detected. countLines is the sizing half of the same
+// pass computeWrap runs.
+const wrapBuf = new Float32Array(
+  Math.max(
+    TextLayout.countLines(BODY_TEXT, wrapBody, 200, 0, LINE_HEIGHT, 1),
+    TextLayout.countLines(BODY_TEXT, wrapBody, 900, 0, LINE_HEIGHT, 1)
+  ) * LAYOUT_STRIDE + LAYOUT_STRIDE * 8);
+
+const STRESS_N = 12;
+const stressBufs = new Array(STRESS_N);
+const stressCounts = new Int32Array(STRESS_N);
+for (let i = 0; i < STRESS_N; i++) {
+  const n = TextLayout.countLines(STRESS_TEXT, wrapSmall, 250, 130, LINE_HEIGHT, 0.8);
+  stressBufs[i] = new Float32Array(n * LAYOUT_STRIDE);
+  stressCounts[i] = TextLayout.computeWrap(
+    STRESS_TEXT, wrapSmall, 250, 130, LINE_HEIGHT, stressBufs[i], 0.8);
+}
+
+const deps = {
+  layout: TextLayout, fontHead, fontBody, fontSmall,
+  wrapBody, wrapSmall,            // F-56: whole-pixel views, for computeWrap only
+  lineHeight: LINE_HEIGHT, wrapBuf, stressBufs, stressCounts,
+};
+
+const st = makeState();
+
+// Frame-time telemetry -> the scope trace.
+const ring = new RingBuffer(512);
+const graph = new CanvasGraph($scope, 320, 52, {
+  background: '#0a1014', stroke: '#39ff85', lineWidth: 1,
+});
+
+// =============================================================================
+//  SIZING -- all layout READS happen here, before any write (demo-audit law)
+// =============================================================================
+let dpr = 1;
+function resize() {
+  const w = window.innerWidth;          // READ
+  const h = window.innerHeight;         // READ
+  dpr = window.devicePixelRatio || 1;   // READ
+  $c.width = (w * dpr) | 0;             // WRITE
+  $c.height = (h * dpr) | 0;
+  $c.style.width = w + 'px';
+  $c.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  st[S_W] = w;
+  st[S_H] = h - 96;
+  st[S_DIRTY] = 1;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// =============================================================================
+//  INTERACTION -- pointer events, not mouse*/touch*
+// =============================================================================
+let dragging = false;
+$c.addEventListener('pointerdown', (e) => {
+  if (st[S_SCENE] !== 0) return;
+  dragging = true;
+  $c.setPointerCapture(e.pointerId);
+});
+$c.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  // e.clientX/Y are event properties, NOT layout reads -- no reflow here.
+  const nw = Math.abs(e.clientX - st[S_W] * 0.5) * 2;
+  const nh = Math.abs(e.clientY - 48 - st[S_H] * 0.5) * 2;
+  st[S_BOXW] = Math.max(180, Math.min(st[S_W] - 60, nw));
+  st[S_BOXH] = Math.max(80, Math.min(st[S_H] - 60, nh));
+  st[S_DIRTY] = 1;
+});
+$c.addEventListener('pointerup', (e) => {
+  dragging = false;
+  if ($c.hasPointerCapture(e.pointerId)) $c.releasePointerCapture(e.pointerId);
+});
+
+const HINTS = [
+  'Drag anywhere on the canvas to resize the box. RE-WRAPS/S counts computeWrap calls -- it is 0 while you are not dragging, and the text still renders every frame.',
+  'The box height is driven by a sine. FLAG transitions NORMAL -> TRUNCATED as the text stops fitting. computeWrap runs every frame here on purpose: it is affordable.',
+  'Frame time goes into a lite-ring-buffer; lite-canvas-graph draws the trace bottom-right. No sample is ever turned into a string.',
+  'Twelve blocks, twelve layout buffers, all wrapped ONCE at boot. RE-WRAPS/S stays at 0 while every block re-blits each frame.',
+];
+$hint.textContent = HINTS[0];
+
+$tabs.addEventListener('click', (e) => {
+  const b = e.target.closest('.tab');
+  if (!b) return;
+  const idx = +b.dataset.scene;
+  st[S_SCENE] = idx;
+  st[S_DIRTY] = 1;
+  for (let i = 0; i < $tabEls.length; i++) {
+    $tabEls[i].setAttribute('aria-selected', i === idx ? 'true' : 'false');
+  }
+  $hint.textContent = HINTS[idx];
+});
+
+// =============================================================================
+//  FRAME LOOP
+// =============================================================================
+// Readouts are throttled to ~8Hz behind a frame mask: textContent is a layout
+// WRITE, and the number formatting is the only string work in the whole loop.
+// At 60fps this is ~8 short strings per second, not per frame -- and that is
+// what the STRING ALLOCS/FRAME readout means when it says 0. It is a statement
+// about the FRAME PATH, which is where this pipeline's claim lives.
+const HUD_MASK = 7;
+let frame = 0;
+let last = performance.now();
+let fpsAcc = 0, fpsCount = 0;
+let wrapsThisSecond = 0, wrapsShown = 0, secondMark = last;
+let prevLines = -1, prevFlag = -1;
+
+function loop(now) {
+  const dtMs = now - last;
+  last = now;
+  st[S_DT] = dtMs;
+  st[S_NOW] = now;
+  st[S_PHASE] += dtMs;
+
+  ring.push(dtMs);
+  fpsAcc += dtMs; fpsCount++;
+
+  const scene = st[S_SCENE];
+  const wrapsBefore = st[S_DIRTY];
+
+  ctx.clearRect(0, 0, st[S_W], st[S_H] + 96);
+  ctx.save();
+  ctx.translate(0, 48);
+
+  if (scene === 0)      renderWrap(ctx, st, deps);
+  else if (scene === 1) renderTruncate(ctx, st, deps);
+  else if (scene === 2) renderScope(ctx, st, deps);
+  else                  renderStress(ctx, st, deps);
+
+  ctx.restore();
+
+  // computeWrap ran this frame if the dirty flag was consumed, or if the scene
+  // re-wraps unconditionally (TRUNCATE).
+  if (scene === 1 || wrapsBefore === 1) wrapsThisSecond++;
+
+  graph.render(ring, 34, { minValue: 0 });
+
+  if (now - secondMark >= 1000) {
+    wrapsShown = wrapsThisSecond;
+    wrapsThisSecond = 0;
+    secondMark = now;
+  }
+
+  frame++;
+  if ((frame & HUD_MASK) === 0) {
+    const fps = fpsCount > 0 ? (1000 * fpsCount / fpsAcc) : 0;
+    fpsAcc = 0; fpsCount = 0;
+    $rFps.textContent = fps.toFixed(0);
+    $rMs.textContent = dtMs.toFixed(1);
+    $rWraps.textContent = wrapsShown;
+    const lines = st[S_LINES] | 0;
+    if (lines !== prevLines) { $rLines.textContent = lines; prevLines = lines; }
+    const flag = st[S_FLAG] | 0;
+    if (flag !== prevFlag) {
+      $rFlag.textContent = FLAG_NAMES[flag] || flag;
+      $rFlag.className = flag === 0 ? 'v' : 'v warn';
+      prevFlag = flag;
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// =============================================================================
+//  DEV: forced-reflow profiler, dormant unless #profile is in the URL
+// =============================================================================
+// This instrument ALLOCATES (Error.stack per violation) and patches ~400
+// prototype setters. It is never shipped and never enters a torture loop.
+if (location.hash === '#profile') {
+  import('https://esm.run/@zakkster/lite-layout-profiler').then((m) => {
+    window.__layout = m.createLayoutProfiler({ warnToConsole: true });
+    console.info('[profile] layout profiler armed -- drive every tab, then __layout.summary()');
+  }).catch(() => console.warn('[profile] lite-layout-profiler unavailable'));
+}
+</script>
+</body>
+</html>

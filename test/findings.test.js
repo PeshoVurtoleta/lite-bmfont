@@ -59,12 +59,15 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createLeakTracker } from '@zakkster/lite-leak';
 import { BitmapFont, GLYPH_STRIDE } from '../BitmapFont.js';
 import { generateAtlas, AtlasError } from '../Atlas.js';
 import { generateAtlasV0 } from './torture/fixtures/atlas-verbatim.mjs';
-import { makeDocStub } from './torture/fixtures/dom-stub.mjs';
+import { makeDocStub, makeCanvasStub } from './torture/fixtures/dom-stub.mjs';
 import { rec, resetRec, JSON_ASCII, ATLAS } from './torture/harness.mjs';
 
 // F-03 (the NaN guard polarity) was FIXED in M2. Its watch-todo is removed here;
@@ -301,6 +304,122 @@ test('A3(context): a null or unusable 2d context throws AtlasError, not a TypeEr
         globalThis.document = makeDocStub();
         assert.doesNotThrow(() => generateAtlas(36, 'x', '#fff'));
     } finally {
+        if (prev === undefined) delete globalThis.document; else globalThis.document = prev;
+    }
+});
+
+// F-48 (fixed 2.0.2) -- door 3c re-labelled a genuine internal bug as a caller
+// DOM failure because the one try spans BOTH the hostile-DOM calls AND
+// generateAtlas's own pure-JS glyph arithmetic. The `inDom` flag now
+// discriminates: a hostile DOM call -> field 'dom'; a bug in our own arithmetic
+// -> field 'internal'. BOTH directions or the gate is decorative.
+//
+// The 'internal' direction cannot be provoked by any stub -- the pure-JS regions
+// read only library-controlled values a stub cannot corrupt -- so it is proven
+// by IMPORTING a fault-injected COPY of Atlas.js (a reference to an undefined
+// variable spliced into the per-glyph loop's pure-JS region) under a HEALTHY
+// docstub. The copy exports its own AtlasError class, so this asserts by
+// `name`/`field`, never `instanceof` the statically-imported AtlasError.
+test('F-48: an internal arithmetic bug is field "internal"; a hostile DOM call stays field "dom"', async () => {
+    const prev = globalThis.document;
+    let dir = null;
+    try {
+        // Direction 1 (field 'dom'): a hostile fillText throws mid-loop, the DOM
+        // region is live -> attributed to the DOM, unchanged from 1.8.0.
+        globalThis.document = {
+            createElement: () => {
+                const c = makeCanvasStub();
+                const ctx = c.getContext('2d');
+                ctx.fillText = () => { throw new Error('hostile-fillText'); };
+                c.getContext = () => ctx;
+                return c;
+            },
+        };
+        let e = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { e = x; }
+        assert.ok(e instanceof AtlasError, 'hostile fillText did not throw AtlasError, got ' + (e && e.constructor && e.constructor.name));
+        assert.equal(e.field, 'dom', 'a hostile DOM call must be field "dom", got "' + e.field + '"');
+        assert.match(e.message, /from the DOM/);
+
+        // Direction 1b (field 'dom' via a throwing PROPERTY SETTER, not a method):
+        // a hostile `c.width` setter throws at `c.width = cols * cellW`, which sits
+        // in an inDom=true region. A method-call-only test would pass even if the
+        // property regions were mismarked -- this pins them.
+        globalThis.document = {
+            createElement: () => {
+                const c = makeCanvasStub();
+                Object.defineProperty(c, 'width', { set() { throw new Error('hostile-width-setter'); }, get() { return 0; } });
+                return c;
+            },
+        };
+        let ew = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { ew = x; }
+        assert.ok(ew instanceof AtlasError, 'hostile width setter did not throw AtlasError, got ' + (ew && ew.constructor && ew.constructor.name));
+        assert.equal(ew.field, 'dom', 'a throwing DOM property setter must be field "dom", got "' + ew.field + '"');
+        assert.match(ew.message, /hostile-width-setter/);
+
+        // Direction 1c (field 'dom' via a throwing CTX property setter inside the
+        // per-glyph loop): a hostile `fillStyle` setter throws at `x.fillStyle =
+        // fillColor`, an inDom=true region several statements deep in the loop.
+        globalThis.document = {
+            createElement: () => {
+                const c = makeCanvasStub();
+                const ctx = c.getContext('2d');
+                Object.defineProperty(ctx, 'fillStyle', { set() { throw new Error('hostile-fillStyle-setter'); }, get() { return ''; } });
+                c.getContext = () => ctx;
+                return c;
+            },
+        };
+        let ef = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { ef = x; }
+        assert.ok(ef instanceof AtlasError, 'hostile fillStyle setter did not throw AtlasError, got ' + (ef && ef.constructor && ef.constructor.name));
+        assert.equal(ef.field, 'dom', 'a throwing ctx property setter must be field "dom", got "' + ef.field + '"');
+        assert.match(ef.message, /hostile-fillStyle-setter/);
+
+        // Direction 1d (field 'dom' via a throwing textBaseline SETTER): the
+        // carryover the M11 reviewer flagged -- Atlas.js:106-107 (textBaseline,
+        // font) and :121-127 (fillStyle/shadow*) are inDom=true and correctly
+        // marked, but nothing threw through them before this, so a future
+        // mis-mark of that region would emit a false 'internal' uncaught.
+        globalThis.document = {
+            createElement: () => {
+                const c = makeCanvasStub();
+                const ctx = c.getContext('2d');
+                Object.defineProperty(ctx, 'textBaseline', { set() { throw new Error('hostile-textBaseline-setter'); }, get() { return 'alphabetic'; } });
+                c.getContext = () => ctx;
+                return c;
+            },
+        };
+        let et = null;
+        try { generateAtlas(36, 'x', '#fff'); } catch (x) { et = x; }
+        assert.ok(et instanceof AtlasError, 'hostile textBaseline setter did not throw AtlasError, got ' + (et && et.constructor && et.constructor.name));
+        assert.equal(et.field, 'dom', 'a throwing textBaseline setter must be field "dom", got "' + et.field + '"');
+        assert.match(et.message, /hostile-textBaseline-setter/);
+
+        // Direction 2 (field 'internal'): splice an undefined-variable reference
+        // into the loop's pure-JS record-assembly region (inDom === false there)
+        // of a COPY, import it, and run it under a HEALTHY docstub. The DOM is
+        // fine; the fault is ours -> field 'internal'.
+        const here = dirname(fileURLToPath(import.meta.url));
+        const src = readFileSync(join(here, '..', 'Atlas.js'), 'utf8');
+        const marker = 'inDom = false;   // pure-JS: descriptor record assembly';
+        assert.ok(src.includes(marker), 'F-48 marker missing from Atlas.js -- the fix regressed');
+        const mutated = src.replace(marker, marker + '\n            totallyUndefinedInternalVar;');
+        assert.ok(mutated.includes('totallyUndefinedInternalVar'), 'injection failed');
+        dir = mkdtempSync(join(tmpdir(), 'bmfont-f48-'));
+        const file = join(dir, 'AtlasMut.js');
+        writeFileSync(file, mutated);
+        globalThis.document = makeDocStub();
+        const mod = await import(pathToFileURL(file).href);
+        let e2 = null;
+        try { mod.generateAtlas(36, 'x', '#fff'); } catch (x) { e2 = x; }
+        assert.ok(e2, 'the injected undefined variable did not throw');
+        assert.equal(e2.name, 'AtlasError', 'internal fault did not become AtlasError, got ' + (e2 && e2.name));
+        assert.equal(e2.field, 'internal', 'an internal arithmetic bug must be field "internal", got "' + e2.field + '"');
+        assert.match(e2.message, /a library bug, not a DOM fault/);
+        assert.match(e2.message, /totallyUndefinedInternalVar/); // the original is carried, not swallowed
+    } finally {
+        if (dir) rmSync(dir, { recursive: true, force: true });
         if (prev === undefined) delete globalThis.document; else globalThis.document = prev;
     }
 });

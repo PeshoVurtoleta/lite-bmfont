@@ -15,10 +15,18 @@
 // method reach the scene bodies as INSTANCES through the state object `S`; this
 // file never names `BitmapFont`.
 //
-// EVERY per-frame allocation is gone and each caption below NAMES the call that
-// delivers zero allocation. The particle pool, the ambient/auto spawns and the
-// click handlers stay in the HTML: they fire on an event, not per frame, and a
-// demo MAY allocate on an event (F-53 scope note). That boundary is deliberate.
+// Every per-frame STRING allocation is gone and each caption below NAMES the call
+// that delivers it. The bodies are NOT allocation-free: their float arithmetic on
+// object fields still boxes HeapNumbers (F-55, ~31.5 B/frame wave, ~291.5 score),
+// so every claim here is scoped to STRING garbage, which is what the rewrite removed
+// and what demo.test.js gates. The particle pool and the click handlers stay in
+// the HTML: they fire on an EVENT, not per frame, and a demo MAY allocate on an
+// event (F-53 scope note). That boundary is deliberate -- but it was STATED too
+// broadly here until M11: this sentence used to cover "the ambient/auto spawns"
+// too, and stressAutoSpawn is NOT event-driven -- it runs every frame the stress
+// scene is active, allocating a toString at ~50% per-frame odds while the HUD
+// read "0 string allocs". Found by M11 QA; the allocation is gone (SPAWN_LABELS,
+// built once at boot) rather than the claim being re-scoped around it.
 //
 // @license MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
 
@@ -230,7 +238,7 @@ export function renderWave(ctx, S) {
         S.drawCount++;
     }
     ctx.globalAlpha = 0.25;
-    S.fontSmall.draw(ctx, 'per-character wave via layoutGlyphs + drawQuads -- zero allocation',
+    S.fontSmall.draw(ctx, 'per-character wave via layoutGlyphs + drawQuads -- zero string allocation',
         S.W / 2, S.H / 2 + 50, 0.9, 1);
     ctx.globalAlpha = 1;
     S.drawCount++;
@@ -272,7 +280,7 @@ export function renderScore(ctx, S) {
 
     ctx.globalAlpha = 0.3;
     S.fontSmall.draw(ctx, 'SCORE', S.W / 2, S.H / 2 - 80, 1, 1);
-    S.fontSmall.draw(ctx, 'click to add points -- ZEROS[] run + drawFastInt, zero alloc',
+    S.fontSmall.draw(ctx, 'click to add points -- ZEROS[] run + drawFastInt, zero string alloc',
         S.W / 2, S.H / 2 + 30, 0.8, 1);
     ctx.globalAlpha = 1;
     S.drawCount += 2;

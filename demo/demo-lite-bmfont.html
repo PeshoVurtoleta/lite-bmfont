@@ -219,7 +219,7 @@
         <span>FPS <span class="v g" id="fps">60</span></span>
         <span>DRAWS <span class="v a" id="draws">0</span></span>
         <span>STRINGS <span class="v p" id="strings">0</span></span>
-        <span>GC <span class="v g" id="gc">0 allocs</span></span>
+        <span>GC <span class="v g" id="gc">0 string allocs</span></span>
     </div>
 </div>
 
@@ -252,7 +252,7 @@
     // ===========================================================
     //  NPM IMPORTS
     // ===========================================================
-    import {BitmapFont} from 'https://cdn.jsdelivr.net/npm/@zakkster/lite-bmfont/+esm';
+    import {BitmapFont} from 'https://cdn.jsdelivr.net/npm/@zakkster/lite-bmfont';
     // generateAtlas ships as the `@zakkster/lite-bmfont/atlas` subpath (F-18).
     // The demo imports the CDN FILE path (Atlas.js), not `/atlas/+esm`: jsDelivr
     // resolves file paths reliably but does NOT guarantee package `exports`
@@ -497,7 +497,7 @@
         document.getElementById('fps').textContent = fpsVal;
         document.getElementById('draws').textContent = drawCount;
         document.getElementById('strings').textContent = count;
-        document.getElementById('gc').textContent = '0 allocs';
+        document.getElementById('gc').textContent = '0 string allocs';
     }
 
     // -- SCENE: Damage Numbers --
@@ -533,14 +533,23 @@
     }
 
     // -- SCENE: Stress Test -- text render is the imported renderStress(ctx, S).
-    // This is the ambient auto-spawn only: it fires on an RNG gate, not every
-    // frame, and a demo MAY allocate on an event (the toString below is such an
-    // event, by decision -- F-53 scope note).
+    // Every label this can ever spawn, built ONCE at boot. The previous version
+    // called (Math.random() * 999 | 0).toString() inline and a comment here
+    // called that "an event". It was not: stressAutoSpawn(dt) runs EVERY frame
+    // the stress scene is active (no click gates it), and the RNG gate is
+    // Math.random() < dt * 30, which at 60fps is dt ~ 0.0167 -> a ~50% chance
+    // PER FRAME. So the HUD's "0 string allocs" was false roughly every other
+    // frame just from switching to this tab. Found by M11 QA. A table lookup
+    // costs one array index and the claim becomes true instead of argued --
+    // the same fix, and the same reasoning, as ZEROS[] in scenes.mjs.
+    const SPAWN_LABELS = new Array(1000);
+    for (let i = 0; i < 1000; i++) SPAWN_LABELS[i] = String(i);
+
     function stressAutoSpawn(dt) {
         if (count < 300 && Math.random() < dt * 30) {
             spawn(Math.random() * W, Math.random() * H * .3 + H * .2,
                 (Math.random() - .5) * 200, Math.random() * 100 - 150,
-                (Math.random() * 999 | 0).toString(), .2 + Math.random() * .4, .5 + Math.random() * .5, Math.random() * 4 | 0);
+                SPAWN_LABELS[Math.random() * 999 | 0], .2 + Math.random() * .4, .5 + Math.random() * .5, Math.random() * 4 | 0);
         }
     }
 

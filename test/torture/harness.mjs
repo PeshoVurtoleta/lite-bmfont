@@ -205,7 +205,8 @@ export const VOL_WARMUP = 20000;
  * the body's own garbage, not the instrument's. Requires --expose-gc.
  *
  * Moved here from t6-alloc.mjs (M10 T-1a) so test/demo.test.js can import the
- * same instrument; t6's eleven windows re-run unchanged to prove the move inert.
+ * same instrument; t6's twelve volume lanes (A, B, C, C2, D, E, F, G, H, I, J, K) re-run
+ * unchanged to prove the move inert.
  * @param {(i:number)=>void} fn
  * @returns {number} summed positive heapUsed deltas, in bytes
  */

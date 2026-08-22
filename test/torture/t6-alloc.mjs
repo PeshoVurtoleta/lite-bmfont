@@ -1,11 +1,20 @@
 /**
- * T6 -- the zero-alloc gate (F-17).
+ * T6 -- the transient-allocation gate (F-17).
  *
- * ELEVEN windows (A-D from M0/M2, C2 added in M2a for the F-45 align path, E and
+ * A PASS here means "no LARGE transient regression on this body", NEVER "zero
+ * allocation" in the absolute (F-54, 2.0.2): the volume lane is a coarse
+ * transient detector against a per-body working-set floor, not a byte-accurate
+ * zero-alloc proof. On single-method library bodies that floor is ~0 (measured
+ * min=0, max in tens of KB), so even a small mutant separates by orders of
+ * magnitude and this gate is sharp; the blindness F-54 found belongs to COMPOSITE
+ * multi-draw frame carriers (the demo scenes), not to these windows.
+ *
+ * TWELVE windows (A-D from M0/M2, C2 added in M2a for the F-45 align path, E and
  * F added in M4, G added in M8 for drawFastInt, H added in M8b for drawFast
- * regime B, I and J added in M5 for layoutGlyphs and drawQuads), run STRICTLY
- * SEQUENTIALLY (the profiler is one-measurement-at-a-time and throws
- * "already in flight" if nested). Each window is gated on TWO lanes:
+ * regime B, I and J added in M5 for layoutGlyphs and drawQuads, K added in M9pre
+ * for the F-32 reject branches), run STRICTLY SEQUENTIALLY (the profiler is
+ * one-measurement-at-a-time and throws "already in flight" if nested). Each
+ * window is gated on TWO lanes:
  *   - measureOps + checkNoGc (RULES): an allocation RATE gate. maxMajor:0,
  *     maxPauseMs:4, maxArrayBuffersGrowth:0. The last rule needs stabilize:'deep'
  *     (runOpsGate supplies it) because typed-array backing stores live OUTSIDE

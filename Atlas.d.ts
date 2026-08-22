@@ -8,7 +8,11 @@ import type { BMFontJson } from './BitmapFont.js';
 /** The one error `generateAtlas` throws (`name === 'AtlasError'`). */
 export declare class AtlasError extends Error {
     name: 'AtlasError';
-    /** The offending field, e.g. `'document'` or `'size'`. */
+    /**
+     * The offending field, e.g. `'document'`, `'size'`, `'dom'` (a hostile DOM
+     * call threw) or `'internal'` (a bug in generateAtlas's own arithmetic --
+     * never the caller's DOM). Not exhaustive.
+     */
     field: string;
     /** The received value. */
     value: unknown;

@@ -169,14 +169,16 @@ broken documented guarantee, **S3** = hygiene / contract gap.
 
 | **F-46** | S3 | **The suite Law's ASCII-only rule is enforced by nothing, and three of the six shipped files break it -- the main source file among them.** `../CLAUDE.md` Law reads "ASCII-only source (U+00D7 and U+00B5 excepted)". Measured by a full walk of the repo (excluding `node_modules` and `.git`), 2026-08-19 against published 1.6.0: **75 non-ASCII characters ship inside the npm tarball** -- `README.md` **56** (15 U+2014 em dash, 11 U+2192 arrow, 3 U+2026 ellipsis, 3 U+2013 en dash, and 24 emoji-region code points -- 21 pictograph glyphs plus 3 U+FE0F variation selectors -- over 18 distinct values, U+1F524 / U+1F680 / U+1FAB6 / U+1F5D2 among them; the punctuation above accounts for the other 32), `BitmapFont.js` **10** (9 U+2014, 1 U+2026 at `:1019`), `llms.txt` **9** (6 U+2014, 2 U+2026, 1 U+2013). `demo/demo-lite-bmfont.html` carries **1,121** more -- 1,062 U+2550 and 48 U+2500 in comment banners, 9 U+2014, 2 U+00B7 in visible markup -- but is absent from `package.json` `files[]`, so it breaks the Law without reaching a consumer. **Neither excepted code point appears anywhere in the repo**: all 1,196 characters are outside the exception, so the exception carries no weight here and the rule is simply unmet. Everything else is CLEAN -- `BitmapFont.d.ts`, `CHANGELOG.md`, `ROADMAP.md`, `LICENSE`, every file under `test/` and `decisions/`, and all nine `SESSION-*.md` -- which is the diagnostic detail: the discipline has held in every file authored since M0 and failed only in the three that predate it, the exact profile a missing gate produces rather than a lapse in care. **No character is behavioural.** The single one inside a source string position is `BitmapFont.js:1019`, and it is in a JSDoc sentence describing the ellipsis flag; the flag's implementation appends three ASCII '.' (code 46) and is untouched -- verified by reading the body, not inferred from the comment. Same class as F-14 and F-43 (a documented property no gate reads), but the property is the LAW rather than a count, and unlike F-43 the honest repair is a gate rather than a deletion: "every byte of every shipped file is < 0x80, except U+00D7 and U+00B5" is byte-checkable in one pass with no judgement in it. **CLOSED in 1.6.1 (M2b, `fd5aa35`).** The census went 1,196 -> **0** across all 39 tracked files, and the repair is a gate, not a sweep: `test/packaging.test.js` enumerates scope from `git ls-files` (never a filename list), reads each file as a Buffer, and fails closed on a broken enumeration, a NUL byte or invalid UTF-8 -- so a new TRACKED file carrying a non-ASCII byte reddens `npm test` on the day it is added, with no test edit. Proven non-vacuous in the wild: the 1.6.1 commit moved `decisions/0008-ascii-gate.md` from untracked to tracked, the scope went 38 -> 39 files, and the gate scanned the new file with no edit. `decisions/0008`. | full-repo `python3` walk: `README.md` 56, `BitmapFont.js` 10, `llms.txt` 9, `demo/demo-lite-bmfont.html` 1121, every other file 0; `grep -n "ascii\|ASCII\|charCodeAt\|0x7f" test/packaging.test.js` -> **0 hits**, so no gate exists to fail |
 
-| **F-47** | S3 | **`README.md` is not built on the blueprint the suite Law names, and the divergence is structural, not cosmetic.** The Docs Law in `../CLAUDE.md` says every README follows `LiteSepforge/README.md` "same spine, in order". Measured against it: bmfont has **no one-line blockquote tagline** under the title (the blueprint's line 3; bmfont goes straight from `# @zakkster/lite-bmfont` to the badge block), **no table of contents**, **no "What you get"**, **no `<details>` deep-dive** (blueprint has **2**, bmfont has **0**), **no Composability section with an end-to-end pipeline**, **no `<details>` Zero-GC design notes with an allocation table**, **no "Design decisions worth knowing"**, **no "What this is not"**, and **no Ecosystem section** -- nine of the spine's rows absent. In their place sit four headings the spine does not have: `What is lite-bmfont?` (where the spine wants the positioning H2 "The X the ecosystem was missing"), `Comparison`, `LLM-Friendly Documentation` and `Changelog`. Every H2 carries a leading emoji, which the blueprint has none of -- the same 24 emoji-region code points F-46 counts, so the two findings overlap on the emoji and nowhere else: F-46 is satisfied by deleting them, F-47 is not. The file also disagrees with ITSELF on the arrow convention the Law fixes as `->`: **11 U+2192 and 17 ASCII `->`, mixed inside one API reference** -- `measure(text, scale?) U+2192 number` at `:240` sits eleven lines above `measureWidest(text, scale?) -> number` at `:251`. That split is the dating evidence: sections written later followed the Law and nothing went back for the earlier ones, the identical profile F-46 shows across files. The peer `LiteTextLayout/README.md` and the blueprint itself both measure **0** non-ASCII, so bmfont is the outlier in the suite and not the norm. **NOT routed to M2b.** M2b is a mechanical byte sweep with a gate behind it and a proof that no executable byte moved; a spine rewrite is an authoring session with different risk, different review, and no byte-level acceptance test, and folding it in would destroy M2b's one clean claim. Filed for its own session, unscheduled. | `grep -n "^#\{1,3\} " README.md` -> 30 headings, 21 of the blueprint's spine rows unmatched; `grep -c "<details>" README.md` -> **0** vs blueprint **2**; `grep -n -i "table of contents\|Composability\|Design decisions\|What this is not\|^## Ecosystem" README.md` -> **0 hits**; `README.md` line 2 is blank where the blueprint's line 3 is the tagline; U+2192 x11 vs `->` x17 in one file |
+| **F-47** | S3 | **`README.md` is not built on the blueprint the suite Law names, and the divergence is structural, not cosmetic.** The Docs Law in `../CLAUDE.md` says every README follows `LiteSepforge/README.md` "same spine, in order". Measured against it: bmfont has **no one-line blockquote tagline** under the title (the blueprint's line 3; bmfont goes straight from `# @zakkster/lite-bmfont` to the badge block), **no table of contents**, **no "What you get"**, **no `<details>` deep-dive** (blueprint has **2**, bmfont has **0**), **no Composability section with an end-to-end pipeline**, **no `<details>` Zero-GC design notes with an allocation table**, **no "Design decisions worth knowing"**, **no "What this is not"**, and **no Ecosystem section** -- nine of the spine's rows absent. In their place sit four headings the spine does not have: `What is lite-bmfont?` (where the spine wants the positioning H2 "The X the ecosystem was missing"), `Comparison`, `LLM-Friendly Documentation` and `Changelog`. Every H2 carries a leading emoji, which the blueprint has none of -- the same 24 emoji-region code points F-46 counts, so the two findings overlap on the emoji and nowhere else: F-46 is satisfied by deleting them, F-47 is not. The file also disagrees with ITSELF on the arrow convention the Law fixes as `->`: **11 U+2192 and 17 ASCII `->`, mixed inside one API reference** -- `measure(text, scale?) U+2192 number` at `:240` sits eleven lines above `measureWidest(text, scale?) -> number` at `:251`. That split is the dating evidence: sections written later followed the Law and nothing went back for the earlier ones, the identical profile F-46 shows across files. The peer `LiteTextLayout/README.md` and the blueprint itself both measure **0** non-ASCII, so bmfont is the outlier in the suite and not the norm. **NOT routed to M2b.** M2b is a mechanical byte sweep with a gate behind it and a proof that no executable byte moved; a spine rewrite is an authoring session with different risk, different review, and no byte-level acceptance test, and folding it in would destroy M2b's one clean claim. Filed for its own session, unscheduled. **CLOSED 2026-08-22 (M11, v2.0.2).** The Unicode half was ALREADY closed by M2b/F-46 (1.6.1) -- 0 non-ASCII repo-wide, so the emoji and the 11 U+2192 this row counts no longer existed when M11 opened; only the structural half was live, and this row overstated its own remaining scope until now. README rebuilt on the blueprint spine: line 3 is the one-line blockquote tagline (was blank), the positioning H2 is "The bitmap-text renderer the ecosystem was missing", and all ten previously-absent spine rows are present IN ORDER -- Table of contents, Why this exists, What you get, a core-surface deep-dive, API reference, Composability, Zero-GC design notes, Design decisions worth knowing, What this is not, Ecosystem. `<details>` 0 -> **3** (blueprint has 2); headings 30 -> 35. TWO deviations are RECORDED DECISIONS, not omissions (`decisions/0014`, forks 1-2): the API reference keeps ONE BACKTICKED HEADING PER EXPORT rather than the blueprint's grouped headings, because `t8-packaging.mjs:188-203` (T8/A4) gates that shape in BOTH directions and constants must stay a table or the gate reddens; and NO TEST COUNT is published, on the F-43 precedent that a count no gate reads drifts silently. All four gates that read README were re-proven NON-VACUOUS by applied sandbox mutation (delete a backticked API heading -> T8/A4 red; add one naming a non-export -> T8/A4 red; strip `2047.9375` -> advance-range pin red; add "sums across newlines" -> measure-semantics pin red; add "M4 shipped measureLine" -> F-52 gate red). | `grep -n "^#\{1,3\} " README.md` -> 30 headings, 21 of the blueprint's spine rows unmatched; `grep -c "<details>" README.md` -> **0** vs blueprint **2**; `grep -n -i "table of contents\|Composability\|Design decisions\|What this is not\|^## Ecosystem" README.md` -> **0 hits**; `README.md` line 2 is blank where the blueprint's line 3 is the tagline; U+2192 x11 vs `->` x17 in one file |
 | **F-51** | S3 | **The demo allocates a substring PER GLYPH PER FRAME, in the package whose identity is that drawing does not allocate -- using the exact pattern `measureLine` was shipped to remove.** `demo/demo-lite-bmfont.html:517` and `:531` compute each glyph's x as `font.measure(msg.substring(0, i), scale)` inside the per-glyph render loop. `msg` is 19 chars and `msg2` is 19, both drawn every frame, so that is ~38 substring allocations per frame -- ~2,280/second at 60fps -- plus the O(n^2) re-measure of a prefix that was already walked. **M4 shipped `measureLine(text, start, end, scale)` in 1.4.0 for precisely this**, and the M6 amendment cites "every line needs `text.slice()` per frame" as the motivating signal it discharged; the package's own demo never adopted it. Found by the M9b reviewer in passing while sweeping `demo/` for F-06 reliance, confirmed by the coordinator 2026-08-21. **NOT a 2.0.0 blocker and NOT caused by this diff**: `demo/` is byte-unchanged by M9a and M9b, `demo/` is excluded from `files[]` so it ships to nobody, and both messages are single-line so F-06's flip does not alter their geometry. Filed because the torture gate cannot see it -- T6 measures library bodies, not demo frames -- and because a zero-GC library demonstrating itself with a per-glyph allocation is the one place the claim is most visible. Fix: `font.measureLine(msg, 0, i, scale)`, no slice, no allocation, and the prefix walk is the same cost it already pays. **CLOSED 2026-08-21 (M10, v2.0.1) as FOLDED INTO F-53** -- same sites, F-53 is the superseding, wider-scope finding, and the M10 fix that closed F-53 closed this one; not fixed twice. See `decisions/0013-the-demo.md`. | `demo-lite-bmfont.html:517` `fontMain.measure(msg.substring(0, i), 1)` inside `for (i of msg)`, drawn every frame; `msg.length` 19, two messages -> ~38 substring allocations/frame |
 | **F-50** | **S2** | **F-08's fixed-point storage costs +248% on the two pure advance-sum measure helpers at INTEGER scale, and no law-preserving form avoids it.** The M9a plan's hypothesis -- folding the 1/16 into a per-CALL constant costs "ZERO extra per-glyph operations" -- is **FALSIFIED**. Operation count IS identical; wall-clock is not. Measured on the real bodies, isolated one-per-process, 12 reps, 200k ops, 64-char string (coder, reproduced independently by the coordinator): `_measureRange` **155.6 -> 540.9 ns** at `scale=1.0` (coordinator: 136.1 -> 560.7), `measureWidest` **104.5 -> 449.4**. At `scale=1.1` both are PAR. **The render path is FASTER under folded**: `draw` 588.4 -> 364.7 (**-38%**), `drawWrapped` 401.0 -> 251.8 (**-37%**), `layoutGlyphs` 604.7 -> 475.3 (**-21%**). MECHANISM: a V8 int-accumulator speculation artifact in the two-accumulation-site (kerning + advance) loop when every product is integer-valued; it is codegen, not arithmetic, and is Node v26.3.1-specific. **Two escapes were tried and both failed.** (a) **C-deferred** -- accumulate raw fixed-point integers and apply the scale ONCE at return (`sum(a*s/16) === sum(a)*s/16`) -- is FASTER than today at both scales (132.3 vs 136.8 at 1.0) and exact to 20k glyphs, but it **BREAKS T0's four-way no-epsilon conservation law**: it rounds once where `draw`/`layoutGlyphs` round per glyph (they maintain a cursor and cannot defer), so `walk === _measureRange` fails at every fractional scale (fuzz: **7213 mismatches / 36000**, first at `scale=1.1`, `395.65625000000006` vs `395.65624999999994`). The measure/render idiom split is not a workaround for this -- **the split IS the break**. (b) **Double-seeding the accumulator** (`let width = 0 * scale`), which a synthetic probe suggested collapses the artifact, has **NO effect on the real body**: 560.1 vs 560.0 ns (coordinator, 2026-08-21). RATIFIED ANYWAY, by the user, 2026-08-21, on these grounds recorded in full: the regression is **+385 ns/call on a helper**, which for a 12-line paragraph is ~4.6 us against a 16,700 us frame budget (**0.03%**), while the path that actually runs every frame gets 21-38% faster; and C-folded is the ONLY fixed-point form that keeps T0 exact. **248% of a cheap operation is still a cheap operation** -- but the ratio is recorded, not buried, because the 2% rule exists to force exactly this re-decision and it did its job. The alternative was option A, which means publishing "this renderer is wrong by up to 0.5 px per glyph and no caller may fix it". | `_measureRange` 64-char, scale 1.0: today **136.1 ns**, C-folded **560.7 ns**; scale 1.1: **102.2** vs **106.2**. C-deferred vs C-folded fuzz: **7213/36000 mismatches**. Accumulator seeding: **560.1 vs 560.0 ns** (no effect) |
 | **F-49** | **S2** | **The shipped F-13 unknown-bit mask is UNREACHABLE whenever bit 0 is set, so half the flag space is still silently ignored.** `BitmapFont.js:1261` is `if (f & FLAG_ELLIPSIS) { ... } else if (checked && (f & ~FLAG_MASK)) { _throwField(...) }` -- **the mask test is in the ELSE branch.** A `flags` value with bit 0 set takes the ellipsis path and never reaches it. Found by the M9 planner from control flow, reproduced by the coordinator 2026-08-21: under `{checked: true}`, `flags = 2` throws `lite-bmfont: flags has bits outside the known mask 1, got 2` as designed, and **`flags = 3` is SILENT** -- bit 1 is unknown, bit 0 is set, no throw. The defect is exactly the one F-13 was filed to close ("any unknown flag is silently ignored"), still open for every odd `flags` value, in the fix that closed it. Third instance of the class F-26/F-27/F-31 belong to: a guard that reads as coverage and is unreachable on half its domain. **Routed to M9a** (fork 4), which owns the flags surface and must close it before the reserved-bit documentation is written -- documenting bits 1-31 as "reserved, a reserved bit set is a caller error" while the check cannot see them on odd values would publish a promise the code does not keep. | `{checked:true}`, `drawWrapped` with a layout-buffer flags slot of **2** -> throws; of **3** -> **silent, no throw** |
-| **F-48** | S4 | **`Atlas.js` door 3c re-labels a genuine internal bug as a caller DOM failure.** M7's fix for a real fail-open (hostile `createElement`/`getContext` throws escaping as a bare `Error`/`TypeError`, contradicting the `AtlasError` promise shipped in four files) wraps the WHOLE DOM interaction -- `createElement`, `getContext`, and the per-glyph `measureText`/`fillText` loop -- in one `try`. That `try` also spans the pure-JS glyph arithmetic, so a defect INSIDE `generateAtlas` is caught and re-thrown as `AtlasError { field: 'dom' }` reading "generateAtlas failed while building the atlas from the DOM", when the DOM is healthy. Found by qa 2026-08-20 on a probe the coordinator asked for specifically, on the theory that the fix for a narrow fail-open had traded it for a broad mis-attribution -- it had. **S4, not S3**: it is a debuggability defect, not a correctness or safety one. The call still FAILS CLOSED and LOUDLY (nothing is swallowed or returned), no shipped doc claims the `field` values are exhaustive (`Atlas.d.ts` says "e.g."), and any such regression still reddens `A6`, which calls `generateAtlas` unguarded. **NOT fixed in 1.8.0, deliberately.** The repair carries a design choice -- which operations count as "the DOM" -- and inventing that narrowing after qa had already returned PASS would be an unreviewed late edit to the one file the whole session's review chain was built around. The honest move is to record it and let it be scoped. Fix shape when scheduled: narrow the `try` to the three DOM calls only, leaving the glyph math outside it, or pin the allowed `field` values so a mis-attribution reddens. Cheap either way -- the subpath ships with zero consumers. Unscheduled. | Under a HEALTHY `makeDocStub`, inject a reference to an undefined variable inside the per-glyph loop of `Atlas.js` -> throws `AtlasError`, `field: 'dom'`, message `generateAtlas failed while building the atlas from the DOM: totallyUndefinedInternalVar is not defined` -- a library bug reported as a caller-environment bug |
+| **F-48** | S4 | **`Atlas.js` door 3c re-labels a genuine internal bug as a caller DOM failure.** M7's fix for a real fail-open (hostile `createElement`/`getContext` throws escaping as a bare `Error`/`TypeError`, contradicting the `AtlasError` promise shipped in four files) wraps the WHOLE DOM interaction -- `createElement`, `getContext`, and the per-glyph `measureText`/`fillText` loop -- in one `try`. That `try` also spans the pure-JS glyph arithmetic, so a defect INSIDE `generateAtlas` is caught and re-thrown as `AtlasError { field: 'dom' }` reading "generateAtlas failed while building the atlas from the DOM", when the DOM is healthy. Found by qa 2026-08-20 on a probe the coordinator asked for specifically, on the theory that the fix for a narrow fail-open had traded it for a broad mis-attribution -- it had. **S4, not S3**: it is a debuggability defect, not a correctness or safety one. The call still FAILS CLOSED and LOUDLY (nothing is swallowed or returned), no shipped doc claims the `field` values are exhaustive (`Atlas.d.ts` says "e.g."), and any such regression still reddens `A6`, which calls `generateAtlas` unguarded. **NOT fixed in 1.8.0, deliberately.** The repair carries a design choice -- which operations count as "the DOM" -- and inventing that narrowing after qa had already returned PASS would be an unreviewed late edit to the one file the whole session's review chain was built around. The honest move is to record it and let it be scoped. Fix shape when scheduled: narrow the `try` to the three DOM calls only, leaving the glyph math outside it, or pin the allowed `field` values so a mis-attribution reddens. Cheap either way -- the subpath ships with zero consumers. Unscheduled. **CLOSED 2026-08-22 (M11, v2.0.2).** Repaired by NEITHER shape this row proposed -- by `decisions/0014` fork 3(b), an ATTRIBUTION FLAG. The `try` is NOT narrowed: it spanned `:74-130` before and `:82-143` after, wrapping the same DOM calls and the same pure-JS statements in the same order, with only the `inDom` writes and the catch's field selection added. Leaving the loop's shape alone was the POINT of choosing (b). This correction was caught by QA against an earlier draft of this very marker, which claimed "narrowing" -- a closure marker misdescribing its own repair is the defect F-52 and F-43 belong to. This row's SECOND proposed repair ("pin the allowed `field` values so a mis-attribution reddens") is **INERT and is retracted**: the mis-attribution reports `field: 'dom'` and `'dom'` is a LEGAL value, so pinning the allowed set cannot distinguish a real DOM fault from an internal bug wearing its label. `Atlas.js:81` now carries `let c, x, inDom = true` and marks the PURE-JS regions (`inDom = false`) rather than the DOM ones. That direction is deliberate and is the fail-closed one: an unmarked region defaults to `'dom'`, the pre-2.0.2 label, so a region anyone forgets to mark can only preserve today's behaviour and can never emit a FALSE `'internal'` blaming this library for a caller's environment fault. `field: 'internal'` is documented in `Atlas.d.ts` and `llms.txt` (both already stated the values are examples, so this is not breaking). Proven in BOTH directions by APPLIED mutation, three times over by three different agents: forcing the catch to always emit `'dom'` reddens the internal direction; mis-marking the canvas-dimension region as pure reddens the DOM direction; and a full region enumeration of `Atlas.js:82-158` confirms every DOM op is `inDom = true`, the three pure regions are `inDom = false`, and the non-throwing pure spots degrade to the fail-closed `'dom'`. QA added a throwing `textBaseline` setter row to close the reviewer's carryover, where the property setters at `:106-107,121-127` were correctly marked but driven by no test. See `decisions/0014-close-the-ledger.md`. | Under a HEALTHY `makeDocStub`, inject a reference to an undefined variable inside the per-glyph loop of `Atlas.js` -> throws `AtlasError`, `field: 'dom'`, message `generateAtlas failed while building the atlas from the DOM: totallyUndefinedInternalVar is not defined` -- a library bug reported as a caller-environment bug |
 | **F-52** | S3 | **Three lines of the SHIPPED docs still forward-reference 2.0.0 as unfinished, inside the 2.0.0 tarball.** `llms.txt:25` reads "2.0.0 may re-parent this type" of `BitmapFontError` and `BitmapFont.d.ts:60` carries the same sentence verbatim -- 2.0.0 shipped and did NOT re-parent it, so the published docs speculate about the release the reader is holding. `llms.txt:418-419` is worse: it reads "half-closed F-06 (measureWidest ships; measure's semantics stay M9's). F-08's storage half stays open (M9)" -- **both closed in this very release**, and "M9" is an internal roadmap name with no meaning to a consumer. All three are in `files[]` and went to npm. Found by the coordinator 2026-08-21 while syncing the catalog card, i.e. by reading the shipped surface as a consumer rather than as an author -- which is the only reading that catches this class. Not caught by the docs-drift guard (T8), which pins method SIGNATURES against the source, nor by the two 2.0.0 docs-claim pins, which derive NUMBERS from live constants; neither can see a stale English sentence about scheduling. Fix: delete the three sentences, and add a gate that reddens on a shipped file containing a roadmap session name (`M0`-`M9`, `M9pre`, `M9a`, `M9b`) or the phrase "stays open" -- the pin must be proven in BOTH directions, since the gate's own source would otherwise match itself. **CLOSED 2026-08-21 (M10, v2.0.1)**: the three sentences deleted; `test/packaging.test.js` carries the F-52 gate (session-name / scheduling-phrase pin over files[] minus CHANGELOG.md/LICENSE/BitmapFont.js), proven in both directions. See `decisions/0013-the-demo.md`. | `grep -n "may re-parent\|stays M9's\|stays open (M9)" llms.txt BitmapFont.d.ts` -> `llms.txt:25`, `llms.txt:418-419`, `BitmapFont.d.ts:60`, all inside the published 2.0.0 tarball |
 | **F-53** | **S2** | **The demo PRINTS "zero alloc" on screen, four times, while allocating ~42 strings per frame.** Superset of F-51, and the reason it is S2 where F-51 is S3: F-51 is an inefficiency, this is a published FALSEHOOD in the package's most-read artifact. Measured 2026-08-21 across `demo/demo-lite-bmfont.html`: the per-frame allocations are `:517` `msg.substring(0, i)` (19/frame), `:531` `msg2.substring(0, i)` (19/frame), `:540` `Math.round(scoreDisplay).toString().padStart(8, '0')` (**2**/frame -- `toString` then `padStart`), `:573` `twText.substring(...)` (1/frame) and `:611` `count + ' LIVE STRINGS'` (1/frame). ~42/frame, ~2,520/second at 60fps. The captions rendered over them, **CORRECTED 2026-08-21 -- THREE captions, not four**: `:521` "still zero allocation in draw()", **`:547` "font.draw() with padStart, zero alloc"** -- which names the allocating call and calls it zero-alloc in the same breath -- and `:586` "> rendering char-by-char -- zero string allocation". The first filing cited `:585` and `:552`; the true lines are `:586` and `:595`, and `:552` is actually the "Decorative orbiting text" block. The first filing also named `:595` "each character spawned as a zero-gc particle" (the mouse-trail scene) as false. **IT IS TRUE AND IS RETRACTED FROM THIS ROW.** Measured 2026-08-21, 5 reps at the shipped config: the trail's `chars[Math.random()*chars.length|0]` single-character index costs min 28,320 / max 318,600 B against a noop min 14,400 / max 637,112 -- indistinguishable -- while a `substring` control on the same literal is 4,694,040 B and stable. V8 caches single-character ASCII strings, so the trail allocates nothing per frame. Recorded rather than quietly deleted, because a finding that overstates its own scope is the same defect as a doc that overstates the code -- which is what this session exists to fix. The library bodies ARE zero-alloc and the torture gate proves it; the demo's own scaffolding is not, and T6 cannot see the demo. Not every site has a clean fix: `:517`/`:531`/`:573` become `measureLine`/`layoutGlyphs` for free, but the zero-PADDED score at `:540` has no zero-alloc rendering path -- `drawFastInt` renders a count and cannot pad -- so that one is a design fork, not a substitution. **CLOSED 2026-08-21 (M10, v2.0.1)**: `demo/scenes.mjs` extraction removes every per-frame allocating site named above (forks 1-3 + T-6); the four captions were rewritten to name the call that delivers zero allocation. Coverage is partial by design -- see F-54 for the volume lane's blind spot on the score/stress scenes. See `decisions/0013-the-demo.md`. | `demo-lite-bmfont.html:547` draws the literal `'click to add points -- font.draw() with padStart, zero alloc'` directly beneath `:540`'s `.toString().padStart(8, '0')`; grep the frame path -> 5 allocating sites, ~42 strings/frame |
-| **F-54** | **S2** | **The allocation-VOLUME lane resolves ~19 strings/frame and is BLIND at ~2, so a small per-frame regression is invisible to the only instrument that can see transient garbage -- and on newer V8 it also reports FALSE-POSITIVE floors for zero-alloc float-heavy frame bodies.** Found 2026-08-21 building the M10 demo gate (`test/demo.test.js`). The score scene allocates 2 short strings/frame; `harness.allocVolume` (20k warmup -> gc() -> stride `i&1023`) cannot separate it from zero. Measured three ways at the shipped config, 6 reps each: (a) volume AMP=1: OLD min=24 max=774,304 vs NEW min=0 max=28,320 -> 0.0x; (b) volume AMP=10: OLD min=max=24 vs NEW min=max=0 -> a "24x" ratio on an ABSOLUTE SCALE OF 24 BYTES, noise wearing a ratio's clothes; (c) a `perf_hooks` GC observer yielding AFTER the loop (what F-37 could not do from inside it): OLD events `2 0 0 0 0`, NEW `0 0 0 0 0` -> 0.0x. Amplification does not rescue it -- more allocation just buys more scavenges. SEPARATELY, on Node v26.3.1 the lane reports a NON-ZERO, deterministic floor (wave 6.3 MB, typewriter 0.79 MB, stress 12-15 MB, score 58 MB -- score NEW is HIGHER than score OLD 38 MB) for bodies a heap-sampling profiler proves are zero-alloc (renderWave: ~504 B attributed over 400k frames). That floor is V8 new-space-working-set growth after allocVolume's internal gc(), not real garbage, and it does not correlate with real string bytes (stress OLD 24 MB for ONE concat exceeds wave OLD 21 MB for 38 substrings). Consequence for M10: only WAVE (38 substrings, OLD 21.3 MB / NEW 6.3 MB, 3.35x) and TYPEWRITER (OLD 3.44 MB / NEW 0.79 MB, 4.36x) separate on this host, and even those are UNDER the 10x the derivation rule requires -- a reported finding, not a tuned limit; SCORE and STRESS are volume-blind and are covered behaviourally + by a source-text pin instead. This GENERALISES to t6-alloc.mjs's eleven volume windows (A..K), NONE of which has ever been checked for its OWN resolution floor: a window whose mutant is a handful of small strings/objects could be as blind as the score scene and pass vacuously. The lane is a coarse transient detector, not a byte-accurate gate; treat a PASS as "no large transient regression", never as "zero allocation". | M10 `test/demo.test.js` comments + `decisions/0013-the-demo.md`; heap-sampling profiler attributes ~504 B to renderWave over 400k frames; the three measurement sets above, all at VOL_OPS=200,000 / VOL_WARMUP=20,000 / stride i&1023 |
+| **F-54** | **S2** | **The allocation-VOLUME lane resolves ~19 strings/frame and is BLIND at ~2, so a small per-frame regression is invisible to the only instrument that can see transient garbage -- and on newer V8 it also reports FALSE-POSITIVE floors for zero-alloc float-heavy frame bodies.** Found 2026-08-21 building the M10 demo gate (`test/demo.test.js`). The score scene allocates 2 short strings/frame; `harness.allocVolume` (20k warmup -> gc() -> stride `i&1023`) cannot separate it from zero. Measured three ways at the shipped config, 6 reps each: (a) volume AMP=1: OLD min=24 max=774,304 vs NEW min=0 max=28,320 -> 0.0x; (b) volume AMP=10: OLD min=max=24 vs NEW min=max=0 -> a "24x" ratio on an ABSOLUTE SCALE OF 24 BYTES, noise wearing a ratio's clothes; (c) a `perf_hooks` GC observer yielding AFTER the loop (what F-37 could not do from inside it): OLD events `2 0 0 0 0`, NEW `0 0 0 0 0` -> 0.0x. Amplification does not rescue it -- more allocation just buys more scavenges. SEPARATELY, on Node v26.3.1 the lane reports a NON-ZERO, deterministic floor (wave 6.3 MB, typewriter 0.79 MB, stress 12-15 MB, score 58 MB -- score NEW is HIGHER than score OLD 38 MB) for bodies a heap-sampling profiler proves are zero-alloc (renderWave: ~504 B attributed over 400k frames). That floor is V8 new-space-working-set growth after allocVolume's internal gc(), not real garbage, and it does not correlate with real string bytes (stress OLD 24 MB for ONE concat exceeds wave OLD 21 MB for 38 substrings). Consequence for M10: only WAVE (38 substrings, OLD 21.3 MB / NEW 6.3 MB, 3.35x) and TYPEWRITER (OLD 3.44 MB / NEW 0.79 MB, 4.36x) separate on this host, and even those are UNDER the 10x the derivation rule requires -- a reported finding, not a tuned limit; SCORE and STRESS are volume-blind and are covered behaviourally + by a source-text pin instead. This GENERALISES to t6-alloc.mjs's eleven volume windows (A..K), NONE of which has ever been checked for its OWN resolution floor: a window whose mutant is a handful of small strings/objects could be as blind as the score scene and pass vacuously. The lane is a coarse transient detector, not a byte-accurate gate; treat a PASS as "no large transient regression", never as "zero allocation". **NARROWED -- the headline mechanism was MISDIAGNOSED, corrected by measurement 2026-08-22 (M11, decisions/0014).** "Resolves ~19 strings/frame and is BLIND at ~2" is FALSE: the score scene's OLD and NEW bodies separate DETERMINISTICALLY. Re-measured on this host (darwin arm64, Node v26.3.1), every allocation CONSUMED (drawn through the recording ctx), min over 6 reps, ladders monotone: NEW (zero-alloc) floors at 58,392,864 B, OLD (2 strings + 6 array literals/frame) at 69,387,384 B -- a 10,994,520 B gap reproducible TO THE BYTE across 4 fresh processes and invariant under measurement order. One padStart/frame is 22,610,040 B in isolation (770x the noop floor) and passes through the real carrier MONOTONICALLY (NEW + k padStart: 58.4M / 84.9M / 96.5M / 121.3M / 166.9M for k=0/1/2/4/8). H1 (DCE) is FALSIFIED: a DISCARDED padStart measures 22,610,040 B, byte-identical to a consumed one -- V8 does not elide it, so M10's "OLD min=24" was a defect of M10's own AMP probe, not evidence the lane is blind. The REAL reason a 10x gate cannot be built for score/stress: the NEW body is NOT zero-alloc -- it carries ~58 MB of its OWN real per-frame float garbage, LINEAR in op-count (200k 58.4M / 800k 233.2M, ratio 3.99x, ~291 B/frame; the noop and harness-only controls stay flat, so this is real cumulative garbage, NOT a working-set plateau). A small STRING-garbage delta (11 MB) cannot beat that large REAL float-garbage floor -> only **1.19x**, far under the 10x rule. This CORRECTS this row's own M10-era claim above that the floor is "V8 new-space-working-set growth ... not real garbage" -- it IS real garbage, from the scenes' own float-on-object-field arithmetic, not any library call (the library draw path is gated at 0 by T6). That the scene bodies allocate per frame at all is filed as **F-55**. The IDENTIFIED toggle is the carrier's floor magnitude, set by draws/frame -- wave floors at 6.29M (mutant 21.3M = 3.35x, gateable) but score floors at 58.4M (9.3x higher, ~19 draws + drawFastInt/frame) so the same-class garbage is 1.19x (ungateable). The t6 generalisation is DISCHARGED: single-method library windows floor at min=0 (max tens of KB), so all TWELVE volume windows (A,B,C,C2,D,E,F,G,H,I,J,K -- the row earlier said "eleven (A..K)" and missed C2) separate cleanly (recorded: C2 0->103M, B 37K->81M); the blindness is a property of composite multi-draw frame carriers only. Outcome unchanged for coverage -- score/stress stay behavioural + source-text -- but for the corrected reason (SNR 1.19x), not "invisible bytes". | M10 `test/demo.test.js` comments + `decisions/0013-the-demo.md`; M11 `decisions/0014` + the re-measurement above; heap-sampling profiler attributes ~504 B to renderWave over 400k frames; the three measurement sets above, all at VOL_OPS=200,000 / VOL_WARMUP=20,000 / stride i&1023 |
+| **F-55** | S3 | **The four demo scene bodies allocate real garbage every frame, contradicting the 2.0.1 CHANGELOG claim that they "were rewritten to allocate nothing per frame" -- the same demo-overclaim class as F-53, one session later, inside the sentence that announced F-53's fix.** Found while diagnosing F-54 (M11, 2026-08-22). Measured by op-count scaling (state set once, harness driver excluded, min over 5 reps, darwin arm64 Node v26.3.1): every scene body's allocVolume floor scales LINEARLY with op-count (ratio ~4.0x at 4x ops), the signature of real cumulative garbage -- a bounded working-set plateau is flat, which the noop control (200k 0 / 800k 0) and the harness-only now/dt control (200k 28,224 / 800k 0) both are. Per-frame cost: renderWave 31.5 B, renderScore 291.5 B, renderTypewriter 7.4 B, renderStress 62.0 B. Isolation (only S.now/S.dt varied per call costs 1.0 B/frame; renderScore with state set ONCE still costs 291.5 B/frame at 3.99x) attributes the bytes to the scene body's OWN float arithmetic, not the harness and not any library call -- the library draw path is gated at 0 B by T6's twelve single-method windows (which floor at min=0). LIKELY MECHANISM: recent V8 removed double field unboxing, so storing a double into an object field boxes a HeapNumber -- the candidates are S.scoreDisplay += / S.drawCount++ / S.twTimer += and the orbit Math.cos/sin and width-helper intermediates written back to S. **S3, not S2 like F-53:** the LIBRARY's zero-alloc guarantee is intact and gated; this is the DEMO's own JS scaffolding, and demo/ is excluded from files[] so it ships to nobody. The overclaim ALSO reached the demo's own on-screen captions -- `demo/scenes.mjs:233` and `:275` read "zero allocation" / "zero alloc" unqualified over bodies costing 31.5 and 291.5 B/frame, which is F-53's defect verbatim in F-53's own file (`:331` was already exact: "zero string allocation"). Found by the M11 reviewer. **FOUR sites CORRECTED in M11**, found in two passes -- the reviewer found the two captions, QA then found two MORE of the same class that the first pass missed: the file header comment `demo/scenes.mjs:19` ("EVERY per-frame allocation is gone") and, worst of the four, the LIVE ON-SCREEN HUD READOUT `demo/demo-lite-bmfont.html:500` which wrote `'0 allocs'` every frame for all six scenes, plus its static initial value at `:222`. A numeric readout asserting zero is the most direct form this falsehood can take. All four now read "zero string alloc(ation)" -- a two-literal truth fix, not the F-55 repair: what 2.0.1 actually removed IS the per-frame string garbage, so the scoped caption is exact and gated. The demo is served UNPINNED from jsDelivr, so a false caption there is live to every reader the moment it is written. The only SHIPPED surface the overclaim reached is the CHANGELOG 2.0.1 sentence, which is a doc property no gate reads (the F-43/F-52 class) and is RETRACTED in the 2.0.2 entry per this repo's record-don't-delete convention (F-53's own retraction is the precedent). HONEST CLAIM, recorded: "allocate nothing per frame" is true of the LIBRARY calls (gated) but not of a JS scene body doing float math on object fields under this V8; what 2.0.1 actually removed is the per-frame STRING garbage (substring/padStart/concat) the scenes were built to shed, and that removal is real and gated by demo.test.js's wave/typewriter volume rows. Fix (make the scene bodies genuinely zero-alloc by keeping their doubles in locals / typed arrays, or re-scope every "zero allocation" caption to the library calls) is UNSCHEDULED -- a separate session. | op-count scaling, state set once, harness excluded: renderScore 200k 58,392,928 / 800k 233,210,208 (3.99x, 291.5 B/frame) vs noop 200k 0 / 800k 0 and 1-substring/op 200k 23,223,784 / 800k 94,618,288 (4.07x); all four scenes wave 31.5 / score 291.5 / typewriter 7.4 / stress 62.0 B/frame |
+| **F-56** | **S2** | **`@zakkster/lite-text-layout@1.3.0` reads bmfont's advance and kerning stores RAW, so every wrap it computes against bmfont 2.x is EXACTLY 16x too wide -- and both packages' published docs advertise the pairing.** bmfont 2.0.0 moved `glyphs[id * 7 + 6]` and the kerning LUT to 1/16 FIXED POINT, recovered with `stored * GLYPH_ADVANCE_SCALE` (0.0625). The peer never decodes: `TextLayout.js:341,377,443,515,662,697` all read `font.glyphs[id * 7 + 6] * scale` and `font.kerning[k] * scale` directly. Measured 2026-08-22 against the 2.0.2 working tree: a 10-glyph string at `xadvance` 10 gives `bmfont.measure` **100** and text-layout `lineWidth` **1600** -- ratio EXACTLY 16 -- and a 306-char paragraph at `boxWidth` 560 wraps to **97 lines instead of 7**. It fails SILENTLY: no throw, no warning, just collapsed text. **NEITHER REPO IS WRONG INTERNALLY, WHICH IS WHY BOTH SUITES ARE GREEN.** bmfont did the correct thing at every step -- MAJOR bump, `FORMAT_VERSION` stamped, and a boundary guard at `test/packaging.test.js:441` that pins the peer's INSTALLED bmfont below 2.0.0 and reddens deliberately when someone bumps it. text-layout pins `"@zakkster/lite-bmfont": "^1.6.0"`, so npm hands its own tests a 1.x copy and they pass. The break lives in the GAP: `@zakkster/lite-bmfont@2.0.1` and `@zakkster/lite-text-layout@1.3.0` are both live on npm right now, text-layout's `llms.txt:3` says its output "is exactly the layout buffer that `@zakkster/lite-bmfont`'s `BitmapFont.drawWrapped` consumes", bmfont's catalog card names text-layout as the companion, and a user who follows either gets broken wrap. A guard that protects one repo's tests is not a guard on the integration. Same lesson as F-45, which also crossed this boundary and also shipped green. Found 2026-08-22 while building `demo/demo-compound.html`, i.e. by USING the advertised pairing rather than by reading either package -- which is the only thing that catches this class. **NOT FIXED HERE.** The repair belongs to the peer: decode `GLYPH_ADVANCE_SCALE`, or read the consumer's `FORMAT_VERSION` and fail closed on an unknown one. Filed in `LiteTextLayout/ROADMAP.md` as well, by user decision. **MITIGATED IN THE DEMO, NOT PAPERED OVER:** `demo/demo-compound.html` carries a boot-time `toWholePixelFont()` adapter that hands text-layout a whole-pixel Int16 view, restores exact agreement (`110 == 110` verified), and THROWS on a fractional advance rather than rounding silently -- the atlas generator emits integral advances (`Atlas.js` `w = Math.ceil(m.width) + 4`), so the round-trip is exact for generated fonts and fails closed for hand-authored ones. | 10 glyphs @ `xadvance` 10: `bmfont.measure` 100, raw slot6 160, text-layout `lineWidth` 1600, ratio **16**; 306-char paragraph at 560px -> 97 lines vs 7; adapter restores 110 vs 110 |
 
 (Every non-ASCII code point named in the F-46 row above is written as a `U+XXXX`
 escape, never as the character itself, so this file stays ASCII while describing
@@ -3601,7 +3603,16 @@ version_target: 2.0.1        # PATCH. The only SHIPPED bytes that move are F-52'
                              # -- but it IS the public face, served UNPINNED from
                              # jsDelivr, so it is 2.0.0 code today whether or not
                              # anyone re-published it.
-status: planned
+status: done                 # M10 SHIPPED 2026-08-21, commit 5a49653, PUBLISHED
+                             # as 2.0.1. Gate at landing: npm test 152/152/0 fail/
+                             # 0 todo; torture ok exit 0; BREAK=1 exit 1; smoke
+                             # exit 0; pack 10 files with 0 demo/ paths; VERSION
+                             # === package.json === '2.0.1'.
+                             # CLOSED: F-51 (folded into F-53), F-52, F-53.
+                             # OPENED: F-54 (S2, the volume lane's resolution
+                             # floor -- unscheduled, and it generalises to
+                             # t6-alloc's eleven existing windows, none of which
+                             # was ever checked for its own floor).
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -3940,3 +3951,268 @@ to be answerable in that form, and every T9 control exists to answer it out
 loud.
 
 MIT (c) Zahary Shinikchiev
+
+
+# M11 -- lite-bmfont -- close the ledger -- v2.0.2
+
+---
+package: "@zakkster/lite-bmfont"
+version_target: 2.0.2        # PATCH. Shipped bytes that move: README.md (F-47,
+                             # whole-document rewrite) and Atlas.js + Atlas.d.ts
+                             # (F-48, error attribution on a path only reachable
+                             # when this library is itself broken). No hot body
+                             # moves. A11's twelve method SHAs must not move.
+status: done                 # M11 LANDED 2026-08-22 as 2.0.2. Gate: npm test
+                             # 153/153/0 fail/0 todo; torture ok exit 0; BREAK=1
+                             # exit 1; smoke exit 0; pack 10 files / 0 demo paths;
+                             # non-ASCII 0; VERSION === pkg === '2.0.2' at all
+                             # four sites; BitmapFont.js diff is the one VERSION
+                             # line. Pipeline: planner -> coder -> reviewer
+                             # (REJECTED, 1 blocker: F-54's mechanism false) ->
+                             # coder -> reviewer (APPROVED) -> qa (FAIL, F-48
+                             # closure marker missing) -> qa (FAIL, 2 blockers:
+                             # the marker misdescribed its own repair; the HUD
+                             # claim false on the stress scene) -> qa (PASS).
+                             # CLOSED: F-47, F-48. NARROWED: F-54 (mechanism was
+                             # MISDIAGNOSED, corrected on measurement).
+                             # OPENED: F-55 (S3, the demo scene bodies allocate
+                             # real per-frame float garbage -- unscheduled).
+                             # THE LEDGER DOES NOT REACH ZERO. F-55 is open by
+                             # decision, filed rather than folded in.
+gc_maxMajor: 0
+gc_maxPauseMs: 4
+alloc_bytes_per_op: 0
+leak_cycles: 4096
+peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak"]
+findings: [F-47, F-48, F-54]
+depends_on: [M10]
+---
+
+## 0. READ THIS FIRST -- three corrections to the findings as filed
+
+The ledger rows for all three findings are stale or wrong in ways that change the
+work. Verified 2026-08-22 at plan time, on 2.0.1 (commit 5a49653).
+
+### 0.1 F-47 is HALF CLOSED already, and the remaining half is gated
+
+F-47's row lists two defects: a structural spine gap AND a Unicode/emoji problem
+("every H2 carries a leading emoji", "11 U+2192 and 17 ASCII ->").
+
+**The Unicode half is CLOSED.** M2b (F-46, commit fd5aa35) took the whole repo to
+zero non-ASCII bytes and put a gate behind it. Measured now across every tracked
+file: **0** non-ASCII bytes, README included. There are no emoji and no U+2192
+left to remove. Do not schedule that work; it is done.
+
+**The structural half stands, measured against the blueprint:**
+
+| blueprint spine row | bmfont |
+|---|---|
+| one-line blockquote tagline under the title | ABSENT (line 2 is blank) |
+| positioning H2 "The X the ecosystem was missing" | ABSENT (has "What is lite-bmfont?") |
+| Table of contents | ABSENT |
+| What you get | ABSENT |
+| `<details>` deep-dive on the core surface | ABSENT (blueprint 2, bmfont 0) |
+| Composability (end-to-end pipeline in code) | ABSENT |
+| `<details>` Zero-GC design notes + allocation table | ABSENT |
+| Design decisions worth knowing | ABSENT |
+| What this is not | ABSENT |
+| Ecosystem | ABSENT |
+
+Present but off-spine: `Comparison`, `LLM-Friendly Documentation`, `Changelog`.
+
+### 0.2 F-47's row does not mention that FOUR gates read README.md
+
+This is the load-bearing omission. A free-form rewrite reddens the suite. Every
+constraint below was read out of the live tests, not assumed:
+
+1. **`t8-packaging.mjs:188-203`, T8/A4, BOTH DIRECTIONS.** Every exported method
+   and atlas export MUST have a heading matching `^#{2,4} \`ident`, and every such
+   backticked heading MUST name a real export. The rewrite may not convert the
+   API reference into a table or into grouped prose headings.
+2. **`packaging.test.js:327` advance-range pin.** README must contain the literal
+   `2047.9375` and must NOT match `\[0,\s*32767\]`.
+3. **`packaging.test.js:358` measure-semantics pin.** README must NOT match
+   `sums across newlines`, `2\.0\.0 promotes`, or `is \`?32\`?, not \`?16\`?`.
+4. **`packaging.test.js:35` F-52 gate.** README is in scope (files[] minus
+   BitmapFont.js/CHANGELOG.md/LICENSE). It must not match
+   `\bM[0-9](?:pre|[ab])?\b|stays open|may re-parent`. **A rewrite that cites a
+   session name -- "M4 shipped measureLine" -- reddens this.**
+5. The ASCII gate (F-46) scans it as a tracked file.
+
+`t9-controls.mjs:432` names README in a failure message but does NOT read it.
+Keep the shared-scratch re-entrancy contract line anyway: that message points a
+reader at it.
+
+### 0.3 F-54's STATED MECHANISM IS CONTRADICTED BY MEASUREMENT
+
+F-54 claims the volume lane "resolves ~19 strings/frame and is BLIND at ~2".
+Measured at plan time, 2026-08-22, Node on this host, shipped `allocVolume`
+(VOL_OPS 200,000 / VOL_WARMUP 20,000 / stride `i&1023`), 5-6 reps each,
+every allocation CONSUMED so nothing is dead-code eliminated:
+
+| body, ONE allocation per call | min | vs worst noop max (781,408) |
+|---|---|---|
+| noop | 13,536 (max 781,408) | -- |
+| `toString()+padStart(8,'0')` -- **the exact score-scene allocation** | 18,692,456 | **24x** |
+| `a + b` concat | 23,720,136 | 30x |
+| `substring(12)` | 6,390,176 | 8x |
+| object literal `{x,y}` | 3,194,896 | 4x |
+| array `[i,i,i,i]` | 3,194,896 | 4x |
+
+**One `toString+padStart` per call is 24x above the worst noise floor.** It is not
+invisible. Three candidate mechanisms for M10's blindness were probed and ALL
+THREE FAILED:
+
+- **not allocation count** -- 1/call is cleanly visible for every kind above;
+- **not allocation kind** -- the score scene's own primitive is the LOUDEST of
+  the six;
+- **not the carrier body** -- a scene-shaped zero-alloc carrier (114 Float64Array
+  writes + 19 recording drawImage calls per call) measures `min=0 max=0
+  spread=0`, and carrier + that same single allocation measures 19,033,264 with a
+  spread of 10,672. The signal passes through a scene carrier intact.
+
+Two probes were WRONG before they were right, and both wrong versions looked
+plausible: `s = parts[i] + '#'` with only the last value stored was dead-code
+eliminated (64 allocs/call reported LESS than 1); `(a + b).length` never
+materialises the string at all (64 allocs/call reported 0). **Any resolution
+work in this session must consume every allocation and must show monotonicity
+across a ladder before a single number is believed.**
+
+What is NOT disproven: M10's score scene really was unseparable. The EFFECT is
+real; the stated CAUSE is not established. **F-54 must be DIAGNOSED before it is
+fixed, and closing it as MISDIAGNOSED is an admissible outcome** -- precedent
+F-44, closed exactly that way in 1.7.0 after old-vs-new measurement, and the
+roadmap already ratifies a recorded non-fix as a legitimate result.
+
+### 0.4 F-48's row prescribes a fix that cannot work
+
+The row offers two repairs: narrow the `try`, **or** "pin the allowed `field`
+values so a mis-attribution reddens". **The second one is inert.** The
+mis-attribution reports `field: 'dom'`, and `'dom'` is a legal value -- pinning
+the allowed set cannot distinguish a real DOM failure from an internal bug
+wearing its label. Only narrowing discriminates. Do not spend the session on the
+pin.
+
+Confirmed live: `Atlas.js:74` opens the `try` and `:130` closes it, spanning
+`createElement` (`:75`), `getContext` (`:87`), and the entire per-glyph loop
+`:101-128` -- which contains pure arithmetic (`col`, `row`, `px`, `py`, `w`) and
+a `json.chars.push({...})`. Any defect in that arithmetic is reported as a
+caller DOM failure. Nothing in `findings.test.js` pins this, so the fix reddens
+no existing test -- and nothing currently gates the mis-attribution either.
+
+---
+
+## 1. Forks to decide
+
+**Fork 1 -- F-47 API section shape.** The blueprint groups the API under a few
+headings (`### The factory`, `### Contract constants`). T8/A4 requires one
+backticked heading per export, both directions. **RECOMMENDED: keep the ~14
+per-method backticked H3s underneath a `## API reference` H2.** The Law says
+"API reference (signatures + a constants table)"; it does not forbid one
+subheading per signature, and T8/A4 is a live gate that the Law is not.
+
+**Fork 2 -- F-47 Testing section, test count.** The Law's spine says "Testing
+(test count + npm scripts)". README deliberately publishes NO count and says so,
+citing F-43 (a count no gate reads drifts silently). Options: (a) keep the
+no-count stance and record the deviation with its reason; (b) publish the count
+and add a gate that derives it from a live run. **RECOMMENDED: (a).** F-43 is a
+finding this package paid for; re-introducing an ungated number to satisfy a
+style rule trades a real guarantee for a cosmetic one. Record the deviation in
+`decisions/0014` so it is a decision, not a lapse.
+
+**Fork 3 -- F-48 repair shape.** (a) a `try` per DOM call, two per glyph;
+(b) an `inDom` boolean set around each DOM call, read in the `catch` to choose
+between `field: 'dom'` and a new `field: 'internal'`; (c) hoist what arithmetic
+can be hoisted out of the `try`. **RECOMMENDED: (b).** It is zero-allocation,
+discriminates exactly, and leaves the loop's shape alone. `generateAtlas` is
+COLD so either would be affordable, but (b) is the smaller diff.
+
+**Fork 4 -- F-54 disposition.** Diagnose first. Admissible outcomes: FIXED (a
+mechanism is found and the lane or the limits change), MISDIAGNOSED (the effect
+is explained by something other than lane resolution; row corrected and closed),
+or NARROWED (the real blindness is smaller than claimed and is recorded with its
+true boundary). **Do not permit "closed by documentation alone"** -- the F-44
+precedent closed on measurement, and section 3120 of the roadmap already forbids
+the documentation-only close for that finding's class.
+
+---
+
+## 2. TASKS
+
+- **T-1 (F-54, DIAGNOSE, do this FIRST).** Reproduce M10's score-scene
+  measurement from `test/demo.test.js` and `decisions/0013`. Determine why the
+  real score scene did not separate when its own allocation primitive is 24x
+  visible in isolation and through a synthetic carrier. Every probe consumes
+  every allocation; every claim carries a ladder showing monotonicity. Report
+  the mechanism or report that it could not be established.
+- **T-2 (F-54, act on T-1).** Per fork 4. If a real resolution boundary exists,
+  measure it for each of the **twelve** volume lanes -- A, B, C, C2, D, E, F, G,
+  H, I, J, K (F-54's row says "eleven windows (A..K)" and misses C2) -- and
+  record each lane's floor SPREAD (max-min over k reps) beside its limit, since
+  a limit's margin against a single mutant says nothing about the smallest
+  regression it can see. If no boundary is established, correct the F-54 row and
+  close it, with the failed mechanisms listed so nobody re-runs them.
+- **T-3 (F-54).** Whatever the outcome, the tier header states what a PASS
+  means: "no large transient regression", never "zero allocation".
+- **T-4 (F-48).** Fork 3 repair in `Atlas.js`. Add `field: 'internal'` to
+  `Atlas.d.ts` and `llms.txt` (both say field values are "e.g.", so this is not
+  breaking).
+- **T-5 (F-48).** A test that injects a reference to an undefined variable inside
+  the per-glyph loop under a HEALTHY doc stub and asserts `field === 'internal'`,
+  plus its twin asserting a hostile `fillText` still yields `field === 'dom'`.
+  Both directions or the gate is decorative.
+- **T-6 (F-47).** Rewrite `README.md` on the blueprint spine, honouring every
+  constraint in section 0.2 and forks 1-2.
+- **T-7 (F-47).** After the rewrite, prove each of the four README gates is still
+  NON-VACUOUS: for T8/A4 both directions, delete one backticked heading and watch
+  it redden, then add a backticked heading naming a non-export and watch it
+  redden. Sandbox only.
+- **T-8.** `decisions/0014` records forks 1-4 with their numbers, including
+  F-54's disproven mechanisms and section 0.3's table.
+- **T-9.** CHANGELOG + version sync to 2.0.2.
+
+## 3. ASSERTIONS
+
+Every assertion names a mutation, and **that mutation is APPLIED in a sandbox
+copy and watched go red** (AR-02). A cited mutation is not an assertion.
+
+- **A1** T8/A4 reddens on a deleted backticked API heading AND on a backticked
+  heading naming a non-export.
+- **A2** The advance-range pin reddens if `2047.9375` leaves README.
+- **A3** The measure-semantics pin reddens if the 1.x claim returns to README.
+- **A4** The F-52 gate reddens if the rewritten README cites a session name.
+- **A5** An undefined variable inside the glyph loop yields `field: 'internal'`;
+  a throwing `fillText` still yields `field: 'dom'`.
+- **A6** A11's twelve method SHAs are unchanged -- no hot body moved.
+- **A7** Whatever T-2 records for a lane, a regression at the recorded boundary
+  reddens that lane and one just below it does not. If no boundary is claimed,
+  A7 is struck and the reason is written down, not silently dropped.
+- **A8** `npm pack --dry-run` is **10** files -- `files[]`'s nine entries plus
+  `package.json`, which npm adds itself. Verified at plan time, 2026-08-22.
+
+## 4. DONE WHEN
+
+1. `npm test` 0 fail, 0 todo. `node --expose-gc test/torture.mjs` prints `ok`.
+   `BMFONT_TORTURE_BREAK=1` exits 1. `npm run smoke` exits 0.
+2. Every blueprint spine row is present in README, in order, or its absence is a
+   recorded decision in `decisions/0014` with a reason.
+3. `grep -c "<details>" README.md` is at least 2.
+4. All four README gates green AND proven non-vacuous by applied mutation.
+5. F-48 closed with both-direction coverage.
+6. F-54 closed with a disposition from fork 4, on measurement, never on prose.
+7. `VERSION === require('./package.json').version === '2.0.2'`.
+8. Non-ASCII 0 across all tracked files.
+9. The ledger has no open finding left except any this session opens.
+
+## 5. Standing constraints
+
+- Do NOT run `/release`, do NOT `git commit`, `git push`, or `npm publish`.
+- `git add` IS required and IS permitted, targeted paths only, NEVER `git add -A`.
+- ALL mutation testing in a SANDBOX COPY (`cp -R` to the scratchpad). NEVER
+  mutate the live tree. Note: a bare sandbox copy fails the ASCII gate and the
+  peer-wiring lane because `.git` and peer `node_modules` are absent -- both
+  fail CLOSED, which is correct. Baseline the sandbox before reading a mutation.
+- Leave NO scratch files in the live tree. `SESSION-*.md` and `BRIEF.md` stay
+  untracked -- do not `git add` them.
+- ASCII-only source (U+00D7 and U+00B5 excepted).
+- Do not touch `../LiteTextLayout`.

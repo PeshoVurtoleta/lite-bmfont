@@ -1,5 +1,7 @@
 # @zakkster/lite-bmfont
 
+> Zero-GC BMFont bitmap-text renderer for Canvas2D. O(1) kerning via a 64K Int16 LUT, multi-line H/V alignment, a zero-alloc numeric HUD path, and pre-laid-out wrapped text with ellipsis. Every draw call allocates nothing -- no string splitting, no substring, no per-frame array. Built for game HUDs, score counters and long-running canvas tools that cannot afford a GC pause mid-frame.
+
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-bmfont.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-bmfont)
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
 ![Zero-GC](https://img.shields.io/badge/Zero--GC-Engine-00C853?style=for-the-badge&logo=leaf&logoColor=white)
@@ -10,192 +12,121 @@
 ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
-**[-> Live Interactive Playground](https://cdpn.io/pen/debug/dPpVZyR)**
+## The bitmap-text renderer the ecosystem was missing
 
-## What is lite-bmfont?
-
-`@zakkster/lite-bmfont` renders BMFont-format bitmap text to Canvas2D with zero allocations.
-
-It gives you:
-
-- BMFont JSON format support
-- O(1) kerning lookup via 64K `Int16Array` LUT
-- Multi-line `\n` text with left / center / right alignment
-- `measure()` for kerning-aware width calculation
-- `drawFast()` -- zero-alloc number renderer (1 decimal place) for HUDs, scores, timers
-- `drawWrapped()` -- render a pre-laid-out `Float32Array` of lines into a bounding box, with H/V alignment and an optional `...` ellipsis flag
-- Zero allocation on every hot-path call -- no string splitting, no array creation
-- Pixel-snapped rendering for crisp pixel fonts
-- ~1.3 KB gzipped
-
-> **Note:** Supports ASCII characters 0-255. Unicode is intentionally excluded for zero-GC performance.
-
-Part of the [@zakkster/lite-*](https://www.npmjs.com/org/zakkster) ecosystem -- micro-libraries built for deterministic, cache-friendly game development.
-
-## Install
+`lite-bmfont` is the text-drawing end of the `@zakkster` zero-GC canvas stack. Existing BMFont renderers allocate a line array and a clutch of substrings on every `draw` -- fine for a static label, a GC-pause generator in a 60fps HUD. This one indexes `charCodeAt()` straight into an `Int16Array` glyph table and reads kerning out of a flat 64K LUT, so a frame that draws a thousand glyphs, sixty numeric readouts and a wrapped paragraph allocates **nothing** after the font is built. It renders standard BMFont JSON, so the fonts you already have just work.
 
 ```bash
 npm i @zakkster/lite-bmfont
 ```
 
-## Quick Start
+Optional peer for word-wrapping (not bundled; install it only if you want automatic wrapping):
 
-```javascript
+```bash
+npm i @zakkster/lite-text-layout
+```
+
+```js
 import { BitmapFont } from '@zakkster/lite-bmfont';
 
 const font = new BitmapFont(atlasImage, fontJson);
 
-// Draw left-aligned at the baseline.
+// Multi-line, alignment-aware draw (align: 0=left, 1=center, 2=right).
 font.draw(ctx, 'SCORE: 1000', 10, 30);
+font.draw(ctx, 'GAME OVER', canvas.width / 2, 200, 2.0, 1);   // centered, 2x
 
-// Draw centered (align: 0=left, 1=center, 2=right).
-font.draw(ctx, 'GAME OVER', canvas.width / 2, 200, 2.0, 1);
-
-// Measure width.
+// Kerning-aware width of the widest line -- the number to centre a box with.
 const w = font.measure('Hello', 1.5);
 
-// Zero-alloc number drawing -- ideal for per-frame HUDs.
-font.drawFast(ctx, fps,   10, 20);                      // "60.0"
-font.drawFast(ctx, 33.49, 10, 40);                      // "33.5"  (rounded)
-font.drawFast(ctx, score, canvas.width / 2, 60, 1, 1);  // centered
+// Zero-alloc number rendering -- ideal per-frame HUD output.
+font.drawFast(ctx, fps, 10, 20);                        // "60.0"
+font.drawFast(ctx, 33.49, 10, 40);                      // "33.5" (rounded)
+font.drawFastInt(ctx, score, canvas.width / 2, 60, 1, 1); // integer, centered
+
+font.destroy();   // release the atlas + typed arrays
 ```
 
-## Wrapped Text (`drawWrapped`)
+**[-> Live interactive playground](https://cdpn.io/pen/debug/dPpVZyR)**
 
-`drawWrapped` renders multi-line text **into a bounding box** with both horizontal and
-vertical alignment, plus an optional ellipsis-on-overflow flag. To stay zero-alloc, it
-does not do word-wrapping itself -- you hand it a `Float32Array` describing the lines, and
-it does the rest. That separation lets you compute the layout once and re-render it every
-frame for free.
+Three width faces, three renderers, a numeric fast path and a re-usable wrapped-layout path -- one class, zero allocations on every hot call.
 
-### Layout buffer format
+---
 
-Each line is **4 consecutive Float32 values**:
+## Table of contents
 
-| Slot | Meaning |
-|------|---------|
-| `[0]` | `startIdx` -- char index in `text` where this line begins (inclusive) |
-| `[1]` | `endIdx` -- char index in `text` where this line ends (exclusive) |
-| `[2]` | `lineWidth` -- measured pixel width of this line **at the rendered scale** |
-| `[3]` | `flags` -- `0` = normal line; `1` = append `...` ellipsis after content |
+- [Why this exists](#why-this-exists)
+- [What you get](#what-you-get)
+- [The surface up close](#the-surface-up-close)
+- [API reference](#api-reference)
+- [Layout buffer format](#layout-buffer-format)
+- [Composability with the ecosystem](#composability-with-the-ecosystem)
+- [Zero-GC design notes](#zero-gc-design-notes)
+- [Comparison](#comparison)
+- [Design decisions worth knowing](#design-decisions-worth-knowing)
+- [Testing](#testing)
+- [What ships](#what-ships)
+- [What this is not](#what-this-is-not)
+- [Ecosystem](#ecosystem)
 
-The buffer must hold at least `lineCount * 4` floats; surplus capacity is ignored, so you
-can reuse one fat buffer across many strings without reallocating.
+---
 
-### Drawing a layout
+## Why this exists
 
-```javascript
-font.drawWrapped(
-  ctx, text, layoutBuffer, lineCount,
-  boxWidth, boxHeight, boxX, boxY,
-  scale,   // default 1
-  align,   // 0 = left,  1 = center, 2 = right
-  vAlign   // 0 = top,   1 = middle, 2 = bottom
-);
-```
+Bitmap text on a canvas has one problem that no convenient API solves: **drawing it every frame must not allocate.** A game HUD redraws score, timer, FPS, ammo and a dozen labels sixty times a second. `ctx.fillText` reflows and shapes on every call; a typical BMFont wrapper does `text.split('\n')` and a `substring` per line; `value.toFixed(1)` mints a fresh string per readout. Each of those is a few bytes -- and a few bytes times a few thousand calls per second is a minor GC every couple of seconds, landing as a visible hitch in exactly the smooth thing you were trying to build.
 
-`(boxX, boxY)` is the container's **top-left corner**, not a baseline. The renderer
-positions line 1's visual top edge at `boxY` when `vAlign=0`.
+`lite-bmfont` removes the allocation instead of hiding it:
 
-### Producing the layout
+- Glyphs are seven `Int16` values in a flat `Int16Array`, addressed as `id * 7 + offset` from `charCodeAt(i)`. No per-glyph object, no lookup map.
+- Kerning is a 64K flat `Int16Array` LUT -- 128 KB of memory bought once, for O(1) pair lookup with no hashing and no allocation.
+- `drawFast` / `drawFastInt` convert a `number` to ASCII char codes inside a pre-allocated 24-byte scratch buffer, so a per-frame numeric readout produces no string at all.
+- `drawWrapped` renders a paragraph from a `Float32Array` you compute once and reuse -- no `split`, no `substring`, no per-frame measurement.
 
-**Ecosystem Companion:** For a zero-GC, kerning-aware word wrapper with truncation/ellipsis support that natively outputs this exact buffer format, see [`@zakkster/lite-text-layout`](https://www.npmjs.com/package/@zakkster/lite-text-layout).
+The result is a renderer whose steady state is integer and float arithmetic over typed arrays plus `ctx.drawImage`, proven at 0 B/op by an allocation-volume torture gate (not merely a retained-bytes rule, which cannot see per-call garbage the collector reclaims).
 
-Here is a tiny greedy word-break helper you can drop into your own code -- keep one buffer alive and reuse it:
+---
 
-`font.glyphs` (Int16Array, stride 7) and `font.kerning` (Int16Array, 64K flat LUT)
-are part of the public surface and are declared in `BitmapFont.d.ts`. The stride is
-a cross-package contract; changing it is a major.
+## What you get
 
-```javascript
-// Greedy word-wrap. Returns the number of lines written into `out`.
-// `out` must hold at least Math.ceil(text.length / 4) * 4 floats (worst case: every char a line).
-function layoutWrap(font, text, maxWidth, out) {
-    let line = 0, i = 0, len = text.length;
+- **`new BitmapFont(atlas, json, opts?)`** -- the renderer. Validates the descriptor at construction (fail-closed, named errors), builds the glyph and kerning tables once, and exposes every method below. Build it at load; reuse it forever.
+- **Three width faces**, because a multi-line string has three honest widths:
+  - **`measure(text, scale?)`** and **`measureWidest(text, scale?)`** -- the width of the *widest line*, the number to size or centre a box with.
+  - **`measureLine(text, start, end, scale?)`** -- the width of one explicit `[start, end)` range, exactly what `drawWrapped` renders.
+- **Three renderers**: **`draw`** (multi-line, `\n`-aware, H-aligned), **`drawWrapped`** (a pre-laid-out `Float32Array` into a box with H/V alignment and an optional `...` ellipsis), and the layout seam **`layoutGlyphs`** + **`drawQuads`** (lay glyphs into a caller buffer, then blit a subset -- the per-letter animation idiom).
+- **A zero-alloc numeric path**: **`drawFast`** (one decimal place, correctly rounded at every magnitude) and **`drawFastInt`** (integer counts, truncating toward zero).
+- **Metric queries**: **`hasGlyph`**, **`advanceOf`**, **`kernOf`** -- decode the 1/16 fixed-point store to pixels, fail-closed on any bad id.
+- **Contract constants** -- `GLYPH_STRIDE`, `DRAWFAST_MAX`, `DRAWFASTINT_MAX`, `VERSION`, `FORMAT_VERSION` -- and two option keys, `missingAdvance` and `checked`.
+- **An optional atlas generator** on a subpath -- `generateAtlas` synthesizes a runnable mock BMFont atlas from a CSS font (the one ratified allocating helper, called at boot).
 
-    while (i < len) {
-        let lineStart = i;
-        let lastBreak = -1;          // index of last whitespace seen
-        let lastBreakWidth = 0;
-        let width = 0;
-        let prevId = -1;
+Full types ship in [`BitmapFont.d.ts`](./BitmapFont.d.ts) and [`Atlas.d.ts`](./Atlas.d.ts). Every export is documented.
 
-        while (i < len) {
-            const id = text.charCodeAt(i);
-            if (id === 10) break;                       // \n
-            if (id === 32) { lastBreak = i; lastBreakWidth = width; }
+---
 
-            const advance = font.advanceOf(id);          // decodes the 1/16 store
-            const kern = prevId === -1 ? 0 : font.kernOf(prevId, id);
-            const nextWidth = width + kern + advance;
+## The surface up close
 
-            if (nextWidth > maxWidth && i > lineStart) {
-                // Wrap at last whitespace, else hard-break.
-                if (lastBreak !== -1) { i = lastBreak + 1; width = lastBreakWidth; }
-                break;
-            }
+<details>
+<summary>Which width to call, which number renderer, and the one deliberate asymmetry.</summary>
 
-            width = nextWidth;
-            prevId = id;
-            i++;
-        }
+**Which width do I want?** The package has three width functions because a multi-line string has three honest widths. Pick by the question, not the shortest name.
 
-        const lineEnd = (lastBreak !== -1 && i === lastBreak + 1) ? lastBreak : i;
-        const o = line * 4;
-        out[o]     = lineStart;
-        out[o + 1] = lineEnd;
-        out[o + 2] = width;
-        out[o + 3] = 0;          // set to 1 to draw "..." after this line
-        line++;
+| Question | Call | `'AA\nAA'` at advance 8 |
+|---|---|---|
+| How wide is this one range? | `measureLine(text, start, end, scale?)` | `measureLine(s, 0, 2)` -> `16` |
+| How wide must a box be to hold every line? | `measureWidest(text, scale?)` | `16` |
+| How wide must a box be to hold every line (alias of `measureWidest`)? | `measure(text, scale?)` | `16` |
 
-        if (i < len && text.charCodeAt(i) === 10) i++;  // skip the \n
-    }
-    return line;
-}
+**`measure` returns the widest line (2.0.0, breaking).** Earlier it added the lines together, so centring a multi-line string with it was wrong by the width of every line that is not the longest. It is now an exact alias of `measureWidest` -- the number `draw` aligns each line against -- and a newline-free string is unchanged.
 
-// Use it:
-const layout = new Float32Array(64);          // room for 16 lines, allocated once
-const lines  = layoutWrap(font, story, 300, layout);
-font.drawWrapped(ctx, story, layout, lines, 300, 200, 20, 20, 1, 1, 1); // center/center
-```
+**One deliberate asymmetry:** `measure` / `measureWidest` take the MAX over lines, but `measureLine` **sums** whatever is inside the explicit `[start, end)` range you give it, including a `\n` if you include one. On an advance-12 font `measureLine('A\nA', 0, 3)` is `24` while `measure('A\nA')` is `12`. That is intended: a range is the caller's assertion about what one line is, and `drawWrapped` never hands it a range that spans a break.
 
-### Ellipsis on overflow
+**Which number renderer?** Counts, scores, coins, seconds -> `drawFastInt` (integer, truncates toward zero). FPS, timers, fractional meters -> `drawFast` (one decimal place, rounds to the nearest tenth). Both write ASCII char codes into a shared 24-byte scratch and allocate nothing.
 
-If your layout truncates a line and you want `...` appended, set its `flags` slot to `1`.
-The renderer will draw three `'.'` glyphs after the line's content (so make sure `'.'`
-is in your atlas).
+**How failure is signalled.** The measure family answers a bad argument with `NaN`; the renderers answer by drawing nothing and returning. A renderer can decline to act; a query cannot decline to answer. To DETECT a bad `text`, gate on `Number.isNaN(measureWidest(text))` -- a renderer's silence is not an error signal.
 
-```javascript
-// Line 0 was truncated by your wrap logic -- ask the renderer to draw an ellipsis.
-layout[3] = 1;
-```
+</details>
 
-## Why This Exists
+---
 
-Existing BMFont renderers allocate line arrays and substring objects per draw call.
-lite-bmfont uses `charCodeAt()` to index directly into an `Int16Array` glyph table --
-7 values per glyph, accessed via `id * 7 + offset`. The 64K kerning LUT trades 128 KB of
-memory for O(1) lookup speed.
-
-`drawFast()` extends the same philosophy to numeric output: it converts a `number` to
-ASCII char codes inside a pre-allocated `Uint8Array` scratch buffer, never producing a
-string. Drawing `value.toFixed(1)` per frame in a HUD allocates a fresh string every
-call; `drawFast()` allocates nothing.
-
-`drawWrapped()` extends it again to wrapped paragraphs: the layout (lines, widths,
-ellipsis state) is computed once into a `Float32Array` and re-rendered every frame
-with zero per-frame work -- no `String.split('\n')`, no per-line `substring()`, no
-per-frame measurement.
-
-## Comparison
-
-| Library | Size (gzip) | Allocations | Kerning | Multi-line | Wrap + align | Install |
-|---------|------|-------------|---------|------------|----|---------|
-| bmfont-text | ~4 KB | Arrays per draw | Slow | Basic | Some | `npm i bmfont-text` |
-| msdf-bmfont-xml | ~8 KB | High | Yes | Yes | Yes | `npm i msdf-bmfont-xml` |
-| **lite-bmfont** | **~1.3 KB** | **Zero** | **O(1) LUT** | **Yes + alignment** | **Yes (BYO layout)** | **`npm i @zakkster/lite-bmfont`** |
-
-## API
+## API reference
 
 ### `new BitmapFont(imageAtlas, fontJson, opts?)`
 - `imageAtlas`: loaded `HTMLImageElement` or `HTMLCanvasElement`
@@ -234,29 +165,16 @@ honest widths. Pick by the question you are asking, not by the shortest name.
 | How wide must a box be to hold every line? | `measureWidest(text, scale?)` | `16` |
 | How wide must a box be to hold every line (alias of `measureWidest`)? | `measure(text, scale?)` | `16` |
 
-**`measure` returns the widest line (2.0.0, BREAKING).** In 1.x it summed
-across newlines, so centring a multi-line string with it was wrong by the width
-of every line that is not the longest. It is now an exact alias of
-`measureWidest` -- the number `draw` aligns each line against -- and a
-newline-free string is unchanged.
-
-**One deliberate asymmetry:** `measure`/`measureWidest` take the MAX over lines,
-but `measureLine` **sums** whatever is inside the explicit `[start, end)` range
-you give it, including a `\n` if you include one. On an advance-12 font
-`measureLine('A\nA', 0, 3)` is `24` while `measure('A\nA')` is `12`. That is
-intended: a range is the caller's assertion about what one line is, and
-`drawWrapped` never hands it a range that spans a break.
-
 ### `measure(text, scale?) -> number`
-Kerning-aware width of the **widest line** of `text`. **BREAKING in 2.0.0**
-(F-06): `measure('AA\nAA')` on an advance-8 font is `16`; in 1.x it summed
-across newlines and returned `32`. Now an exact alias of `measureWidest`.
+Kerning-aware width of the **widest line** of `text`. **Breaking in 2.0.0**
+(F-06): `measure('AA\nAA')` on an advance-8 font is `16`; earlier it added the
+lines together and returned `32`. Now an exact alias of `measureWidest`.
 
 Returns **`NaN`** if `text` is not a string, or if `scale` is outside
 `(0, Infinity)` -- `NaN`, `0`, a negative, or `Infinity`. Throws after
 `destroy()`.
 
-There is no `measureTotalAdvance`: the 1.x cross-newline total had no consumer.
+There is no `measureTotalAdvance`: the old cross-newline total had no consumer.
 See the CHANGELOG's 2.0.0 Breaking section for the migration table.
 
 ### `measureWidest(text, scale?) -> number`
@@ -442,7 +360,7 @@ object with a `drawImage` method.
 | `opts.checked` | **`true` (default, 2.0.0)** | must be a boolean; pass `{ checked: false }` to opt out. Opens the lossy validation lane: an atlas coord past Int16, or an id/kerning key outside `[0, 256)`, throws a `BitmapFontError` naming the exact drift instead of being skipped silently. **A fractional `xadvance`/`amount` NO LONGER throws** -- 1/16 is the format's declared resolution, so a value it is designed to round is not lossy (`decisions/0012` forks 1 and 6). Out-of-RANGE advances still throw. Inputs with no correct reading throw in both lanes |
 
 ### `drawWrapped(ctx, text, layoutBuffer, lineCount, boxWidth, boxHeight, x, y, scale?, align?, vAlign?) -> void`
-Renders a pre-laid-out `Float32Array` of lines into a box. See the **Wrapped Text** section above for buffer format and a layout helper recipe.
+Renders a pre-laid-out `Float32Array` of lines into a box. See [Layout buffer format](#layout-buffer-format) below for the slot layout and a layout helper recipe.
 
 - `x, y` is the box's **top-left corner**.
 - A `scale` outside `(0, Infinity)` draws **nothing** and returns (F-11).
@@ -510,12 +428,13 @@ the buffer draws from **unwritten** slots. Pass `drawQuads` the exact count
 `drawFast`'s shared-scratch reentrancy is a documented hazard, not a guarded case.
 
 ### `destroy() -> void`
-Releases the atlas reference and typed arrays.
+Releases the atlas reference and typed arrays. Every method throws a named error
+after `destroy()` -- a use-after-free is a loud failure, never a silent bad draw.
 
 ## Atlas generation (subpath `@zakkster/lite-bmfont/atlas`)
 
 A COLD, boot-time helper for synthesizing a runnable mock BMFont atlas from a CSS
-font -- the demo's font source, now shipped so you do not have to copy it. It is
+font -- the playground's font source, shipped so you do not have to copy it. It is
 the ONE allocating function in the package (one canvas + one descriptor + ~95
 char entries per call); a RATIFIED exception (`decisions/0009`), called once per
 theme at boot, never in a frame loop, and not precedent for allocating elsewhere.
@@ -540,63 +459,248 @@ Fails closed with a named `AtlasError`, never a bare `Error`/`TypeError`: a
 missing DOM (`globalThis.document.createElement`), a null/unusable
 `getContext('2d')`, and a hostile DOM whose
 `createElement`/`getContext`/`measureText`/`fillText` throws are all re-thrown as
-`AtlasError` (carrying the original). A non-integer or out-of-range `size` throws
-rather than being normalized -- `size` feeds `common.base`, which
-`{ checked: true }` would reject, so a silent snap would launder a caller bug.
+`AtlasError` with `field: 'dom'` (carrying the original). A bug inside
+`generateAtlas`'s own glyph arithmetic throws `AtlasError` with `field:
+'internal'` instead, so a library bug is never mislabeled a caller DOM fault (the
+`field` values are examples, not an exhaustive set). A non-integer or
+out-of-range `size` throws rather than being normalized -- `size` feeds
+`common.base`, which `{ checked: true }` would reject, so a silent snap would
+launder a caller bug.
 
-## Benchmark
+---
 
+## Layout buffer format
+
+`drawWrapped` renders multi-line text **into a bounding box** with both horizontal and vertical alignment, plus an optional ellipsis-on-overflow flag. To stay zero-alloc it does not word-wrap for you -- you hand it a `Float32Array` describing the lines, and it does the rest. That separation lets you compute the layout once and re-render it every frame for free.
+
+Each line is **4 consecutive Float32 values**:
+
+| Slot | Meaning |
+|------|---------|
+| `[0]` | `startIdx` -- char index in `text` where this line begins (inclusive) |
+| `[1]` | `endIdx` -- char index in `text` where this line ends (exclusive) |
+| `[2]` | `lineWidth` -- measured pixel width of this line **at the rendered scale** |
+| `[3]` | `flags` -- `0` = normal line; `1` = append `...` ellipsis after content |
+
+The buffer must hold at least `lineCount * 4` floats; surplus capacity is ignored, so you can reuse one fat buffer across many strings without reallocating.
+
+```js
+font.drawWrapped(
+  ctx, text, layoutBuffer, lineCount,
+  boxWidth, boxHeight, boxX, boxY,
+  scale,   // default 1
+  align,   // 0 = left,  1 = center, 2 = right
+  vAlign   // 0 = top,   1 = middle, 2 = bottom
+);
 ```
-Rendering 1000 characters per frame:
-  bmfont-text:  Allocates line arrays per draw
-  lite-bmfont:  Zero allocation, charCodeAt() + Int16Array lookup per glyph
 
-Rendering 60 numeric HUD values per frame:
-  value.toFixed(1) + draw():  allocates a new String each call
-  drawFast(value):            zero allocation -- char codes go into a reused Uint8Array
+`(boxX, boxY)` is the container's **top-left corner**, not a baseline. The renderer positions line 1's visual top edge at `boxY` when `vAlign = 0`. If a line is truncated and you want `...` appended, set its `flags` slot to `1` (the renderer draws three `'.'` glyphs after the content, so keep `'.'` in your atlas).
 
-Rendering a 12-line wrapped paragraph at 60 fps:
-  ctx.measureText + split('\n'): allocates arrays + TextMetrics each frame
-  drawWrapped(layout):           zero allocation -- layout buffer is reused
+<details>
+<summary>A tiny greedy word-break helper that fills this buffer (drop into your own code).</summary>
+
+For a production, zero-GC, kerning-aware wrapper that outputs this exact buffer, use [`@zakkster/lite-text-layout`](https://www.npmjs.com/package/@zakkster/lite-text-layout). If you would rather own the wrap, keep one buffer alive and reuse it:
+
+```js
+// Greedy word-wrap. Returns the number of lines written into `out`.
+// `out` must hold at least Math.ceil(text.length / 4) * 4 floats (worst case: every char a line).
+function layoutWrap(font, text, maxWidth, out) {
+    let line = 0, i = 0, len = text.length;
+
+    while (i < len) {
+        let lineStart = i;
+        let lastBreak = -1;          // index of last whitespace seen
+        let lastBreakWidth = 0;
+        let width = 0;
+        let prevId = -1;
+
+        while (i < len) {
+            const id = text.charCodeAt(i);
+            if (id === 10) break;                       // \n
+            if (id === 32) { lastBreak = i; lastBreakWidth = width; }
+
+            const advance = font.advanceOf(id);          // decodes the 1/16 store
+            const kern = prevId === -1 ? 0 : font.kernOf(prevId, id);
+            const nextWidth = width + kern + advance;
+
+            if (nextWidth > maxWidth && i > lineStart) {
+                // Wrap at last whitespace, else hard-break.
+                if (lastBreak !== -1) { i = lastBreak + 1; width = lastBreakWidth; }
+                break;
+            }
+
+            width = nextWidth;
+            prevId = id;
+            i++;
+        }
+
+        const lineEnd = (lastBreak !== -1 && i === lastBreak + 1) ? lastBreak : i;
+        const o = line * 4;
+        out[o]     = lineStart;
+        out[o + 1] = lineEnd;
+        out[o + 2] = width;
+        out[o + 3] = 0;          // set to 1 to draw "..." after this line
+        line++;
+
+        if (i < len && text.charCodeAt(i) === 10) i++;  // skip the \n
+    }
+    return line;
+}
+
+// Use it:
+const layout = new Float32Array(64);          // room for 16 lines, allocated once
+const lines  = layoutWrap(font, story, 300, layout);
+font.drawWrapped(ctx, story, layout, lines, 300, 200, 20, 20, 1, 1, 1); // center/center
 ```
 
-## TypeScript
+</details>
 
-Full TypeScript declarations included in `BitmapFont.d.ts`. The `Align`, `VAlign`,
-`BMFontJson`, `BMFontChar`, `BMFontKerning` and `BitmapFontOptions` types, plus the
-`BitmapFontError` class, are exported for downstream typing of layout helpers, JSON
-loaders and `catch` blocks.
+---
+
+## Composability with the ecosystem
+
+From a CSS font to per-letter animated, wrapped, HUD-annotated canvas text, every stage passing flat typed arrays and allocating nothing per frame:
+
+```js
+import { BitmapFont, GLYPH_STRIDE } from '@zakkster/lite-bmfont';
+import { generateAtlas }            from '@zakkster/lite-bmfont/atlas';
+
+// 1. Build a font once, at boot. generateAtlas is the one ratified allocation.
+const { atlas, json } = generateAtlas(36, 'bold 36px monospace', '#39ff85', '#001a0a');
+const font = new BitmapFont(atlas, json);
+
+// 2. Pre-allocate every per-frame buffer ONCE, outside the loop.
+const title    = 'ZERO-GC BITMAP TEXT';
+const glyphBuf = new Float64Array(title.length * GLYPH_STRIDE);   // layout seam scratch
+const wrapBuf  = new Float32Array(64);                            // up to 16 wrapped lines
+
+// 3. Lay the title out once; the per-glyph x is already the prefix width.
+const baseX = 600 - font.measureLine(title, 0, title.length, 1) / 2;
+const n = font.layoutGlyphs(title, glyphBuf, baseX, 120, 1, 0);
+
+function frame(now, score, story) {
+  // 3a. Per-letter wave: edit dy in the buffer, blit one glyph at a time. No alloc.
+  for (let i = 0; i < n; i++) {
+    const flatDy = glyphBuf[i * GLYPH_STRIDE + 5];
+    glyphBuf[i * GLYPH_STRIDE + 5] = flatDy + Math.sin(now * 0.004 + i * 0.4) * 18;
+    font.drawQuads(ctx, glyphBuf, i, 1, 0, 0, 1);
+  }
+
+  // 3b. A zero-padded score and a wrapped paragraph, both allocation-free.
+  font.drawFastInt(ctx, score, 40, 40, 1, 0);              // count, no string
+  const lines = layoutWrap(font, story, 300, wrapBuf);     // reuses wrapBuf
+  font.drawWrapped(ctx, story, wrapBuf, lines, 300, 200, 20, 200, 1, 1, 1);
+}
+```
+
+Every stage is deterministic, every stage is zero-GC on the hot path, and every stage hands a flat `Float64Array` / `Float32Array` to the next -- no format translation, no allocation between stages. The wrapping half of step 3b becomes a single `@zakkster/lite-text-layout` call when you want kerning-aware breaks and truncation; its output buffer is byte-compatible with `drawWrapped`'s by contract.
+
+---
+
+## Zero-GC design notes
+
+<details>
+<summary>What the hot path allocates (nothing), and how it stays that way.</summary>
+
+`new BitmapFont` allocates every table it will ever use at construction: the stride-7 `Int16Array` glyph table, the 64K flat `Int16Array` kerning LUT, and the 24-byte `Uint8Array` numeric scratch. Every method afterward does integer and float arithmetic on those pre-allocated arrays plus `ctx.drawImage` and byte writes -- no string, no substring, no per-call array or object.
+
+| Operation | Steady-state allocations |
+| --------- | ------------------------ |
+| `draw` / `drawWrapped` main loop | **0** |
+| `drawFast` / `drawFastInt` | **0** (digits go into a reused 24-byte scratch) |
+| `measure` / `measureWidest` / `measureLine` | **0** (single pass, no `split`) |
+| `layoutGlyphs` / `drawQuads` | **0** (writes into the caller's buffer) |
+| `new BitmapFont(...)` | once, at construction (glyph + kerning tables, then reused) |
+| `generateAtlas(...)` | once, at boot -- the ratified exception (`decisions/0009`) |
+
+Two facts make the numeric path subtle and both are gated. First, the digit loop keeps its loop variables under 2^31 with a hi/lo split, so the loop **body** boxes no HeapNumber in any V8 tier; a value passed above 2^31 boxes once at the **call boundary** (~16 B/call), caller-side and removable by no change here (F-44 was a misdiagnosis -- see `drawFastInt`). Second, a retention lane cannot see per-call garbage the collector reclaims (F-37), so the torture harness carries a separate **allocation-VOLUME** lane -- summed positive `heapUsed` deltas over 200,000 strided calls per body -- that DOES see transient strings.
+
+That lane is a coarse transient detector, not a byte-accurate proof: on single-method library bodies its working-set floor is ~0, so a mutant that starts allocating separates by orders of magnitude and the gate is sharp. The torture run (`@zakkster/lite-leak` + `@zakkster/lite-gc-profiler`, under `--expose-gc`) proves 0 retained bytes, 0 major GCs, and no transient-allocation regression across twelve volume windows -- one per hot body -- and prints exactly `ok`.
+
+</details>
+
+---
+
+## Comparison
+
+| Library | Size (gzip) | Allocations | Kerning | Multi-line | Wrap + align |
+|---------|-------------|-------------|---------|------------|--------------|
+| bmfont-text | ~4 KB | Arrays per draw | Slow | Basic | Some |
+| msdf-bmfont-xml | ~8 KB | High | Yes | Yes | Yes |
+| **lite-bmfont** | **~1.3 KB** | **Zero** | **O(1) LUT** | **Yes + alignment** | **Yes (bring your own layout)** |
+
+---
+
+## Design decisions worth knowing
+
+- **`measure` returns the widest line, not the sum (2.0.0, breaking).** A multi-line string has three honest widths and the shortest-named function must answer the one callers actually centre with. The old cross-newline total had no consumer and silently mis-centred every multi-line label; it is gone, `measure` is an exact alias of `measureWidest`, and `measureLine` is the range face. Newline-free strings are unchanged.
+- **The measure family answers with `NaN`; the renderers draw nothing.** A renderer can decline to act, a query cannot decline to answer. Both are honest fail signals; to DETECT a bad input, gate on `Number.isNaN(measureWidest(text))` -- never on a renderer's silence.
+- **Advances are 1/16 fixed point (2.0.0).** `xadvance` and kerning `amount` are stored as `Math.round(value * 16)` in `Int16`, giving a 2047.9375 px advance ceiling at a 1/16 px resolution. Decode with `advanceOf` / `kernOf`; a raw `glyphs[id * 7 + 6]` is 16x the pixel advance. This is what lets `draw`, `layoutGlyphs` and the measure family agree to the last pixel under one conservation law.
+- **Only the line origin snaps in X, never the glyph.** Per-glyph rounding would break the advance conservation law the whole suite rests on and cost bytes in the hot loop for a cosmetic gain. Every baseline snaps in Y; every line origin snaps in X; glyph columns stay sub-pixel by design.
+- **`checked: true` is the default (2.0.0).** Lossy-but-interpretable inputs (an atlas coord past Int16, an id outside `[0, 256)`) throw a named `BitmapFontError` reporting the exact drift, instead of being silently truncated. A fractional advance no longer throws -- 1/16 is the format's declared resolution -- but an out-of-range one still does. Opt out with `{ checked: false }`.
+- **Fail closed, name the field.** The constructor validates the whole descriptor and throws `BitmapFontError` (a `RangeError`) naming the offending field; `null` is rejected as `null`, never coerced to zero. `generateAtlas` distinguishes a hostile DOM (`field: 'dom'`) from its own internal bug (`field: 'internal'`), so a library fault is never blamed on the caller's environment.
+
+---
 
 ## Testing
 
 `npm test` runs the full `node:test` suite and must report **0 failures**.
-`npm run torture` must print exactly `ok` and exit 0. Those two commands are
-the gate; absolute test counts are deliberately not published here, because a
-count no gate can read drifts silently (F-43). `npm run torture` runs the ten-tier zero-GC gate
-(`node --expose-gc test/torture.mjs`) and prints exactly `ok`; the descriptor door
-is proven by T3's 50-row abuse matrix and T9's control 10, and the pixel-snap
-promise by T5's allocating reference renderer plus two T9 controls that rebuild
-the rejected rounding variants and require the numbers to move.
+`npm run torture` must print exactly `ok` and exit 0. Those two commands are the
+gate; absolute test counts are deliberately not published here, because a count
+no gate can read drifts silently (F-43). `npm run torture` runs the ten-tier
+zero-GC gate (`node --expose-gc test/torture.mjs`): the descriptor door is proven
+by T3's 50-row abuse matrix and T9's control 10, the pixel-snap promise by T5's
+allocating reference renderer plus two T9 controls that rebuild the rejected
+rounding variants and require the numbers to move, and the zero-allocation claim
+by T6's twelve allocation-volume windows -- one per hot body -- with T9's control
+injecting a retained allocation to prove the gate can fail.
+
+```bash
+npm test        # full node:test suite -- must report 0 failures
+npm run torture # @zakkster/lite-leak + lite-gc-profiler -- must print exactly "ok"
+npm run smoke   # DOM-free import of both entry points through the exports map
+npm run verify  # test + torture, the publish gate
+```
+
+---
 
 ## What ships
 
-The published package is a single core module plus its optional atlas subpath --
-no build step, no bundler.
+The published package is a single core module plus its optional atlas subpath -- no build step, no bundler.
 
 | File | Subpath | Role |
 |------|---------|------|
 | `BitmapFont.js` / `BitmapFont.d.ts` | `@zakkster/lite-bmfont` | the zero-GC renderer (core) |
 | `Atlas.js` / `Atlas.d.ts` | `@zakkster/lite-bmfont/atlas` | COLD boot-time `generateAtlas` |
-| `README.md`, `CHANGELOG.md`, `llms.txt`, `LICENSE` | -- | docs + license |
+| `README.md`, `CHANGELOG.md`, `FORMAT.md`, `llms.txt`, `LICENSE` | -- | docs + license |
 
-## LLM-Friendly Documentation
+Full TypeScript declarations ship in `BitmapFont.d.ts` and `Atlas.d.ts`; the `Align`, `VAlign`, `BMFontJson`, `BMFontChar`, `BMFontKerning` and `BitmapFontOptions` types plus the `BitmapFontError` class are exported for typing layout helpers, JSON loaders and `catch` blocks. The binary layout every kernel reads is specified in [`FORMAT.md`](./FORMAT.md), machine-readable metadata is in [`llms.txt`](./llms.txt), and the release history is in [`CHANGELOG.md`](./CHANGELOG.md).
 
-See `llms.txt` for AI-optimized metadata and usage examples.
+---
 
-## Changelog
+## What this is not
 
-See [CHANGELOG.md](./CHANGELOG.md).
+- **Not a font shaper.** No bidi, no complex-script shaping, no OpenType features, no ligature substitution. It renders a BMFont atlas glyph by glyph, left to right, with kerning pairs. For Latin/CJK-fixed HUD and game text it is exact; for Arabic or Devanagari shaping, shape upstream.
+- **Not a word wrapper.** `drawWrapped` renders a layout you provide; it does not decide line breaks. Bring the greedy helper above, or `@zakkster/lite-text-layout` for a kerning-aware, truncating wrap. The split keeps the renderer zero-alloc.
+- **Not a font loader or atlas packer.** It consumes a loaded image and BMFont JSON. Pack your atlas with the tool of your choice (or use `generateAtlas` for a mock ASCII font at boot).
+- **Not an SDF / MSDF renderer.** It draws bitmap glyphs at their native resolution with a per-line pixel snap. For resolution-independent vector-crisp text at any scale, an MSDF pipeline is the different tool.
+- **Not a DOM text layout engine.** No line boxes, no flow, no CSS. It is a canvas draw primitive: glyphs, metrics, alignment, wrap-from-a-buffer.
+- **Not a GUI.** No components, no canvas wiring, no input handling. Bring your own render loop; call these methods inside it.
+
+---
+
+## Ecosystem
+
+Part of the **@zakkster** zero-GC stack:
+
+- [`lite-text-layout`](https://www.npmjs.com/package/@zakkster/lite-text-layout) -- zero-GC kerning-aware word wrap + truncation, emitting `drawWrapped`'s buffer format
+- [`lite-signal`](https://www.npmjs.com/package/@zakkster/lite-signal) -- zero-GC reactive graph for hot paths
+- [`lite-leak`](https://www.npmjs.com/package/@zakkster/lite-leak) -- retention torture kernels (this package's dev peer)
+- [`lite-gc-profiler`](https://www.npmjs.com/package/@zakkster/lite-gc-profiler) -- allocation + GC budget gate (this package's dev peer)
+- **`lite-bmfont`** -- this package
+
+---
 
 ## License
 
-MIT
+MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
